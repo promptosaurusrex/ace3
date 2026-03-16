@@ -760,15 +760,41 @@ class EmailAnalyzer(AnalysisModule):
                     if mail_from:
                         analysis.add_observable_by_spec(F_EMAIL_CONVERSATION, create_email_conversation(mail_from, address))
 
-        if 'cc' in target_email:
-            email_details[KEY_CC] = get_address_list(target_email, 'cc')
-            for address in email_details[KEY_CC]:
+        if 'subject' in target_email:
+            email_details[KEY_SUBJECT] = target_email['subject']
+            if target_email['subject']:
+                analysis.add_observable_by_spec(F_EMAIL_SUBJECT, target_email['subject'])
 
-                cc_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
-                if cc_address:
-                    cc_address.display_type = "Mail CC"
-                    if mail_from:
-                        analysis.add_observable_by_spec(F_EMAIL_CONVERSATION, create_email_conversation(mail_from, address))
+        if 'message-id' in target_email:
+            email_details[KEY_MESSAGE_ID] = target_email['message-id']
+            message_id_observable = analysis.add_observable_by_spec(
+                    F_MESSAGE_ID,
+                    normalize_message_id(target_email['message-id']),
+                    o_time=received_time)
+
+            if message_id_observable:
+                # this module will extract an email from the archives based on the message-id
+                # we don't want to do that here so we exclude that analysis
+                message_id_observable.exclude_analysis(MessageIDAnalyzerV2)
+
+            if mail_to:
+                if is_local_email_domain(mail_to):
+                    email_delivery_observable = analysis.add_observable_by_spec(F_EMAIL_DELIVERY,
+                                                create_email_delivery(email_details[KEY_MESSAGE_ID], mail_to))
+
+                    if email_delivery_observable:
+                        # if a message_id observable has the DIRECTIVE_REMEDIATE directive
+                        # then that directive gets copied to the delivery observable
+                        # so that the remediation system knows where to find the email
+                        for _ in self.get_root().get_observables_by_type(F_MESSAGE_ID):
+                            if message_id_observable and _.value == message_id_observable.value and _.has_directive(DIRECTIVE_REMEDIATE):
+                                logging.info(f"copying directive {DIRECTIVE_REMEDIATE} from message-id {_.value} to {email_delivery_observable.value}")
+                                email_delivery_observable.add_directive(DIRECTIVE_REMEDIATE)
+
+            for rcpt_to in env_rcpt_to:
+                if is_local_email_domain(rcpt_to):
+                    email_delivery_observable = analysis.add_observable_by_spec(F_EMAIL_DELIVERY,
+                                                create_email_delivery(email_details[KEY_MESSAGE_ID], rcpt_to))
 
         if 'x-sender' in target_email:
             address = normalize_email_address(target_email['x-sender'])
@@ -819,45 +845,20 @@ class EmailAnalyzer(AnalysisModule):
                 if return_path:
                     return_path.display_type = "Mail Return Path"
 
-        if 'subject' in target_email:
-            email_details[KEY_SUBJECT] = target_email['subject']
-            if target_email['subject']:
-                analysis.add_observable_by_spec(F_EMAIL_SUBJECT, target_email['subject'])
+        # we add these last since there could be a lot of them
 
-        if 'message-id' in target_email:
-            email_details[KEY_MESSAGE_ID] = target_email['message-id']
-            message_id_observable = analysis.add_observable_by_spec(
-                    F_MESSAGE_ID,
-                    normalize_message_id(target_email['message-id']),
-                    o_time=received_time)
+        if 'cc' in target_email:
+            email_details[KEY_CC] = get_address_list(target_email, 'cc')
+            for address in email_details[KEY_CC]:
 
-            if message_id_observable:
-                # this module will extract an email from the archives based on the message-id
-                # we don't want to do that here so we exclude that analysis
-                message_id_observable.exclude_analysis(MessageIDAnalyzerV2)
-
-            if mail_to:
-                if is_local_email_domain(mail_to):
-                    email_delivery_observable = analysis.add_observable_by_spec(F_EMAIL_DELIVERY,
-                                                create_email_delivery(email_details[KEY_MESSAGE_ID], mail_to))
-
-                    if email_delivery_observable:
-                        # if a message_id observable has the DIRECTIVE_REMEDIATE directive
-                        # then that directive gets copied to the delivery observable
-                        # so that the remediation system knows where to find the email
-                        for _ in self.get_root().get_observables_by_type(F_MESSAGE_ID):
-                            if message_id_observable and _.value == message_id_observable.value and _.has_directive(DIRECTIVE_REMEDIATE):
-                                logging.info(f"copying directive {DIRECTIVE_REMEDIATE} from message-id {_.value} to {email_delivery_observable.value}")
-                                email_delivery_observable.add_directive(DIRECTIVE_REMEDIATE)
-
-            for rcpt_to in env_rcpt_to:
-                if is_local_email_domain(rcpt_to):
-                    email_delivery_observable = analysis.add_observable_by_spec(F_EMAIL_DELIVERY,
-                                                create_email_delivery(email_details[KEY_MESSAGE_ID], rcpt_to))
-
-            # when the have the SMTP envelope data
+                cc_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
+                if cc_address:
+                    cc_address.display_type = "Mail CC"
+                    if mail_from:
+                        analysis.add_observable_by_spec(F_EMAIL_CONVERSATION, create_email_conversation(mail_from, address))
 
         # the rest of these details are for the generate logging output
+        # (there may be a limit configured for the maximum number of observables)
 
         # extract CC and BCC recipients
         cc = []
