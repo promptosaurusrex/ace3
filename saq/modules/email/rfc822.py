@@ -566,7 +566,21 @@ class EmailAnalyzer(AnalysisModule):
             # look for what looks like the office365 meta part
             if o365_meta_part is None:
                 if part.get_content_type() == 'text/plain':
-                    target_payload = part.get_payload()
+                    target_payload_bytes = part.get_payload(decode=True)
+                    if target_payload_bytes is None:
+                        continue
+
+                    charset = part.get_content_charset() or "utf-8"
+
+                    try:
+                        target_payload = target_payload_bytes.decode(charset)
+                    except (UnicodeDecodeError, LookupError):
+                        # (do the best you can)
+                        target_payload = target_payload_bytes.decode("utf-8", errors="ignore")
+
+                    # some of these have this BOM at the start
+                    target_payload = target_payload.lstrip("\ufeff")
+
                     m = o365_meta_re.search(target_payload)
                     if m:
                         o365_meta_sender = m.group(1).strip()

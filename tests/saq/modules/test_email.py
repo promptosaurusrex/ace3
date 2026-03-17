@@ -935,6 +935,42 @@ def test_o365_journal_email_parsing_expanded_recipients(root_analysis, datadir):
     assert create_email_delivery(message_id, 'charlie.jones@company.com') in delivery_values
 
 @pytest.mark.integration
+def test_o365_journal_email_parsing_quoted_printable_meta(root_analysis, datadir):
+    """Test that O365 journal meta block is parsed correctly when using quoted-printable encoding.
+
+    The meta block may use Content-Transfer-Encoding: quoted-printable with a UTF-8 BOM,
+    soft line breaks, and encoded characters. The parser must decode these before applying
+    the regex.
+    """
+
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(str(datadir / 'emails/o365_journaled_qp_meta.email.rfc822'))
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+
+    file_observable = root_analysis.get_observable(file_observable.uuid)
+    assert file_observable
+    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    assert isinstance(email_analysis, EmailAnalysis)
+    email_analysis.load_details()
+    assert email_analysis.parsing_error is None
+    assert email_analysis.email
+    assert email_analysis.env_mail_from == 'jane.smith@widgetsinc.com'
+    assert isinstance(email_analysis.env_rcpt_to, list)
+    assert len(email_analysis.env_rcpt_to) == 1
+    assert email_analysis.env_rcpt_to[0] == 'john.doe@acmecorp.com'
+    assert email_analysis.message_id == '<AAAAAA1111BBBBBB2222@AAAAAA1111.namprd10.prod.outlook.com>'
+
+@pytest.mark.integration
 def test_nested_rfc822_pdf_extraction(root_analysis, datadir):
     """Test that PDFs embedded in nested message/rfc822 parts are properly extracted.
 
