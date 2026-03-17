@@ -1,0 +1,70 @@
+Return-Path: <exservice@acmecorp.com>
+Delivered-To: journal@testorg.example.com
+Received: from CO1PR07CU001.outbound.protection.outlook.com (mail-co1pr07cu00105.outbound.protection.outlook.com [10.0.0.1])
+	by smtp-1.testorg.example.com (Postfix) with ESMTPS id ABCDE12345
+	for <journal@testorg.example.com>; Tue, 17 Mar 2026 13:43:19 +0000 (UTC)
+Content-Type: multipart/mixed;
+	boundary="_test-boundary-qp-meta-1234_"
+Subject: =?utf-8?Q?Test_Subject_Line?=
+To: "Doe, John" <john.doe@acmecorp.com>
+From: "Smith, Jane" <jane.smith@widgetsinc.com>
+MIME-Version: 1.0
+Sender:
+	<MicrosoftExchange329e71ec88ae4615bbc36ab6ce41109e@TestOrg.onmicrosoft.com>
+Message-ID: <aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee@journal.report.generator>
+Date: Tue, 17 Mar 2026 13:43:19 +0000
+X-MS-PublicTrafficType: Email
+X-MS-Journal-Report: 11111111-2222-3333-4444-555555555555
+X-MS-Exchange-Parent-Message-Id:
+	<AAAAAA1111BBBBBB2222@AAAAAA1111.namprd10.prod.outlook.com>
+Auto-Submitted: auto-generated
+X-MS-Exchange-Generated-Message-Source: Journal Agent
+X-MS-TrafficTypeDiagnostic: SJ0PR01MB0001:EE_JournalingReport
+X-OriginatorOrg: TestOrg.onmicrosoft.com
+X-MS-Exchange-CrossTenant-Network-Message-Id:
+	12345678-abcd-ef01-2345-678901234567
+X-MS-Exchange-Transport-CrossTenantHeadersStamped: SJ0PR01MB0001
+
+--_test-boundary-qp-meta-1234_
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+=EF=BB=BFSender: jane.smith@widgetsinc.com
+Subject: RE: Project Alpha - Design Review Discussi=
+ons on March 17, 2026 | Read Meeting Report
+Message-Id: <AAAAAA1111BBBBBB2222@AAAAAA1111.namprd10.=
+prod.outlook.com>
+Recipient: john.doe@acmecorp.com
+
+--_test-boundary-qp-meta-1234_
+Content-Type: message/rfc822
+
+Received: from CY1PR20CA0059.namprd20.prod.outlook.com
+ (2603:10b6:a03:100::10) by SJ0PR01MB0001.prod.exchangelabs.com
+ (2603:10b6:a03:200::5) with Microsoft SMTP Server (version=TLS1_2,
+ cipher=TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) id 15.20.9723.19; Tue,
+ 17 Mar 2026 13:43:12 +0000
+From: "Smith, Jane" <jane.smith@widgetsinc.com>
+To: "Doe, John" <john.doe@acmecorp.com>
+Subject: RE: Project Alpha - Design Review Discussions on March 17, 2026 | Read Meeting Report
+Date: Tue, 17 Mar 2026 13:42:00 +0000
+Message-ID: <AAAAAA1111BBBBBB2222@AAAAAA1111.namprd10.prod.outlook.com>
+Content-Type: multipart/alternative;
+	boundary="_inner-boundary-1234_"
+MIME-Version: 1.0
+
+--_inner-boundary-1234_
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+This is a test email body for the quoted-printable meta block test.
+
+--_inner-boundary-1234_
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+<html><body><p>This is a test email body for the quoted-printable meta block test.</p></body></html>
+
+--_inner-boundary-1234_--
+
+--_test-boundary-qp-meta-1234_--
