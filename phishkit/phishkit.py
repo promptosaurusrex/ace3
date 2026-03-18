@@ -132,6 +132,7 @@ def _run_scanner(
 
     return _stdout, _stderr, process.returncode
 
+
 if os.path.exists("/auth/passwords/redis"):
     with open("/auth/passwords/redis", "r") as fp:
         redis_password = fp.read().strip()
