@@ -17,6 +17,18 @@ import magic
 
 logger = logging.getLogger(__name__)
 
+PROXY_ERROR_PATTERNS = [
+    "ERR_TUNNEL_CONNECTION_FAILED",
+    "ERR_PROXY_CONNECTION_FAILED",
+    "ERR_PROXY_AUTH_FAILED",
+    "ERR_PROXY_CERTIFICATE_INVALID",
+]
+
+
+def _has_proxy_error(stdout: str, stderr: str) -> bool:
+    combined = (stdout or "") + (stderr or "")
+    return any(pattern in combined for pattern in PROXY_ERROR_PATTERNS)
+
 if os.path.exists("/auth/passwords/redis"):
     with open("/auth/passwords/redis", "r") as fp:
         redis_password = fp.read().strip()
@@ -75,7 +87,7 @@ def _correct_file_extension(file_path: str) -> str:
     return new_file_path
 
 @app.task
-def scan_file(file_path: str, timeout: int = 15, proxy: str = None) -> str:
+def scan_file(file_path: str, timeout: int = 15, proxy: str = None, proxy_fallback_to_direct: bool = False) -> str:
     # create a place to put the file we're going to render in the browser
     job_id = str(uuid.uuid4())
     input_dir = f"/phishkit/input/{job_id}"
@@ -130,6 +142,63 @@ def scan_file(file_path: str, timeout: int = 15, proxy: str = None) -> str:
         for line in _stderr.splitlines():
             logging.info(f"stderr> {line}")
 
+    # check for proxy errors and retry without proxy if configured
+    if proxy and proxy_fallback_to_direct and _has_proxy_error(_stdout, _stderr):
+        logger.warning("proxy error detected for file job %s, retrying without proxy", job_id)
+        proxy_stdout = _stdout
+
+        # create a new output directory for the retry
+        retry_output_dir = f"{output_dir}-direct"
+        os.makedirs(retry_output_dir, exist_ok=True)
+
+        # re-run without the --proxy flag
+        retry_cmd = [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            "ace-phishkit:/phishkit",
+            os.environ.get("ACE3_PHISHKIT_IMAGE_URL", "phishkit"),
+            "/opt/venv/bin/python",
+            "/opt/app/scanner.py",
+            "--file",
+            target_file_path,
+            "--output-dir",
+            retry_output_dir,
+        ]
+
+        process = Popen(
+            retry_cmd,
+            stdout=PIPE,
+            stderr=PIPE,
+            text=True,
+        )
+        try:
+            _stdout, _stderr = process.communicate(timeout=timeout)
+        except TimeoutExpired:
+            process.kill()
+            process.wait()
+            raise
+
+        for line in _stdout.splitlines():
+            logging.info(f"stdout(direct)> {line}")
+
+        if process.returncode != 0:
+            for line in _stderr.splitlines():
+                logging.info(f"stderr(direct)> {line}")
+
+        # prepend the original proxy attempt output so the error is visible in analysis
+        _stdout = f"--- PROXY ATTEMPT (failed, retried direct) ---\n{proxy_stdout}\n--- DIRECT ATTEMPT ---\n{_stdout}"
+
+        # copy retry output files into the main output directory
+        for entry in os.listdir(retry_output_dir):
+            src = os.path.join(retry_output_dir, entry)
+            dst = os.path.join(output_dir, entry)
+            if os.path.isfile(src):
+                shutil.copy2(src, dst)
+            elif os.path.isdir(src):
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+
     with open(os.path.join(output_dir, "std.out"), "w") as fp:
         fp.write(_stdout)
 
@@ -142,7 +211,7 @@ def scan_file(file_path: str, timeout: int = 15, proxy: str = None) -> str:
     return _process_output(job_id, output_dir)
 
 @app.task
-def scan_url(url: str, timeout: int = 15, proxy: str = None) -> str:
+def scan_url(url: str, timeout: int = 15, proxy: str = None, proxy_fallback_to_direct: bool = False) -> str:
     # create an output directory for the scan
     job_id = str(uuid.uuid4())
     output_dir = f"/phishkit/output/{job_id}"
@@ -186,6 +255,62 @@ def scan_url(url: str, timeout: int = 15, proxy: str = None) -> str:
     if process.returncode != 0:
         for line in _stderr.splitlines():
             logging.info(f"stderr> {line}")
+
+    # check for proxy errors and retry without proxy if configured
+    if proxy and proxy_fallback_to_direct and _has_proxy_error(_stdout, _stderr):
+        logger.warning("proxy error detected for url job %s, retrying without proxy", job_id)
+        proxy_stdout = _stdout
+
+        # create a new output directory for the retry
+        retry_output_dir = f"{output_dir}-direct"
+        os.makedirs(retry_output_dir, exist_ok=True)
+
+        # re-run without the --proxy flag
+        retry_cmd = [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            "ace-phishkit:/phishkit",
+            os.environ.get("ACE3_PHISHKIT_IMAGE_URL", "phishkit"),
+            "/opt/venv/bin/python",
+            "/opt/app/scanner.py",
+            url,
+            "--output-dir",
+            retry_output_dir,
+        ]
+
+        process = Popen(
+            retry_cmd,
+            stdout=PIPE,
+            stderr=PIPE,
+            text=True,
+        )
+        try:
+            _stdout, _stderr = process.communicate(timeout=timeout)
+        except TimeoutExpired:
+            process.kill()
+            process.wait()
+            raise
+
+        for line in _stdout.splitlines():
+            logging.info(f"stdout(direct)> {line}")
+
+        if process.returncode != 0:
+            for line in _stderr.splitlines():
+                logging.info(f"stderr(direct)> {line}")
+
+        # prepend the original proxy attempt output so the error is visible in analysis
+        _stdout = f"--- PROXY ATTEMPT (failed, retried direct) ---\n{proxy_stdout}\n--- DIRECT ATTEMPT ---\n{_stdout}"
+
+        # copy retry output files into the main output directory
+        for entry in os.listdir(retry_output_dir):
+            src = os.path.join(retry_output_dir, entry)
+            dst = os.path.join(output_dir, entry)
+            if os.path.isfile(src):
+                shutil.copy2(src, dst)
+            elif os.path.isdir(src):
+                shutil.copytree(src, dst, dirs_exist_ok=True)
 
     with open(os.path.join(output_dir, "std.out"), "w") as fp:
         fp.write(_stdout)
