@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.18] - 2026-03-18
+
+- [switch to per-type limit on max observable count](https://github.com/ACE-Collective/ace3/pull/82)
+- [add a step to upgrade install packages at build](https://github.com/ACE-Collective/ace3/pull/81)
+- [fix issue with BOM in 7bit encoding](https://github.com/ACE-Collective/ace3/pull/80)
+
 ## [3.0.14] - 2026-03-13
 
 - [Jinja2 support for summary details section](https://github.com/ACE-Collective/ace3/pull/72)
