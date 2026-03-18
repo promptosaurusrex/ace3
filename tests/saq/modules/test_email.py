@@ -971,6 +971,44 @@ def test_o365_journal_email_parsing_quoted_printable_meta(root_analysis, datadir
     assert email_analysis.message_id == '<AAAAAA1111BBBBBB2222@AAAAAA1111.namprd10.prod.outlook.com>'
 
 @pytest.mark.integration
+def test_o365_journal_email_parsing_7bit_bom_meta(root_analysis, datadir):
+    """Test that O365 journal meta block is parsed correctly when using 7bit CTE with a UTF-8 BOM.
+
+    When the meta block uses Content-Transfer-Encoding: 7bit and contains a UTF-8 BOM,
+    get_payload(decode=True) mangles the BOM via raw-unicode-escape encoding, causing the
+    meta regex to fail. The fix uses get_payload() (without decode) for 7bit/8bit parts.
+    """
+
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(str(datadir / 'emails/o365_journaled_7bit_bom_meta.email.rfc822'))
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+
+    file_observable = root_analysis.get_observable(file_observable.uuid)
+    assert file_observable
+    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    assert isinstance(email_analysis, EmailAnalysis)
+    email_analysis.load_details()
+    assert email_analysis.parsing_error is None
+    assert email_analysis.email
+    assert email_analysis.env_mail_from == 'john.smith@contractor.example'
+    assert isinstance(email_analysis.env_rcpt_to, list)
+    assert len(email_analysis.env_rcpt_to) == 3
+    assert 'alice@acmecorp.com' in email_analysis.env_rcpt_to
+    assert 'bob@acmecorp.com' in email_analysis.env_rcpt_to
+    assert 'carol@acmecorp.com' in email_analysis.env_rcpt_to
+    assert email_analysis.message_id == '<000001dcb67c$11223344$55667788$@contractor.example>'
+
+@pytest.mark.integration
 def test_nested_rfc822_pdf_extraction(root_analysis, datadir):
     """Test that PDFs embedded in nested message/rfc822 parts are properly extracted.
 

@@ -566,17 +566,28 @@ class EmailAnalyzer(AnalysisModule):
             # look for what looks like the office365 meta part
             if o365_meta_part is None:
                 if part.get_content_type() == 'text/plain':
-                    target_payload_bytes = part.get_payload(decode=True)
-                    if target_payload_bytes is None:
-                        continue
+                    cte = str(part.get('content-transfer-encoding', '')).strip().lower()
 
-                    charset = part.get_content_charset() or "utf-8"
+                    if cte in ('quoted-printable', 'base64'):
+                        # For encoded content, decode=True properly decodes the CTE to raw bytes
+                        target_payload_bytes = part.get_payload(decode=True)
+                        if target_payload_bytes is None:
+                            continue
 
-                    try:
-                        target_payload = target_payload_bytes.decode(charset)
-                    except (UnicodeDecodeError, LookupError):
-                        # (do the best you can)
-                        target_payload = target_payload_bytes.decode("utf-8", errors="ignore")
+                        charset = part.get_content_charset() or "utf-8"
+
+                        try:
+                            target_payload = target_payload_bytes.decode(charset)
+                        except (UnicodeDecodeError, LookupError):
+                            # (do the best you can)
+                            target_payload = target_payload_bytes.decode("utf-8", errors="ignore")
+                    else:
+                        # For 7bit/8bit, get_payload(decode=True) uses raw-unicode-escape
+                        # which mangles non-ASCII characters like the UTF-8 BOM.
+                        # get_payload() returns the string directly, preserving Unicode chars.
+                        target_payload = part.get_payload()
+                        if not isinstance(target_payload, str):
+                            continue
 
                     # some of these have this BOM at the start
                     target_payload = target_payload.lstrip("\ufeff")
