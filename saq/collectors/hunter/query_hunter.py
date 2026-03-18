@@ -682,12 +682,13 @@ class QueryHunt(Hunt):
                     os.close(fd)
 
                     file_obs = submission.root.add_file_observable(temp_file_path, target_path=file_content.file_name, move=True, volatile=file_content.volatile)
-                    for directive in file_content.directives:
-                        file_obs.add_directive(directive)
-                    for tag in file_content.tags:
-                        file_obs.add_tag(tag)
-                    if file_content.display_type is not None:
-                        file_obs.display_type = file_content.display_type
+                    if file_obs:
+                        for directive in file_content.directives:
+                            file_obs.add_directive(directive)
+                        for tag in file_content.tags:
+                            file_obs.add_tag(tag)
+                        if file_content.display_type is not None:
+                            file_obs.display_type = file_content.display_type
                     # note: display_value is not set for FileObservable as it's read-only
 
                 submission.root.details[QUERY_DETAILS_EVENTS].append(event)
@@ -726,12 +727,13 @@ class QueryHunt(Hunt):
                         os.close(fd)
 
                         file_obs = event_grouping[grouping_target].root.add_file_observable(temp_file_path, target_path=file_content.file_name, move=True, volatile=file_content.volatile)
-                        for directive in file_content.directives:
-                            file_obs.add_directive(directive)
-                        for tag in file_content.tags:
-                            file_obs.add_tag(tag)
-                        if file_content.display_type is not None:
-                            file_obs.display_type = file_content.display_type
+                        if file_obs:
+                            for directive in file_content.directives:
+                                file_obs.add_directive(directive)
+                            for tag in file_content.tags:
+                                file_obs.add_tag(tag)
+                            if file_content.display_type is not None:
+                                file_obs.display_type = file_content.display_type
                         # note: display_value is not set for FileObservable as it's read-only
 
                     event_grouping[grouping_target].root.details[QUERY_DETAILS_EVENTS].append(event)

@@ -241,6 +241,10 @@ RUN sed -i -e 's/MinProtocol = TLSv1.2/MinProtocol = TLSv1.0/' /etc/ssl/openssl.
 # XXX is this line needed?
 RUN mkdir -p /opt/ace/data/logs /opt/ace/data/error_reports /opt/ace/data/external /opt/ace/data/var
 
+# 03/18/2026 - the base image isn't always completely patched
+# and corporate VM processes aren't completely reasonable
+RUN apt-get update && apt-get upgrade -y 
+
 # ------------------------------------------------------------------------------------------------
 # ai tools setup
 # ------------------------------------------------------------------------------------------------
@@ -264,7 +268,7 @@ USER root
 
 # ACE_VERSION is set late in the Dockerfile so that version bumps don't
 # invalidate the expensive apt-get, pip, and John the Ripper build layers
-ARG ACE_VERSION=3.0.17
+ARG ACE_VERSION=3.0.18
 LABEL version="${ACE_VERSION}"
 ENV ACE_VERSION=${ACE_VERSION}
 

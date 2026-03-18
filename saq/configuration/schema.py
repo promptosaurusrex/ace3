@@ -40,7 +40,7 @@ class GlobalConfig(BaseModel):
     memory_limit_kill: int = Field(..., description="kill a worker when it uses this much memory (in MB)")
     encrypted_passwords_db: str = Field(..., description="this is the name of the database configuration SECTION (database_SECTION) we use to query for encrypted passwords")
     maximum_analysis_disk_size: int = Field(..., description="maximum allowed size in bytes for an analysis (JSON + size of file observables); set this to 0 to disable this functionality")
-    maximum_observable_count: int = Field(..., description="the total number of observables a single root analysis can have; once this threshold is met, no more observables can be added; set to 0 to disable this functionality")
+    maximum_observable_count: dict[str, int] = Field(default_factory=dict, description="per-type observable limits; once a type's threshold is met, no more observables of that type can be added; types not listed have no limit")
     default_proxy: Optional[str] = Field(default=None, description="If set, all http/https requests will use this proxy by default")
 
 class ServiceConfig(BaseModel):

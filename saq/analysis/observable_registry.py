@@ -2,7 +2,7 @@ import logging
 from datetime import datetime
 from typing import Dict, Optional, Callable, Any
 
-from saq.analysis.errors import ExcessiveObservablesError, ExcessiveFileDataSizeError
+from saq.analysis.errors import ExcessiveFileDataSizeError
 from saq.constants import F_FILE
 from saq.environment import get_global_runtime_settings
 from saq.analysis.observable import Observable
@@ -14,22 +14,22 @@ from saq.analysis.observable import Observable
 class ObservableRegistry:
     """Manages the lifecycle and storage of observables within an analysis context."""
     
-    def __init__(self, 
-                 observable_limit: Optional[int] = None,
+    def __init__(self,
+                 observable_limits: Optional[Dict[str, int]] = None,
                  size_limit: Optional[int] = None,
                  get_total_size: Optional[Callable[[], int]] = None,
                  on_modified: Optional[Callable[[], None]] = None):
         """
         Initialize the ObservableRegistry.
-        
+
         Args:
-            observable_limit: Maximum number of observables allowed. If None, uses global config.
+            observable_limits: Per-type observable limits. If None, uses global config.
             size_limit: Maximum analysis disk size allowed. If None, no size checking.
             get_total_size: Function to get current total size for size checking.
             on_modified: Callback function to call when registry is modified.
         """
         self._store: Dict[str, Observable] = {}
-        self._observable_limit = observable_limit
+        self._observable_limits = observable_limits
         self._size_limit = size_limit
         self._get_total_size = get_total_size
         self._on_modified = on_modified
@@ -81,29 +81,37 @@ class ObservableRegistry:
         
         return result
     
-    def record(self, observable: Observable) -> Observable:
+    def record(self, observable: Observable) -> Optional[Observable]:
         """
         Records the given observable into the store if it does not already exist.
-        Returns the new one if recorded or the existing one if not.
+        Returns the new one if recorded, the existing one if it already exists,
+        or None if the per-type limit has been reached.
         """
         from saq.analysis.observable import Observable
         assert isinstance(observable, Observable)
-        
+
         # Check if observable already exists
         for o in self._store.values():
             if o == observable:
                 logging.debug("returning existing observable {} ({}) [{}] <{}> for {} ({}) [{}] <{}>".format(
                     o, id(o), o.uuid, o.type, observable, id(observable), observable.uuid, observable.type))
                 return o
-        
-        # Check observable limit
-        observable_limit = self._observable_limit
-        if observable_limit is None:
-            observable_limit = get_global_runtime_settings().observable_limit
-        
-        if observable_limit and len(self._store) >= observable_limit:
-            logging.warning("too many observables added to registry")
-            raise ExcessiveObservablesError()
+
+        # Check per-type observable limits
+        observable_limits = self._observable_limits
+        if observable_limits is None:
+            observable_limits = get_global_runtime_settings().observable_limits
+
+        if observable_limits:
+            type_limit = observable_limits.get(observable.type)
+            if type_limit is not None:
+                current_count = len(self.get_by_type(observable.type))
+                if current_count >= type_limit:
+                    logging.warning(
+                        "observable type %s has reached its limit of %s",
+                        observable.type, type_limit,
+                    )
+                    return None
         
         # Check size limit for file observables
         from saq.observables.file import FileObservable
