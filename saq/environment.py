@@ -46,7 +46,7 @@ class GlobalRuntimeSettings(BaseModel):
     log_directory: str = Field(default="logs", description="global logging directory (relative to DATA_DIR)")
     managed_network_cidrs: list[str] = Field(default_factory=list, description="list of CIDR notation for managed networks")
     module_stats_dir: str = Field(default="stats/modules", description="directory containing module statistical runtime info")
-    observable_limit: int = Field(default=0, description="")
+    observable_limits: dict[str, int] = Field(default_factory=dict, description="per-type observable limits")
     saq_home: str = Field(default="/opt/ace", description="base installation directory of ace")
     saq_node: Optional[str] = Field(default=None, description="current engine node name")
     saq_node_id: Optional[int] = Field(default=None, description="current engine node id")
@@ -201,7 +201,7 @@ def initialize_environment(
     get_global_runtime_settings().company_name = get_config().global_settings.company_name
     get_global_runtime_settings().company_id = get_config().global_settings.company_id
     get_global_runtime_settings().local_domains = get_config().global_settings.local_domains
-    get_global_runtime_settings().observable_limit = get_config().global_settings.maximum_observable_count
+    get_global_runtime_settings().observable_limits = get_config().global_settings.maximum_observable_count
 
     minutes, seconds = map(
         int, get_config().global_settings.lock_timeout.split(":")

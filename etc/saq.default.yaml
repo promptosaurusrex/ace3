@@ -100,10 +100,12 @@ global:
   # this is to prevent things like emails with tons of attachments from expanding into hundreds of gigabytes in size and using all available disk space
   # set this to 0 to disable this functionality
   maximum_analysis_disk_size: 0
-  # the total number of observables a single root analysis can have
-  # once this threshold is met, no more observables can be added
-  # set to 0 to disable this functionality
-  maximum_observable_count: 800
+  # per-type observable limits for a single root analysis
+  # once a type's threshold is met, no more observables of that type can be added
+  # types not listed here have no limit
+  maximum_observable_count:
+    file: 500
+    url: 500
   # optional default proxy to use for all http/https requests
   # leave empty to not use a proxy at all
   default_proxy:
