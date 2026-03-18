@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import shutil
 from typing import TYPE_CHECKING
 import uuid
 
@@ -66,13 +67,16 @@ class AnalysisDetailsPersistenceManager:
 
         json_data = json.dumps(analysis.details, sort_keys=True, cls=_JSONEncoder)
 
-        # save the details
+        # save the details using atomic write-then-rename to avoid partial reads
         logging.debug("SAVE: saving external details for {} to {}".format(analysis, analysis.external_details_path))
-        with open(os.path.join(get_base_dir(), self.file_manager.storage_dir, '.ace', analysis.external_details_path), 'w') as fp:
+        final_path = os.path.join(get_base_dir(), self.file_manager.storage_dir, '.ace', analysis.external_details_path)
+        temp_path = f"{final_path}.tmp"
+        with open(temp_path, 'w') as fp:
             fp.write(json_data)
             _track_writes()
+        shutil.move(temp_path, final_path)
 
-        analysis.details_size = os.path.getsize(os.path.join(get_base_dir(), self.file_manager.storage_dir, '.ace', analysis.external_details_path))
+        analysis.details_size = os.path.getsize(final_path)
         return True
 
     def flush(self, analysis: "Analysis"):
