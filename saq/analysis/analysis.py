@@ -303,8 +303,8 @@ class Analysis(BaseNode):
     # observable management (public interface)
     # ------------------------------------------------------------------------
 
-    def add_observable(self, observable: "Observable") -> "Observable":
-        """Adds the Observable to this Analysis.  Returns the Observable object, or the one that already existed."""
+    def add_observable(self, observable: "Observable") -> Optional["Observable"]:
+        """Adds the Observable to this Analysis.  Returns the Observable object, the one that already existed, or None if per-type limit reached."""
         from saq.analysis.observable import Observable
         assert isinstance(observable, Observable)
         return self.analysis_tree_manager.add_observable(self, observable)

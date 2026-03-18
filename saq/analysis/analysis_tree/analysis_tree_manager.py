@@ -139,9 +139,8 @@ class AnalysisTreeManager:
             #if self.root_analysis.total_size + source_size > size_limit:
                 #raise ExcessiveFileDataSizeError(f"size limit of {size_limit} exceeded for {source} in {self.root_analysis}")
 
-    # TODO: deal with too many observables here
-    def add_observable(self, analysis: Analysis, observable: Observable) -> Observable:
-        """Adds the Observable to this Analysis.  Returns the Observable object, or the one that already existed."""
+    def add_observable(self, analysis: Analysis, observable: Observable) -> Optional[Observable]:
+        """Adds the Observable to this Analysis.  Returns the Observable object, the one that already existed, or None if per-type limit reached."""
         assert isinstance(analysis, Analysis)
         assert isinstance(observable, Observable)
 
@@ -159,8 +158,11 @@ class AnalysisTreeManager:
         self._raise_for_size_limit(observable, sys.getsizeof(observable.json))
 
         # record the observable
-        # we may get back an existing observable if it already exists in the registry
+        # we may get back an existing observable if it already exists in the registry,
+        # or None if the per-type limit has been reached
         observable = self.observable_registry.record(observable)
+        if observable is None:
+            return None
 
         # modify the analysis tree
         analysis.add_observable_to_tree(observable)

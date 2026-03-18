@@ -4,7 +4,6 @@ import uuid
 import pytest
 
 from saq.analysis.analysis import Analysis
-from saq.analysis.errors import ExcessiveObservablesError
 from saq.analysis.io_tracking import _get_io_read_count, _get_io_write_count
 from saq.analysis.root import RootAnalysis, Submission
 from saq.configuration.config import get_config
@@ -116,16 +115,20 @@ def test_is_on_detection_path():
 
 @pytest.mark.unit
 def test_too_many_observables(monkeypatch):
-    monkeypatch.setattr(get_global_runtime_settings(), "observable_limit", 1)
+    monkeypatch.setattr(get_global_runtime_settings(), "observable_limits", {F_TEST: 1})
     root = RootAnalysis(tool="test", tool_instance="test", alert_type="test", uuid=str(uuid.uuid4()))
-    assert root.add_observable_by_spec(F_TEST, "test")
-    with pytest.raises(ExcessiveObservablesError):
-        root.add_observable_by_spec(F_TEST, "test2")
+    assert root.add_observable_by_spec(F_TEST, "test") is not None
+    # exceeding the per-type limit returns None
+    assert root.add_observable_by_spec(F_TEST, "test2") is None
 
-    monkeypatch.setattr(get_global_runtime_settings(), "observable_limit", 2)
-    assert root.add_observable_by_spec(F_TEST, "test2")
-    with pytest.raises(ExcessiveObservablesError):
-        root.add_observable_by_spec(F_TEST, "test3")
+    # types without a limit are unrestricted
+    assert root.add_observable_by_spec(F_FQDN, "example.com") is not None
+    assert root.add_observable_by_spec(F_FQDN, "example.org") is not None
+
+    # raising the limit allows more of the limited type
+    monkeypatch.setattr(get_global_runtime_settings(), "observable_limits", {F_TEST: 2})
+    assert root.add_observable_by_spec(F_TEST, "test2") is not None
+    assert root.add_observable_by_spec(F_TEST, "test3") is None
 
 @pytest.mark.unit
 def test_move_root_analysis(tmpdir, root_analysis):
