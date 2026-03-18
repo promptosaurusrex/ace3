@@ -1,0 +1,75 @@
+Return-Path: <exservice@acmecorp.com>
+Delivered-To: journal@testorg.example.com
+Received: from BL0PR07CU001.outbound.protection.outlook.com (mail-bl0pr07cu00102.outbound.protection.outlook.com [192.0.2.1])
+	by smtp-3.testorg.example.com (Postfix) with ESMTPS id ABCDE12345
+	for <journal@testorg.example.com>; Wed, 18 Mar 2026 02:12:50 +0000 (UTC)
+Content-Type: multipart/mixed;
+	boundary="_test-boundary-7bit-bom-1234_"
+Subject: RE: Test Subject Line
+CC: "'Test User 1'" <user1@partner.example>,
+	"'Test User 2'" <user2@partner.example>,
+	<user3@contractor.example>
+To: "'Jane Doe'" <jane.doe@partner.example>
+From: "John Smith" <john.smith@contractor.example>
+MIME-Version: 1.0
+Sender:
+	<MicrosoftExchange329e71ec88ae4615bbc36ab6ce41109e@TestOrg.onmicrosoft.com>
+Message-ID: <aabbccdd-1122-3344-5566-778899aabbcc@journal.report.generator>
+Date: Wed, 18 Mar 2026 02:12:50 +0000
+X-MS-PublicTrafficType: Email
+X-MS-Journal-Report: 11111111-2222-3333-4444-555555555555
+X-MS-Exchange-Parent-Message-Id:
+	<000001dcb67c$11223344$55667788$@contractor.example>
+Auto-Submitted: auto-generated
+X-MS-Exchange-Generated-Message-Source: Journal Agent
+X-MS-TrafficTypeDiagnostic: DS1PR01MB8774:EE_JournalingReport
+X-OriginatorOrg: TestOrg.onmicrosoft.com
+X-MS-Exchange-CrossTenant-Network-Message-Id:
+	12345678-abcd-ef01-2345-678901234567
+X-MS-Exchange-Transport-CrossTenantHeadersStamped: DS1PR01MB8774
+
+--_test-boundary-7bit-bom-1234_
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+﻿Sender: john.smith@contractor.example
+Subject: RE: Test Subject Line
+Message-Id: <000001dcb67c$11223344$55667788$@contractor.example>
+Recipient: alice@acmecorp.com
+Recipient: bob@acmecorp.com
+Recipient: carol@acmecorp.com
+
+--_test-boundary-7bit-bom-1234_
+Content-Type: message/rfc822
+
+Received: from BY3PR05CA0014.namprd05.prod.outlook.com (2603:10b6:a03:254::19)
+ by DS1PR01MB8774.prod.exchangelabs.com (2603:10b6:8:220::15) with Microsoft
+ SMTP Server (version=TLS1_2, cipher=TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) id
+ 15.20.9700.24; Wed, 18 Mar 2026 02:12:43 +0000
+From: "John Smith" <john.smith@contractor.example>
+To: "'Jane Doe'" <jane.doe@partner.example>
+CC: "'Test User 1'" <user1@partner.example>,
+	"'Test User 2'" <user2@partner.example>,
+	<user3@contractor.example>
+Subject: RE: Test Subject Line
+Date: Wed, 18 Mar 2026 09:11:27 +0700
+Message-ID: <000001dcb67c$11223344$55667788$@contractor.example>
+MIME-Version: 1.0
+Content-Type: multipart/alternative;
+	boundary="_inner-boundary-7bit-bom-1234_"
+
+--_inner-boundary-7bit-bom-1234_
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+This is a test email body for the 7bit BOM meta block test.
+
+--_inner-boundary-7bit-bom-1234_
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+<html><body><p>This is a test email body for the 7bit BOM meta block test.</p></body></html>
+
+--_inner-boundary-7bit-bom-1234_--
+
+--_test-boundary-7bit-bom-1234_--
