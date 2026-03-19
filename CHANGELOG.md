@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.19] - 2026-03-19
+
+- [Phishkit proxy fallback](https://github.com/ACE-Collective/ace3/pull/85)
+- [fix issue with partial JSON reads mid-write](https://github.com/ACE-Collective/ace3/pull/84)
+
 ## [3.0.18] - 2026-03-18
 
 - [switch to per-type limit on max observable count](https://github.com/ACE-Collective/ace3/pull/82)
