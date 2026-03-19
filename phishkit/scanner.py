@@ -162,12 +162,41 @@ class Scanner:
         except Exception as e:
             print(f"exception parsing network.LoadingFinished event: {event}: {e}")
 
+    async def loading_failed_handler(self, event: mycdp.network.LoadingFailed):
+        try:
+            error_text = str(event.error_text) if event.error_text else "unknown"
+            canceled = bool(event.canceled) if event.canceled is not None else False
+            blocked_reason = str(event.blocked_reason) if event.blocked_reason else None
+            print(f"network request failed: requestId={event.request_id} error={error_text} canceled={canceled}")
+
+            url = None
+            for entry in reversed(self.requests):
+                if entry.get("requestId") == event.request_id and entry.get("type") == "request":
+                    url = entry.get("url")
+                    break
+
+            error_entry = {
+                "date": datetime.now().isoformat(),
+                "type": "error",
+                "requestId": event.request_id,
+                "error_text": error_text,
+                "canceled": canceled,
+            }
+            if url:
+                error_entry["url"] = url
+            if blocked_reason:
+                error_entry["blocked_reason"] = blocked_reason
+            self.requests.append(error_entry)
+        except Exception as e:
+            print(f"exception parsing network.LoadingFailed event: {event}: {e}")
+
     async def send_handler(self, event: mycdp.network.RequestWillBeSent):
         # print(f"send handler callback received event {event}")
         try:
             request = {
                 "date": datetime.now().isoformat(),
                 "type": "request",
+                "requestId": event.request_id,
                 "method": event.request.method,
                 "url": event.request.url,
                 "headers": event.request.headers,
@@ -373,6 +402,7 @@ class Scanner:
             sb.cdp.add_handler(mycdp.network.RequestWillBeSent, self.send_handler)
             sb.cdp.add_handler(mycdp.network.ResponseReceived, self.receive_handler)
             sb.cdp.add_handler(mycdp.network.LoadingFinished, self.loading_finished_handler)
+            sb.cdp.add_handler(mycdp.network.LoadingFailed, self.loading_failed_handler)
 
             # phishkits detecting on User Agent + Sec-Ch-Ua-Platform on 2025-02-26
             sb.execute_cdp_cmd(
