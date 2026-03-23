@@ -1,0 +1,104 @@
+# Extensions whose response bodies are skipped when appending sub-request
+# content to dom.html after a scan completes. The scan itself still fetches
+# these resources — this only controls what gets written into the DOM output.
+skip_body_extensions:
+  - ".apk"
+  - ".avi"
+  - ".css"
+  - ".gif"
+  - ".ico"
+  - ".img"
+  - ".jpeg"
+  - ".jpg"
+  - ".mkv"
+  - ".mp4"
+  - ".png"
+  - ".svg"
+  - ".woff2"
+
+# URL patterns whose response bodies are skipped when appending sub-request
+# content to dom.html. A match is any URL that *contains* the pattern string.
+# The scan still fetches these URLs — this only prevents their bodies from
+# being written into the DOM output.
+skip_body_url_patterns:
+  - "apple-mapkit.com"     # Part of top 10 domains by traffic usage in SmartProxy statistics
+  - "assets.msn.com"
+  - "bing.com/fd/"
+  - "bing.com/hp/"
+  - "bing.com/rewardsapp"
+  - "bing.com/th?"
+  - "browser.events.data.msn.com"
+  - "c.pub.network"        # High bandwidth usage of week 2024-08-27
+  - "cdn.flashtalking.com" # High usage 2024-09-30
+  - "disney-plus.net"      # High traffic usage
+  - "doubleclick.net"
+  - "ggcdashboard.com"     # High bandwidth usage the week of 2024-04-15
+  - "google-analytics"
+  - "googleapis.com"
+  - "googletagmanager.com"
+  - "googletagservices.com"
+  - "gstatic.com"
+  - "gvt1.com"             # Google Video Transcoding cache server
+  - "hd.pics"              # High bandwidth usage the week of 2024-04-08
+  - "ibb.co"               # High bandwidth usage the week of 2024-04-08
+  - "img-s-msn-com"
+  - "m.media-amazon.com"   # High usage 2024-09-30
+  - "parastorage.com"      # Part of top 10 domains by traffic usage in SmartProxy statistics
+  - "r.bing.com"
+  - "redd.it"              # High bandwidth usage the week of 2024-04-08
+  - "shopify.com"          # Part of top 10 domains by traffic usage in SmartProxy statistics
+  - "squarespace-cdn.com"  # Part of top 10 domains by traffic usage in SmartProxy statistics
+  - "squarespace.com"      # Part of top 10 domains by traffic usage in SmartProxy statistics
+  - "th.bing.com"
+  - "website-files.com"    # Part of top 10 domains by traffic usage in SmartProxy statistics
+  - "wixstatic.com"        # Part of top 10 domains by traffic usage in SmartProxy statistics
+
+# Bypass definitions used to detect and click through warning/challenge pages.
+# Each entry has:
+#   type      — label for logging
+#   searches  — strings to look for in page source (any match triggers the bypass)
+#   selectors — CSS selectors to try clicking (tried in order, first success wins)
+#   handler   — name of a registered Python handler (instead of selectors)
+#
+# Use either "selectors" or "handler", not both.
+# Available handler names: visual_checkbox_bypass
+#
+# This list replaces the built-in defaults entirely (not merged), so include
+# all entries you want active.
+bypasses:
+  - type: "CloudFlare Phishing"
+    searches:
+      - "flagged as phishing"
+      - "This website has been reported for potential phishing"
+      - "Phishing is when a site attempts to steal sensitive"
+    selectors:
+      - "#cf-error-details > div.cf-section.cf-wrapper > div > div > form > button"
+      - "button.cf-btn"
+
+  - type: "Antibot"
+    searches:
+      - "Please complete the security check to access the website."
+      - "Verify you are human by completing the action below"
+      - "Verifying you are human"
+      - "needs to review the security of your connection"
+      - "challenges.cloudflare.com/turnstile"
+    handler: "visual_checkbox_bypass"
+
+  - type: "Fake Ivan CloudFlare"
+    searches:
+      - '"buttonLabel":"Verify",'
+    selectors:
+      - "#richEditor > div.GuidedModeInstructions__container > div > span"
+
+# Per-handler configuration. Any bypass that references a handler name
+# automatically receives that handler's config dict at runtime.
+handlers:
+  visual_checkbox_bypass:
+    # Base64-encoded PNG images used to locate and click checkboxes on
+    # challenge pages. The scanner compares these against a screenshot.
+    # Add new variants for any checkbox style you want to detect
+    # (CloudFlare turnstile, custom human-verification widgets, etc.).
+    checkbox_pngs:
+      - "iVBORw0KGgoAAAANSUhEUgAAAB4AAAAdCAYAAAC9pNwMAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAACdSURBVEhL7ZbBCQMhEEVTi5agdSjYm4JYkdqBzUz4wgYXdnPJEAOZw7uN73n8D6017eA3wtZaSilRrZXGGCzABSfca+sULqVcPuYA7rV1Cvfe55FzjpRSLHjvp7O1dh8+fncl+ITDu7YkLGEWJAwkLGEWJAwkvCeMeYIDzukTQpjOt9Nn29jDBM05v0YfB5i3MUYyxtyHv8m/hTU9Ad+2Lz6J6lqSAAAAAElFTkSuQmCC"
+      - "iVBORw0KGgoAAAANSUhEUgAAAB4AAAAfCAYAAADwbH0HAAAABHNCSVQICAgIfAhkiAAAABl0RVh0U29mdHdhcmUAZ25vbWUtc2NyZWVuc2hvdO8Dvz4AAADNSURBVEiJ7dexDYMwEIXhPygdgikM04DEJAzjSVywhgtKsKfAQEGTVERYEVUsEil+nV9xn64737Zte/CFJN9AI3xp7sfHNE10Xcc4jjjnggBZllGWJVVVkef5q/c2VkqhtQ6GAjjn0FqjlPJ6b2NjDABt2yKECAJba5FSYq31em/jdV0BgqHHWcuynMNXJsIRjnCEIxzhCP8YnKYpwNuZ8kmGYfBm7/FuLiEEfd8jpQwG7ymK4hxumoYkSTDGMM9zEHA/b+u69vrb333anrLARsXk3WtJAAAAAElFTkSuQmCC"
+      - "iVBORw0KGgoAAAANSUhEUgAAACMAAAAiCAYAAADVhWD8AAAABHNCSVQICAgIfAhkiAAAABl0RVh0U29mdHdhcmUAZ25vbWUtc2NyZWVuc2hvdO8Dvz4AAAEISURBVFiF7dfNaYVAFEDh80I22oBag26sQmEq0YpsZECxCBGLGHXvD7hIFsGQQG5A3yPmwZytw/VDZmC8bdv2xj/p5WrA1yxGymKkXn972LYtdV3T9z3Lspx+ieM4+L5PmqZEUSSuu0lHu+s6iqI4DZDKskwEiV+mqioA4jhGKUUQBKcBxhi01jRNQ1mWIkbcM+M4AtwNAQiCAKUUAMMwiOtEzDRNn4Me0T5nnufjmCuyGCmLkbIYKYuRshgpi5F6DozrusDHxegR7XP2uYcwnucBoLWm7/u7IVrrb3N/6s/vwHmeE4bhMcwOqqoKYwzrup4GuK6L7/skSXLu7+CKnuM0XZHFSL0D8Ydjznm/9PUAAAAASUVORK5CYII="

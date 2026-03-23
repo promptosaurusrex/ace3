@@ -17,6 +17,8 @@ import magic
 
 logger = logging.getLogger(__name__)
 
+SHARED_CONFIG = "/phishkit/config/phishkit_config.yaml"
+
 PROXY_ERROR_PATTERNS = [
     "ERR_TUNNEL_CONNECTION_FAILED",
     "ERR_PROXY_CONNECTION_FAILED",
@@ -30,6 +32,25 @@ def _has_proxy_error(stdout: str, stderr: str) -> bool:
     return any(pattern in combined for pattern in PROXY_ERROR_PATTERNS)
 
 
+def _sync_config(source_path: str | None) -> str | None:
+    """Copy phishkit config to the shared phishkit volume.
+
+    Returns the destination path inside the shared volume if successful, None otherwise.
+    """
+    if not source_path or not os.path.isfile(source_path):
+        logger.info("no config found at %s", source_path)
+        return None
+
+    try:
+        os.makedirs(os.path.dirname(SHARED_CONFIG), exist_ok=True)
+        shutil.copy2(source_path, SHARED_CONFIG)
+        logger.info("synced config %s to %s", source_path, SHARED_CONFIG)
+        return SHARED_CONFIG
+    except Exception as e:
+        logger.warning("failed to sync config: %s", e)
+        return None
+
+
 def _run_scanner(
     target_args: list,
     output_dir: str,
@@ -37,11 +58,15 @@ def _run_scanner(
     timeout: int,
     proxy: str | None,
     proxy_fallback_to_direct: bool,
+    config_path: str | None = None,
 ) -> tuple:
     """Run the phishkit scanner, optionally retrying without proxy on proxy errors.
 
     Returns (stdout, stderr, returncode).
     """
+    abs_config = os.path.join("/opt/ace", config_path) if config_path else None
+    synced = _sync_config(abs_config)
+
     cmd = [
         "docker",
         "run",
@@ -57,6 +82,8 @@ def _run_scanner(
     ]
     if proxy:
         cmd.extend(["--proxy", proxy])
+    if synced:
+        cmd.extend(["--config", synced])
 
     process = Popen(cmd, stdout=PIPE, stderr=PIPE, text=True)
     try:
@@ -94,6 +121,8 @@ def _run_scanner(
             "--output-dir",
             retry_output_dir,
         ]
+        if synced:
+            retry_cmd.extend(["--config", synced])
 
         process = Popen(retry_cmd, stdout=PIPE, stderr=PIPE, text=True)
         try:
@@ -191,7 +220,7 @@ def _correct_file_extension(file_path: str) -> str:
     return new_file_path
 
 @app.task
-def scan_file(file_path: str, timeout: int = 15, proxy: str = None, proxy_fallback_to_direct: bool = False) -> str:
+def scan_file(file_path: str, timeout: int = 15, proxy: str = None, proxy_fallback_to_direct: bool = False, config_path: str = None) -> str:
     # create a place to put the file we're going to render in the browser
     job_id = str(uuid.uuid4())
     input_dir = f"/phishkit/input/{job_id}"
@@ -215,12 +244,13 @@ def scan_file(file_path: str, timeout: int = 15, proxy: str = None, proxy_fallba
         timeout=timeout,
         proxy=proxy,
         proxy_fallback_to_direct=proxy_fallback_to_direct,
+        config_path=config_path,
     )
 
     return _process_output(job_id, output_dir)
 
 @app.task
-def scan_url(url: str, timeout: int = 15, proxy: str = None, proxy_fallback_to_direct: bool = False) -> str:
+def scan_url(url: str, timeout: int = 15, proxy: str = None, proxy_fallback_to_direct: bool = False, config_path: str = None) -> str:
     # create an output directory for the scan
     job_id = str(uuid.uuid4())
     output_dir = f"/phishkit/output/{job_id}"
@@ -235,6 +265,7 @@ def scan_url(url: str, timeout: int = 15, proxy: str = None, proxy_fallback_to_d
         timeout=timeout,
         proxy=proxy,
         proxy_fallback_to_direct=proxy_fallback_to_direct,
+        config_path=config_path,
     )
 
     if returncode != 0:

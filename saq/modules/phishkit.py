@@ -160,6 +160,7 @@ class PhishkitAnalyzerConfig(AnalysisModuleConfig):
     scanner_timeout: int = Field(default=15, description="Timeout in seconds for the phishkit scanner process.")
     proxy: Optional[str] = Field(default=None, description="Named proxy config to route scanner traffic through.")
     proxy_fallback_to_direct: bool = Field(default=True, description="If true, retry scan without proxy on proxy-related failures.")
+    config_path: str = Field(default="etc/phishkit_config.yaml", description="Path to phishkit YAML config file, relative to SAQ_HOME.")
 
 class PhishkitAnalyzer(AnalysisModule):
     @classmethod
@@ -340,7 +341,7 @@ class PhishkitAnalyzer(AnalysisModule):
             analysis.scan_type = SCAN_TYPE_URL
             
             try:
-                analysis.job_id = scan_url(observable.value, analysis.output_dir, is_async=True, scanner_timeout=self.config.scanner_timeout, proxy=self._proxy_string, proxy_fallback_to_direct=self.config.proxy_fallback_to_direct)
+                analysis.job_id = scan_url(observable.value, analysis.output_dir, is_async=True, scanner_timeout=self.config.scanner_timeout, proxy=self._proxy_string, proxy_fallback_to_direct=self.config.proxy_fallback_to_direct, config_path=self.config.config_path)
                 self.delay_analysis(observable, analysis, seconds=5, timeout_seconds=max(self.config.scanner_timeout, 60))
                 
             except Exception as e:
@@ -354,7 +355,7 @@ class PhishkitAnalyzer(AnalysisModule):
             analysis.scan_type = SCAN_TYPE_FILE
             
             try:
-                analysis.job_id = scan_file(observable.full_path, analysis.output_dir, is_async=True, scanner_timeout=self.config.scanner_timeout, proxy=self._proxy_string, proxy_fallback_to_direct=self.config.proxy_fallback_to_direct)
+                analysis.job_id = scan_file(observable.full_path, analysis.output_dir, is_async=True, scanner_timeout=self.config.scanner_timeout, proxy=self._proxy_string, proxy_fallback_to_direct=self.config.proxy_fallback_to_direct, config_path=self.config.config_path)
                 return self.delay_analysis(observable, analysis, seconds=5, timeout_seconds=max(self.config.scanner_timeout, 60))
                 
             except Exception as e:

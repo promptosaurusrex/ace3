@@ -1830,6 +1830,7 @@ analysis_module_phishkit_analyzer:
     - text/html
     - application/pdf
   fluent_bit_metrics_enabled: true
+  config_path: etc/phishkit_config.yaml
   fluent_bit_hostname: fluent-bit
   fluent_bit_port: 24224
   fluent_bit_metrics_tag: phishkit-metrics
