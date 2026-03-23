@@ -1099,6 +1099,43 @@ def test_process_query_results_file_observable_with_interpolated_tags(monkeypatc
 
 
 @pytest.mark.unit
+def test_process_query_results_skips_unresolved_interpolated_tags(monkeypatch, tmpdir):
+    """tags with unresolved interpolated placeholders should be omitted"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_unresolved_tags",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        tags=["mitre:${mitre_technique}", "static_tag"],
+        observable_mapping=[
+            ObservableMapping(fields=["src"], type="ipv4")
+        ]
+    )
+
+    # event does NOT contain the 'mitre_technique' field
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    # the unresolved tag should be skipped, static tag should remain
+    assert "static_tag" in submission.root.tags
+    assert "mitre:${mitre_technique}" not in submission.root.tags
+
+    # when the field IS present, the interpolated tag should be included
+    submissions = hunt.process_query_results([{"src": "1.2.3.4", "mitre_technique": "T1204.002"}])
+    assert submissions
+    submission = submissions[0]
+    assert "mitre:T1204.002" in submission.root.tags
+    assert "static_tag" in submission.root.tags
+
+
+@pytest.mark.unit
 def test_process_query_results_file_observable_with_all_properties(monkeypatch, tmpdir):
     """test F_FILE observable with directives, tags, and volatile all set"""
     import saq.collectors.hunter.query_hunter
