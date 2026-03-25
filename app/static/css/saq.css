@@ -521,3 +521,7 @@ nav[data-toggle="toc"] {
 .jump-highlight {
     animation: highlight-flash 2.0s ease-out;
 }
+
+.comment-text {
+    white-space: pre-wrap;
+}
