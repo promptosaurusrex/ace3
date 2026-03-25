@@ -19,7 +19,232 @@ import mycdp  # type: ignore
 from selenium_recaptcha_solver import RecaptchaSolver  # type: ignore
 from PIL import Image # type: ignore
 
-BYPASS_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+# Stealth JS to inject into ServiceWorker/Worker contexts via CDP.
+# Must be self-contained (no references to main page globals).
+SW_STEALTH_JS = """
+(function() {
+    const navProto = Object.getPrototypeOf(navigator);
+    if (navProto) {
+        Object.defineProperty(navProto, 'platform', {
+            get: () => 'Win32', configurable: true,
+        });
+    }
+    if (typeof OffscreenCanvas !== 'undefined') {
+        const _gc = OffscreenCanvas.prototype.getContext;
+        OffscreenCanvas.prototype.getContext = function(t, a) {
+            const c = _gc.call(this, t, a);
+            if (c && (t === 'webgl' || t === 'webgl2' || t === 'experimental-webgl')) {
+                const _gp = c.getParameter.bind(c);
+                c.getParameter = function(p) {
+                    if (p === 0x9245) return 'Intel Inc.';
+                    if (p === 0x9246) return 'Intel Iris OpenGL Engine';
+                    return _gp(p);
+                };
+            }
+            return c;
+        };
+    }
+})();
+"""
+
+BYPASS_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+BYPASS_CHROME_MAJOR = "146"
+BYPASS_CHROME_FULL = "146.0.0.0"
+
+# JavaScript to inject before any page scripts run, to mask automation signals.
+STEALTH_JS = """
+// 1. navigator.webdriver — handled natively by --disable-blink-features=AutomationControlled
+// Do NOT override via Object.defineProperty, as CreepJS lie detection will flag
+// a non-native getter on Navigator.prototype.webdriver.
+
+// 2. Fix Notification.permission for headless Chrome
+// Real Chrome returns 'default' when user hasn't interacted with permission prompt
+if (typeof Notification !== 'undefined') {
+    Object.defineProperty(Notification, 'permission', {
+        get: () => 'default',
+    });
+}
+
+// 3. Fix navigator.permissions.query to behave like real Chrome
+const originalQuery = window.navigator.permissions.query.bind(window.navigator.permissions);
+window.navigator.permissions.query = (parameters) => {
+    if (parameters.name === 'notifications') {
+        return Promise.resolve({ state: Notification.permission });
+    }
+    return originalQuery(parameters);
+};
+
+// 4. Fix navigator.plugins instanceof PluginArray check
+// Headless Chrome has plugins but the prototype chain is broken
+const originalPlugins = navigator.plugins;
+if (originalPlugins && !(originalPlugins instanceof PluginArray)) {
+    Object.defineProperty(Navigator.prototype, 'plugins', {
+        get: function() {
+            const p = originalPlugins;
+            Object.setPrototypeOf(p, PluginArray.prototype);
+            return p;
+        },
+        configurable: true,
+    });
+}
+
+// 5. Simulate taskbar by reducing screen.availHeight
+// Emulation.setDeviceMetricsOverride doesn't support setting availHeight
+// separately, so we override it in JS. CreepJS can detect this override
+// (Screen "lies"), but noTaskbar=true is a stronger headless indicator.
+Object.defineProperty(Screen.prototype, 'availHeight', {
+    get: () => screen.height - 40,
+    configurable: true,
+});
+
+// 6. Fix navigator.platform to match Windows UA spoof
+// Workers inherit the real OS platform. Override it on WorkerNavigator prototype
+// if we're in the main window context, inject via Page.addScriptToEvaluateOnNewDocument.
+// For the main context, fix navigator.platform to match our Windows UA spoof.
+if (typeof Navigator !== 'undefined') {
+    Object.defineProperty(Navigator.prototype, 'platform', {
+        get: () => 'Win32',
+        configurable: true,
+    });
+}
+
+// 7. Inject stealth overrides into Worker contexts
+// Page.addScriptToEvaluateOnNewDocument only covers the main page; Workers get a
+// clean global.  We intercept Blob construction and Worker creation to prepend
+// stealth overrides into any JavaScript blob that might be used as a Worker script.
+(function() {
+    const WORKER_STEALTH = [
+        '/* stealth */',
+        'const navProto = Object.getPrototypeOf(navigator);',
+        'if (navProto) {',
+        '  Object.defineProperty(navProto, "platform", { get: () => "Win32", configurable: true });',
+        '}',
+        'if (typeof OffscreenCanvas !== "undefined") {',
+        '  const _gc = OffscreenCanvas.prototype.getContext;',
+        '  OffscreenCanvas.prototype.getContext = function(t, a) {',
+        '    const c = _gc.call(this, t, a);',
+        '    if (c && (t==="webgl"||t==="webgl2"||t==="experimental-webgl")) {',
+        '      const _gp = c.getParameter.bind(c);',
+        '      c.getParameter = function(p) {',
+        '        if (p===0x9245) return "Intel Inc.";',
+        '        if (p===0x9246) return "Intel Iris OpenGL Engine";',
+        '        return _gp(p);',
+        '      };',
+        '    }',
+        '    return c;',
+        '  };',
+        '}',
+    ].join('\\n');
+
+    // Patch Worker/SharedWorker constructors for URL-based Workers.
+    function patchWorkerCtor(Orig, name) {
+        const Patched = function(scriptURL, options) {
+            if (options && options.type === 'module') {
+                return new Orig(scriptURL, options);
+            }
+            try {
+                const url = String(scriptURL);
+                if (url.startsWith('blob:')) {
+                    return new Orig(scriptURL, options);
+                }
+                const resolved = new URL(url, location.href).href;
+                const blob = new Blob(
+                    [WORKER_STEALTH + '\\nimportScripts("' + resolved + '");'],
+                    { type: 'application/javascript' }
+                );
+                return new Orig(URL.createObjectURL(blob), options);
+            } catch(e) {
+                return new Orig(scriptURL, options);
+            }
+        };
+        Patched.prototype = Orig.prototype;
+        Object.defineProperty(Patched, 'name', { value: name });
+        return Patched;
+    }
+
+    if (typeof Worker !== 'undefined') {
+        window.Worker = patchWorkerCtor(Worker, 'Worker');
+    }
+    if (typeof SharedWorker !== 'undefined') {
+        window.SharedWorker = patchWorkerCtor(SharedWorker, 'SharedWorker');
+    }
+})();
+
+// 8. Spoof WebGL renderer to hide SwiftShader
+// Chrome falls back to SwiftShader in Docker (no GPU). The renderer string
+// "SwiftShader" is a known headless signal. We override getParameter to
+// return a common integrated GPU string instead.
+(function() {
+    const SPOOFED_VENDOR = 'Intel Inc.';
+    const SPOOFED_RENDERER = 'Intel Iris OpenGL Engine';
+    const getParam = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function(param) {
+        // UNMASKED_VENDOR_WEBGL = 0x9245, UNMASKED_RENDERER_WEBGL = 0x9246
+        if (param === 0x9245) return SPOOFED_VENDOR;
+        if (param === 0x9246) return SPOOFED_RENDERER;
+        return getParam.call(this, param);
+    };
+    if (typeof WebGL2RenderingContext !== 'undefined') {
+        const getParam2 = WebGL2RenderingContext.prototype.getParameter;
+        WebGL2RenderingContext.prototype.getParameter = function(param) {
+            if (param === 0x9245) return SPOOFED_VENDOR;
+            if (param === 0x9246) return SPOOFED_RENDERER;
+            return getParam2.call(this, param);
+        };
+    }
+})();
+
+// 9. Fix CSS system colors for headless detection
+// Headless Chrome resolves the CSS system color "ActiveText" to rgb(255, 0, 0) because
+// no OS theme is loaded. Real Windows Chrome uses a different value.
+// CreepJS creates an element with inline style "background-color: ActiveText" and reads
+// the computed value. We inject a CSS rule that overrides this via !important.
+// This runs before <head> exists, so we observe the DOM and inject as soon as possible.
+(function() {
+    const css = '[style*="ActiveText"] { background-color: rgb(0, 102, 204) !important; }';
+    function injectStyle(parent) {
+        const s = document.createElement('style');
+        s.textContent = css;
+        parent.appendChild(s);
+    }
+    if (document.head) {
+        injectStyle(document.head);
+    } else if (document.documentElement) {
+        injectStyle(document.documentElement);
+    } else {
+        new MutationObserver((_, obs) => {
+            if (document.documentElement) {
+                obs.disconnect();
+                injectStyle(document.documentElement);
+            }
+        }).observe(document, { childList: true });
+    }
+})();
+
+// 9. Override matchMedia for hover/pointer CSS media queries
+// Xvfb/headless Chrome reports no input devices (hover:none, pointer:none).
+// We override matchMedia to report hover:hover and pointer:fine.
+const _origMatchMedia = window.matchMedia.bind(window);
+window.matchMedia = function(query) {
+    const result = _origMatchMedia(query);
+    const overrides = [
+        [/\(\s*hover\s*:\s*none\s*\)/, false],
+        [/\(\s*hover\s*:\s*hover\s*\)/, true],
+        [/\(\s*any-hover\s*:\s*none\s*\)/, false],
+        [/\(\s*any-hover\s*:\s*hover\s*\)/, true],
+        [/\(\s*pointer\s*:\s*none\s*\)/, false],
+        [/\(\s*pointer\s*:\s*fine\s*\)/, true],
+        [/\(\s*any-pointer\s*:\s*none\s*\)/, false],
+        [/\(\s*any-pointer\s*:\s*fine\s*\)/, true],
+    ];
+    for (const [pattern, matches] of overrides) {
+        if (pattern.test(query)) {
+            return Object.assign({}, result, {matches, media: query});
+        }
+    }
+    return result;
+};
+"""
 
 
 @dataclass
@@ -189,6 +414,39 @@ class Scanner:
             self.requests.append(error_entry)
         except Exception as e:
             print(f"exception parsing network.LoadingFailed event: {event}: {e}")
+
+    async def target_attached_handler(self, event: mycdp.target.AttachedToTarget):
+        """Inject stealth overrides into newly attached Worker/ServiceWorker targets.
+
+        Target.setAutoAttach with waitForDebuggerOnStart=True pauses new targets
+        before they execute. We inject stealth code and then resume execution.
+        """
+        info = event.target_info
+        session = event.session_id
+        if info.type_ in ('worker', 'service_worker', 'shared_worker'):
+            try:
+                await self._cdp_tab.send(
+                    mycdp.runtime.evaluate(SW_STEALTH_JS),
+                    session_id=str(session),
+                )
+            except Exception as e:
+                print(f"SW stealth inject failed for {info.type_}: {e}")
+            try:
+                await self._cdp_tab.send(
+                    mycdp.runtime.run_if_waiting_for_debugger(),
+                    session_id=str(session),
+                )
+            except Exception as e:
+                print(f"SW resume failed for {info.type_}: {e}")
+        else:
+            # Non-worker target (e.g. iframe) — just resume
+            try:
+                await self._cdp_tab.send(
+                    mycdp.runtime.run_if_waiting_for_debugger(),
+                    session_id=str(session),
+                )
+            except Exception:
+                pass
 
     async def send_handler(self, event: mycdp.network.RequestWillBeSent):
         # print(f"send handler callback received event {event}")
@@ -379,7 +637,11 @@ class Scanner:
             uc_cdp_events=True,
             log_cdp_events=True,
             xvfb=True,
+            xvfb_metrics="1920,1080",  # realistic screen resolution (default is a headless giveaway)
             headless2=True,  # Use Chromium's new headless mode. (Has more features)
+            agent=BYPASS_UA,  # set UA at browser level so Workers also get the spoofed UA
+            window_size="1920,1040",  # slightly smaller than screen to simulate taskbar
+            chromium_arg="--disable-blink-features=AutomationControlled",  # removes navigator.webdriver at Blink level
         )
         if proxy:
             sb_kwargs["proxy"] = proxy
@@ -399,10 +661,20 @@ class Scanner:
 
             # ask Jeremy about this
             sb.activate_cdp_mode("about:blank")
+            self._cdp_tab = sb.cdp.page  # nodriver Tab for sending CDP commands from handlers
             sb.cdp.add_handler(mycdp.network.RequestWillBeSent, self.send_handler)
             sb.cdp.add_handler(mycdp.network.ResponseReceived, self.receive_handler)
             sb.cdp.add_handler(mycdp.network.LoadingFinished, self.loading_finished_handler)
             sb.cdp.add_handler(mycdp.network.LoadingFailed, self.loading_failed_handler)
+
+            # Auto-attach to Worker/ServiceWorker targets to inject stealth code.
+            # waitForDebuggerOnStart pauses new targets so we can inject before execution.
+            sb.cdp.add_handler(mycdp.target.AttachedToTarget, self.target_attached_handler)
+            sb.execute_cdp_cmd('Target.setAutoAttach', {
+                'autoAttach': True,
+                'waitForDebuggerOnStart': True,
+                'flatten': True,
+            })
 
             # phishkits detecting on User Agent + Sec-Ch-Ua-Platform on 2025-02-26
             sb.execute_cdp_cmd(
@@ -419,14 +691,14 @@ class Scanner:
                     "platform": "Win32",
                     "userAgentMetadata": {
                         "brands": [
-                            {"brand": "Chromium", "version": "133"},
+                            {"brand": "Chromium", "version": BYPASS_CHROME_MAJOR},
                             {"brand": "Not(A:Brand", "version": "99"},
-                            {"brand": "Google Chrome", "version": "133"},
+                            {"brand": "Google Chrome", "version": BYPASS_CHROME_MAJOR},
                         ],
                         "fullVersionList": [
-                            {"brand": "Chromium", "version": "133.0.0.0"},
+                            {"brand": "Chromium", "version": BYPASS_CHROME_FULL},
                             {"brand": "Not(A:Brand", "version": "99.0.0.0"},
-                            {"brand": "Google Chrome", "version": "133.0.0.0"},
+                            {"brand": "Google Chrome", "version": BYPASS_CHROME_FULL},
                         ],
                         "platform": "Windows",
                         "platformVersion": "10.0.0",
@@ -437,6 +709,40 @@ class Scanner:
                         "wow64": False,
                     },
                 },
+            )
+
+            # emulate a realistic desktop screen (1920x1080)
+            # This sets screen dimensions at the browser level, affecting both
+            # JavaScript Screen API and CSS @media queries consistently.
+            # Set width/height to 0 so the viewport is determined by window_size,
+            # avoiding the "viewport == screen" signal that flags headless browsers.
+            sb.execute_cdp_cmd(
+                "Emulation.setDeviceMetricsOverride",
+                {
+                    "width": 0,
+                    "height": 0,
+                    "deviceScaleFactor": 1,
+                    "mobile": False,
+                    "screenWidth": 1920,
+                    "screenHeight": 1080,
+                },
+            )
+
+            # Set dark color scheme so CreepJS prefersLightColor check returns false.
+            # This uses Emulation CDP so both CSS @media and JS matchMedia agree (no lie).
+            sb.execute_cdp_cmd(
+                "Emulation.setEmulatedMedia",
+                {
+                    "features": [
+                        {"name": "prefers-color-scheme", "value": "dark"},
+                    ],
+                },
+            )
+
+            # inject stealth overrides before any page scripts run
+            sb.execute_cdp_cmd(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {"source": STEALTH_JS},
             )
 
             # open the url
@@ -494,7 +800,7 @@ class Scanner:
 
             # append reponse content data to dom.html unless filtered out
             for request in self.requests:
-                if "requestId" in request:
+                if "requestId" in request and "url" in request:
                     if self.check_dom_filter(request['url']):
                         continue
 
