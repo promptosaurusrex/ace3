@@ -1,0 +1,20 @@
+ARG BASE_IMAGE=phishkit
+FROM ${BASE_IMAGE}
+
+# install libmagic (needed by python-magic)
+RUN apt-get update && apt-get install -y libmagic1 && rm -rf /var/lib/apt/lists/*
+
+# install additional dependencies needed for phishkit.py tests
+COPY phishkit/requirements.txt /opt/app/requirements.host.txt
+RUN /opt/venv/bin/pip install -r /opt/app/requirements.host.txt
+
+# install test tools
+RUN /opt/venv/bin/pip install pytest "pytest-asyncio>=0.23"
+
+# copy phishkit.py (runs on host normally, but needed for testing)
+COPY phishkit/phishkit.py /opt/app/phishkit.py
+
+# copy tests
+COPY phishkit/tests/ /opt/app/tests/
+
+WORKDIR /opt/app
