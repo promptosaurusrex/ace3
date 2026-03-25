@@ -14,7 +14,7 @@
         <td>
             <a target="_blank" href="{{ url_for('analysis.index', direct=alert.uuid) }}">({{alert.priority}}) {{alert.description}}</a>
             {% for tag in alert_tags[alert.uuid] %}
-              {% if tag.display %}<span class="badge text-bg-{{tag.style}}">{{tag.name}}</span>{% endif %}
+              {% if tag.display %}<span class="badge text-bg-{{tag.name | get_tag_css_class}}">{{tag.name}}</span>{% endif %}
             {% endfor %}
             {% if alert.remediation_status == 'success' %}
                 <span class="badge text-bg-success" style="cursor:pointer" >remediated</span>
