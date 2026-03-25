@@ -14,10 +14,12 @@ from typing import Optional
 from pathlib import Path
 from urllib.parse import urlparse
 
+from yaml import safe_load  # type: ignore
+
 from seleniumbase import SB  # type: ignore
 import mycdp  # type: ignore
 from selenium_recaptcha_solver import RecaptchaSolver  # type: ignore
-from PIL import Image # type: ignore
+from PIL import Image  # type: ignore
 
 # Stealth JS to inject into ServiceWorker/Worker contexts via CDP.
 # Must be self-contained (no references to main page globals).
@@ -246,6 +248,45 @@ window.matchMedia = function(query) {
 };
 """
 
+# Default config path baked into the scanner Docker image.
+DEFAULT_CONFIG_PATH = "/opt/app/phishkit_config.yaml"
+
+
+@dataclass
+class PhishkitConfig:
+    skip_body_ext: list
+    skip_body_url_patterns: list
+    handlers: dict
+    bypasses: list
+
+
+def _load_config(config_path: str) -> PhishkitConfig:
+    """Load phishkit config from a YAML file.
+
+    Returns a PhishkitConfig with skip_body_ext, skip_body_url_patterns,
+    handlers, and bypasses.  Raises on missing or invalid config.
+    """
+    with open(config_path, "r") as f:
+        data = safe_load(f)
+
+    if not isinstance(data, dict):
+        raise ValueError(f"config at {config_path} is not a YAML mapping")
+
+    config = PhishkitConfig(
+        skip_body_ext=data.get("skip_body_extensions", []),
+        skip_body_url_patterns=data.get("skip_body_url_patterns", []),
+        handlers=data.get("handlers", {}),
+        bypasses=data.get("bypasses", []),
+    )
+
+    print(
+        f"loaded config from {config_path}: {len(config.skip_body_ext)} extensions, "
+        f"{len(config.skip_body_url_patterns)} URL patterns, "
+        f"{len(config.handlers)} handlers, "
+        f"{len(config.bypasses)} bypasses"
+    )
+    return config
+
 
 @dataclass
 class ScanResult:
@@ -260,44 +301,22 @@ class ScanResult:
     # JSON of the requests/responses
     requests: Optional[str]
 
+
 class Scanner:
-    def __init__(self):
+    def __init__(self, config_path: str = DEFAULT_CONFIG_PATH):
         self.requests = []
         self.bytes_downloaded = 0
         self.domain_stats = {}  # domain -> {bytes_downloaded, request_count, response_count, first_request_time, last_finished_time}
 
-        self.BLOCKED_EXT = ['.png', '.jpg', 'jpeg', '.gif', '.svg', '.mp4', '.mkv', '.avi', '.apk', '.woff2', '.img', '.css', '.ico']
-        self.BLOCKED_URLS = [
-            'googleapis.com',
-            'google-analytics',
-            'gstatic.com',
-            'r.bing.com',
-            'th.bing.com',
-            'bing.com/th?',
-            'bing.com/fd/',
-            'assets.msn.com',
-            'bing.com/rewardsapp',
-            'bing.com/hp/',
-            'browser.events.data.msn.com',
-            'img-s-msn-com',
-            'doubleclick.net',
-            'gvt1.com',             # The GVT in the gvt1.com domain stands for Google Video Transcoding, and is used as a cache server for content and downloads used by Google services and applications
-            'disney-plus.net',      # Idk why this was showing up, but a lot of our traffic quota was being eaten up by this domain
-            'squarespace.com',      # Part of top 10 domains by traffic usage in SmartProxy statistics
-            'apple-mapkit.com',     # Part of top 10 domains by traffic usage in SmartProxy statistics
-            'squarespace-cdn.com',  # Part of top 10 domains by traffic usage in SmartProxy statistics
-            'parastorage.com',      # Part of top 10 domains by traffic usage in SmartProxy statistics
-            'website-files.com',    # Part of top 10 domains by traffic usage in SmartProxy statistics
-            'wixstatic.com',        # Part of top 10 domains by traffic usage in SmartProxy statistics
-            'shopify.com',          # Part of top 10 domains by traffic usage in SmartProxy statistics
-            'redd.it',              # High bandwidth usage the week of 2024-04-08
-            'ggcdashboard.com',     # High bandwidth usage the week of 2024-04-15
-            'hd.pics',              # High bandwidth usage the week of 2024-04-08
-            'ibb.co',               # High bandwidth usage the week of 2024-04-08
-            'c.pub.network',        # High bandwidth usage of week 2024-08-27
-            'm.media-amazon.com',   # High usage 2024-09-30
-            'cdn.flashtalking.com'  # High usage 2024-09-30
-        ]
+        config = _load_config(config_path)
+        self.SKIP_BODY_EXT = config.skip_body_ext
+        self.SKIP_BODY_URL_PATTERNS = config.skip_body_url_patterns
+        self.HANDLERS = config.handlers
+        self.BYPASSES = config.bypasses
+
+        self._bypass_handlers = {
+            "visual_checkbox_bypass": self.visual_checkbox_bypass,
+        }
 
     def _get_domain_stats(self, domain: str) -> dict:
         if domain not in self.domain_stats:
@@ -320,7 +339,9 @@ class Scanner:
                 "response_count": stats["response_count"],
             }
             if stats["first_request_time"] and stats["last_finished_time"]:
-                entry["duration_seconds"] = round(stats["last_finished_time"] - stats["first_request_time"], 2)
+                entry["duration_seconds"] = round(
+                    stats["last_finished_time"] - stats["first_request_time"], 2
+                )
             else:
                 entry["duration_seconds"] = 0
             domain_metrics[domain] = entry
@@ -334,17 +355,20 @@ class Scanner:
         }
 
     def check_dom_filter(self, url: str) -> bool:
-        """Returns True if the URL should NOT be collected, False otherwise."""
-        for blocked_url in self.BLOCKED_URLS:
-            if blocked_url in url:
+        """Returns True if the URL's response body should be skipped when
+        appending sub-request content to dom.html, False otherwise."""
+        for pattern in self.SKIP_BODY_URL_PATTERNS:
+            if pattern in url:
                 return True
 
-        if url.startswith('data:') or url.startswith('blob:'):
+        if url.startswith("data:") or url.startswith("blob:"):
             return True
         else:
-            ext = url.split('.')[-1].lower() # grab just the ext from urls like data:image/png;base64,<b64data>
+            ext = (
+                url.split(".")[-1].lower()
+            )  # grab just the ext from urls like data:image/png;base64,<b64data>
 
-        if '.' + ext in self.BLOCKED_EXT:
+        if "." + ext in self.SKIP_BODY_EXT:
             return True
 
         return False
@@ -376,7 +400,10 @@ class Scanner:
             now = time.time()
             # update the matching response entry and accumulate domain stats
             for entry in reversed(self.requests):
-                if entry.get("requestId") == event.request_id and entry.get("type") == "response":
+                if (
+                    entry.get("requestId") == event.request_id
+                    and entry.get("type") == "response"
+                ):
                     entry["encoded_data_length"] = encoded_bytes
                     domain = urlparse(entry["url"]).netloc
                     if domain:
@@ -392,11 +419,16 @@ class Scanner:
             error_text = str(event.error_text) if event.error_text else "unknown"
             canceled = bool(event.canceled) if event.canceled is not None else False
             blocked_reason = str(event.blocked_reason) if event.blocked_reason else None
-            print(f"network request failed: requestId={event.request_id} error={error_text} canceled={canceled}")
+            print(
+                f"network request failed: requestId={event.request_id} error={error_text} canceled={canceled}"
+            )
 
             url = None
             for entry in reversed(self.requests):
-                if entry.get("requestId") == event.request_id and entry.get("type") == "request":
+                if (
+                    entry.get("requestId") == event.request_id
+                    and entry.get("type") == "request"
+                ):
                     url = entry.get("url")
                     break
 
@@ -492,87 +524,51 @@ class Scanner:
             print("no recaptcha detected")
 
     def bypass_warnings(self, sb: SB) -> bool:
-        KEY_TYPE = "type"
-        KEY_SEARCHES = "searches"
-        KEY_SELECTORS = "selectors"
-        KEY_HANDLER = "handler"
+        for bypass in self.BYPASSES:
+            bypass_type = bypass.get("type")
+            searches = bypass.get("searches")
 
-        bypasses = [
-            {
-                KEY_TYPE: "CloudFlare Phishing",
-                KEY_SEARCHES: [
-                    "flagged as phishing",
-                    "This website has been reported for potential phishing",
-                    "Phishing is when a site attempts to steal sensitive",
-                ],
-                KEY_SELECTORS: [
-                    "#cf-error-details > div.cf-section.cf-wrapper > div > div > form > button",
-                    "button.cf-btn",
-                ],
-            },
-            {
-                KEY_TYPE: "CloudFlare Antibot",
-                KEY_SEARCHES: [
-                    "Please complete the security check to access the website.",
-                    "Verify you are human by completing the action below",
-                    "Verifying you are human",
-                    "needs to review the security of your connection",
-                    "challenges.cloudflare.com/turnstile",
-                ],
-                KEY_HANDLER: self.cloudflare_bypass,
-            },
-            {
-                KEY_TYPE: "Fake Ivan CloudFlare",
-                KEY_SEARCHES: [
-                    #'needs to review the security of your connection before proceeding',
-                    '"buttonLabel":"Verify",'
-                ],
-                KEY_SELECTORS: [
-                    "#richEditor > div.GuidedModeInstructions__container > div > span"
-                ],
-            },
-        ]
-
-        for bypass in bypasses:
-            if KEY_TYPE not in bypass or KEY_SEARCHES not in bypass:
+            if not bypass_type or not searches:
                 print(
-                    f"Invalid bypass. Missing a required key (searches, type: {bypass}"
+                    f"Invalid bypass. Missing a required key (searches, type): {bypass}"
                 )
-                return
+                continue
 
-            bypass_type = bypass[KEY_TYPE]
-
-            for search in bypass[KEY_SEARCHES]:
+            for search in searches:
                 if search in sb.cdp.get_page_source():
                     print(f"detected bypass type {bypass_type} with search {search}")
-                    if bypass_type == "CloudFlare Antibot":
-                        # special handling for this one. We need to bail out of this entire capture and rerun with different options
-                        self.cloudflare_bypass(sb)
-                        return True
 
                     # does this bypass have a handler?
-                    elif KEY_HANDLER in bypass:
+                    if "handler" in bypass:
+                        handler_name = bypass["handler"]
+                        handler = self._bypass_handlers.get(handler_name)
+                        if handler is None:
+                            print(f"warning: unknown bypass handler '{handler_name}'")
+                            return False
                         try:
-                            bypass[KEY_HANDLER]()
+                            handler_config = self.HANDLERS.get(handler_name, {})
+                            handler(sb, handler_config)
                             return True
                         except Exception as e:
-                            print(f'handler {bypass[KEY_HANDLER]} failed: {e}')
+                            print(f"handler {handler_name} failed: {e}")
                             return False
 
                     # does this bypass use selectors?
-                    elif KEY_SELECTORS in bypass:
-                        selectors = bypass[KEY_SELECTORS]
-                        for selector in selectors:
+                    elif "selectors" in bypass:
+                        for selector in bypass["selectors"]:
                             print(f"trying selector {selector}")
                             try:
                                 sb.driver.uc_click(selector, 2)
+                                print(
+                                    f"Successfully bypassed {bypass_type} with selector {selector}"
+                                )
                                 return True
                             except Exception as e:
-                                print(f"exception attempting to bypass {bypass_type} with {selector}: {e}")
-                            print(
-                                f"Successfully bypassed {bypass_type} with selector {selector}"
-                            )
+                                print(
+                                    f"exception attempting to bypass {bypass_type} with {selector}: {e}"
+                                )
                         print(f"failed to bypass {bypass_type}")
+
                     else:
                         print(
                             f"Invalid bypass. Must define selectors or handler: {bypass}"
@@ -583,42 +579,43 @@ class Scanner:
 
         return False
 
-    def cloudflare_visual_bypass(self, sb: SB):
-        import pyautogui # type: ignore
-        sb.wait(5) # wait a few sec for the turnstile loading symbol to be replaced by a check box
-        cf_checkbox_pngs = [base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAB4AAAAdCAYAAAC9pNwMAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAACdSURBVEhL7ZbBCQMhEEVTi5agdSjYm4JYkdqBzUz4wgYXdnPJEAOZw7uN73n8D6017eA3wtZaSilRrZXGGCzABSfca+sULqVcPuYA7rV1Cvfe55FzjpRSLHjvp7O1dh8+fncl+ITDu7YkLGEWJAwkLGEWJAwkvCeMeYIDzukTQpjOt9Nn29jDBM05v0YfB5i3MUYyxtyHv8m/hTU9Ad+2Lz6J6lqSAAAAAElFTkSuQmCC'), base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAB4AAAAfCAYAAADwbH0HAAAABHNCSVQICAgIfAhkiAAAABl0RVh0U29mdHdhcmUAZ25vbWUtc2NyZWVuc2hvdO8Dvz4AAADNSURBVEiJ7dexDYMwEIXhPygdgikM04DEJAzjSVywhgtKsKfAQEGTVERYEVUsEil+nV9xn64737Zte/CFJN9AI3xp7sfHNE10Xcc4jjjnggBZllGWJVVVkef5q/c2VkqhtQ6GAjjn0FqjlPJ6b2NjDABt2yKECAJba5FSYq31em/jdV0BgqHHWcuynMNXJsIRjnCEIxzhCP8YnKYpwNuZ8kmGYfBm7/FuLiEEfd8jpQwG7ymK4hxumoYkSTDGMM9zEHA/b+u69vrb333anrLARsXk3WtJAAAAAElFTkSuQmCC'),base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAACMAAAAiCAYAAADVhWD8AAAABHNCSVQICAgIfAhkiAAAABl0RVh0U29mdHdhcmUAZ25vbWUtc2NyZWVuc2hvdO8Dvz4AAAEISURBVFiF7dfNaYVAFEDh80I22oBag26sQmEq0YpsZECxCBGLGHXvD7hIFsGQQG5A3yPmwZytw/VDZmC8bdv2xj/p5WrA1yxGymKkXn972LYtdV3T9z3Lspx+ieM4+L5PmqZEUSSuu0lHu+s6iqI4DZDKskwEiV+mqioA4jhGKUUQBKcBxhi01jRNQ1mWIkbcM+M4AtwNAQiCAKUUAMMwiOtEzDRNn4Me0T5nnufjmCuyGCmLkbIYKYuRshgpi5F6DozrusDHxegR7XP2uYcwnucBoLWm7/u7IVrrb3N/6s/vwHmeE4bhMcwOqqoKYwzrup4GuK6L7/skSXLu7+CKnuM0XZHFSL0D8Ydjznm/9PUAAAAASUVORK5CYII=')]
-        cf_checkboxes = [Image.open(BytesIO(png)) for png in cf_checkbox_pngs]
+    def visual_checkbox_bypass(self, sb: SB, config: dict):
+        # This one is always changing and requires special handling: https://github.com/seleniumbase/SeleniumBase/issues/2842
+        import pyautogui  # type: ignore
+
+        print("visual checkbox bypass handler")
+        sb.wait(
+            5
+        )  # wait a few sec for the turnstile loading symbol to be replaced by a check box
+        checkbox_pngs = config.get("checkbox_pngs", [])
+        checkboxes = [Image.open(BytesIO(base64.b64decode(png))) for png in checkbox_pngs]
         screenshot = pyautogui.screenshot()
         rect = None
-        for checkbox in cf_checkboxes:
+        for checkbox in checkboxes:
             try:
-                rect = pyautogui.locate(checkbox, screenshot, grayscale=True, confidence=.88)
+                rect = pyautogui.locate(
+                    checkbox, screenshot, grayscale=True, confidence=0.88
+                )
             except pyautogui.ImageNotFoundException:
                 print(f"no match found for {checkbox}")
             if rect:
                 break
 
         if rect:
-            print(f'Visual match at {rect}')
-            #Visual match at Box(left=218, top=487, width=30, height=29)
-            x = rect.left + rect.width//2
-            y = rect.top+rect.height//2
-            print(f'Clicking CF checkbox at ({x},{y})')
-            sb.uc_gui_click_x_y(x,y)
+            print(f"Visual match at {rect}")
+            x = rect.left + rect.width // 2
+            y = rect.top + rect.height // 2
+            print(f"Clicking checkbox at ({x},{y})")
+            sb.uc_gui_click_x_y(x, y)
         else:
-            print('Failed to find CF checkbox visually')
-
-    def cloudflare_bypass(self, sb, max_attempts=3):
-        # This one is always changing and requires special handling: https://github.com/seleniumbase/SeleniumBase/issues/2842
-        print('CloudFlare AntiBot bypass Handler')
-        try:
-            self.cloudflare_visual_bypass(sb)
-        except Exception as e:
-            import traceback
-            print(f'Exception during visual/pyautogui CF bypass: {e}\n{traceback.format_exc()}')
+            print("Failed to find checkbox visually")
 
     def scan(
-        self, url: str, output_dir: str, additional_wait: Optional[float] = None, proxy: Optional[str] = None
+        self,
+        url: str,
+        output_dir: str,
+        additional_wait: Optional[float] = None,
+        proxy: Optional[str] = None,
     ) -> ScanResult:
 
         # output directory must already exist
@@ -646,10 +643,10 @@ class Scanner:
         if proxy:
             sb_kwargs["proxy"] = proxy
             # redact credentials for logging
-            if '@' in proxy:
-                prefix, suffix = proxy.rsplit('@', 1)
-                if '://' in prefix:
-                    scheme = prefix.split('://', 1)[0]
+            if "@" in proxy:
+                prefix, suffix = proxy.rsplit("@", 1)
+                if "://" in prefix:
+                    scheme = prefix.split("://", 1)[0]
                     redacted = f"{scheme}://****:****@{suffix}"
                 else:
                     redacted = f"****:****@{suffix}"
@@ -658,13 +655,14 @@ class Scanner:
             print(f"using proxy: {redacted}")
 
         with SB(**sb_kwargs) as sb:
-
             # ask Jeremy about this
             sb.activate_cdp_mode("about:blank")
             self._cdp_tab = sb.cdp.page  # nodriver Tab for sending CDP commands from handlers
             sb.cdp.add_handler(mycdp.network.RequestWillBeSent, self.send_handler)
             sb.cdp.add_handler(mycdp.network.ResponseReceived, self.receive_handler)
-            sb.cdp.add_handler(mycdp.network.LoadingFinished, self.loading_finished_handler)
+            sb.cdp.add_handler(
+                mycdp.network.LoadingFinished, self.loading_finished_handler
+            )
             sb.cdp.add_handler(mycdp.network.LoadingFailed, self.loading_failed_handler)
 
             # Auto-attach to Worker/ServiceWorker targets to inject stealth code.
@@ -801,19 +799,26 @@ class Scanner:
             # append reponse content data to dom.html unless filtered out
             for request in self.requests:
                 if "requestId" in request and "url" in request:
-                    if self.check_dom_filter(request['url']):
+                    if self.check_dom_filter(request["url"]):
                         continue
 
-                    print(f'grabbing response body for {request["url"]}')
+                    print(f"grabbing response body for {request['url']}")
 
                     # see https://github.com/ChromeDevTools/devtools-protocol/blob/master/json/browser_protocol.json
                     try:
-                        response_data = sb.execute_cdp_cmd('Network.getResponseBody', {'requestId': request['requestId']})['body']
-                        appended_data = "\n\nMARKER URL: " + request["url"] + "\n\n" + response_data
+                        response_data = sb.execute_cdp_cmd(
+                            "Network.getResponseBody",
+                            {"requestId": request["requestId"]},
+                        )["body"]
+                        appended_data = (
+                            "\n\nMARKER URL: " + request["url"] + "\n\n" + response_data
+                        )
                         with open(dom_path, "ab") as fp:
-                            fp.write(appended_data.encode('utf-8', errors='ignore'))
+                            fp.write(appended_data.encode("utf-8", errors="ignore"))
                     except Exception as e:
-                        print(f'failed to grab response body for requestId {request.get("requestId", -1)}: {e}')
+                        print(
+                            f"failed to grab response body for requestId {request.get('requestId', -1)}: {e}"
+                        )
 
             downloads = []
             downloads_dir = os.path.join(output_dir, "downloads")
@@ -831,10 +836,16 @@ class Scanner:
                     target_file_path = os.path.join(downloads_dir, file_name)
                     print(f"copying {source_file_path} to {target_file_path}")
                     shutil.copy(source_file_path, target_file_path)
-                    downloads.append(os.path.relpath(target_file_path, start=output_dir))
+                    downloads.append(
+                        os.path.relpath(target_file_path, start=output_dir)
+                    )
 
         return ScanResult(
-            url=url, screenshots=screenshot_path, downloads=downloads, dom=dom_path, requests=requests_path
+            url=url,
+            screenshots=screenshot_path,
+            downloads=downloads,
+            dom=dom_path,
+            requests=requests_path,
         )
 
 
@@ -863,6 +874,11 @@ if __name__ == "__main__":
         default=None,
         help="Proxy string for SeleniumBase (e.g. host:port or user:pass@host:port).",
     )
+    parser.add_argument(
+        "--config",
+        default=DEFAULT_CONFIG_PATH,
+        help="Path to phishkit YAML config file.",
+    )
     args = parser.parse_args()
 
     if not os.path.exists(args.output_dir):
@@ -873,7 +889,9 @@ if __name__ == "__main__":
     else:
         target = args.target
 
-    scanner = Scanner()
-    result = scanner.scan(target, args.output_dir, args.additional_wait, proxy=args.proxy)
+    scanner = Scanner(config_path=args.config)
+    result = scanner.scan(
+        target, args.output_dir, args.additional_wait, proxy=args.proxy
+    )
     print(result)
     sys.exit(0)

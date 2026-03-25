@@ -52,7 +52,7 @@ RUN ARCH=$(dpkg --print-architecture) && \
 # install python venv
 RUN python3 -m venv /opt/venv
 
-COPY requirements.phishkit.txt /opt/app/requirements.txt
+COPY phishkit/requirements.phishkit.txt /opt/app/requirements.txt
 
 # install dependencies
 RUN /opt/venv/bin/pip install -U pip \
@@ -61,7 +61,8 @@ RUN /opt/venv/bin/pip install -U pip \
 RUN /opt/venv/bin/seleniumbase install chromedriver
 
 RUN mkdir /export
-COPY scanner.py /opt/app/scanner.py
+COPY phishkit/scanner.py /opt/app/scanner.py
+COPY etc/phishkit_config.yaml /opt/app/phishkit_config.yaml
 
 VOLUME ["/export"]
 
