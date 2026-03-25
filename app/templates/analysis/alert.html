@@ -120,7 +120,7 @@
     {% for comment in alert.comments %}
     <tr>
         <td class="col-md-2">Comment</td>
-        <td class="col-md-10">{% if comment.user.id == current_user.id %}<span class="bi bi-x-circle" onmousedown="delete_comment({{comment.comment_id}})"></span> {% endif %} {{comment.insert_date}} {{comment.user.gui_display}}<br>{{comment.comment}}</td>
+        <td class="col-md-10">{% if comment.user.id == current_user.id %}<span class="bi bi-x-circle" onmousedown="delete_comment({{comment.comment_id}})"></span> {% endif %} {{comment.insert_date}} {{comment.user.gui_display}}<br><span class="comment-text">{{comment.comment}}</span></td>
     </tr>
     {% endfor %}
 
