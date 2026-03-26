@@ -512,6 +512,51 @@ nav[data-toggle="toc"] {
   }
 }
 
+/* Breadcrumb navigation bar */
+#breadcrumb_bar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background-color: #f8f9fa;
+    border-bottom: 1px solid #dee2e6;
+    padding: 4px 12px;
+    margin-bottom: 8px;
+}
+
+#breadcrumb_bar .breadcrumb {
+    font-size: 0.85rem;
+    overflow-x: auto;
+    white-space: nowrap;
+    flex-wrap: nowrap;
+}
+
+#breadcrumb_bar .breadcrumb-item a {
+    text-decoration: none;
+    cursor: pointer;
+}
+
+#breadcrumb_bar .breadcrumb-item a:hover {
+    text-decoration: underline;
+}
+
+#breadcrumb_bar .breadcrumb-item .breadcrumb-type {
+    font-weight: 600;
+    margin-right: 2px;
+}
+
+#breadcrumb_bar .breadcrumb-item .breadcrumb-value {
+    max-width: 200px;
+    display: inline-block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+}
+
+#breadcrumb_bar .breadcrumb-item.active {
+    font-weight: 600;
+}
+
 /* Jump To Analysis highlight animation */
 @keyframes highlight-flash {
     0% { background-color: #ffeb3b; }

@@ -20,6 +20,7 @@
 {% endblock %}
 
 <button class="btn btn-outline-dark btn-xs" type="button" id="copy_action_{{unique_reference}}" title="Copy to Clipboard"><span class="bi bi-copy"></span></button>
+<button class="btn btn-outline-dark btn-xs saq-breadcrumb-btn" type="button" title="Show ancestry in breadcrumb"><span class="bi bi-signpost-split"></span></button>
 <script type="text/javascript">
     $('#copy_action_{{unique_reference}}').on('click', function() {
         // avoid escaping issues going from python to javascript by using base64
