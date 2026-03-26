@@ -408,6 +408,30 @@
 </div>
 {% endif %}
 
+<div class="row" id="interesting_observables_card"{% if not interesting_observable_list %} style="display: none;"{% endif %}>
+    <div class="col">
+        <div class="card mb-3">
+            <div class="card-header">
+                <h5>Interesting Observables <a role="button" data-bs-toggle="collapse" data-bs-target="#collapseInterestingObservables" aria-expanded="true" aria-controls="collapseInterestingObservables">(hide/show)</a></h5>
+            </div>
+            <div class="card-body">
+                <div class="card-text collapse show" id="collapseInterestingObservables">
+                    <ul class="list-unstyled mb-0" id="interesting_observables_list">
+                    {% for obs in interesting_observable_list %}
+                        <li id="interesting_item_{{obs.uuid}}">
+                            <a href="#{{obs.uuid}}" style="text-decoration: none; color: inherit;">
+                                <span class="bi bi-star-fill" style="color: gold;"></span>
+                                <b>{{obs.display_type}}</b> : {{obs.display_value}}
+                            </a>
+                        </li>
+                    {% endfor %}
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="row">
     <div class="col">
         <div class="card mb-3">
