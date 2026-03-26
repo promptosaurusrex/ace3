@@ -268,7 +268,8 @@
     {% if (not prune_display_tree or node.visible) and node.should_render %}
         {% set is_default_collapsed = node.default_collapsed and node.is_collapsible(prune_display_tree) %}
         {% if not node.is_root_analysis %}
-            <li class="saq-analysis-li" id="{% if not node.is_analysis and node.reference_node is none %}{{node.obj.uuid}}{% else %}{{node.uuid}}{% endif %}">
+            <li class="saq-analysis-li{% if not node.is_analysis %} saq-observable-node{% endif %}" id="{% if not node.is_analysis and node.reference_node is none %}{{node.obj.uuid}}{% else %}{{node.uuid}}{% endif %}"
+                {% if not node.is_analysis %}data-observable-type="{{node.obj.display_type|e}}" data-observable-value="{{node.obj.display_value|e}}"{% endif %}>
                 {# add collapse button if collapsible #}
                 {% if node.is_collapsible(prune_display_tree) %}
                     <i class="toggle-icon bi {% if is_default_collapsed %}bi-chevron-right{% else %}bi-chevron-down{% endif %}" onclick=collapseTree(this)></i>
