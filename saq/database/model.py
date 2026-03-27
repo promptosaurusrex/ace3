@@ -2382,6 +2382,38 @@ class Comment(Base):
         foreign_keys=[user_id], backref='comments')
 
 
+class ObservableComment(Base):
+
+    __tablename__ = 'observable_comments'
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True)
+
+    insert_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('users.id'),
+        nullable=False,
+        index=True)
+
+    observable_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('observables.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True)
+
+    comment: Mapped[str] = mapped_column(Text, nullable=False)
+
+    user: Mapped["User"] = relationship('User', foreign_keys=[user_id])
+    observable: Mapped["Observable"] = relationship('Observable', backref='observable_comments')
+
+
 class Workload(Base):
 
     __tablename__ = 'workload'

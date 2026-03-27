@@ -567,6 +567,7 @@ nav[data-toggle="toc"] {
     animation: highlight-flash 2.0s ease-out;
 }
 
-.comment-text {
+.comment-text,
+.obs-comment-text {
     white-space: pre-wrap;
 }

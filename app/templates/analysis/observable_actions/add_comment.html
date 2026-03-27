@@ -1,0 +1,8 @@
+<script type="text/javascript">
+    $('#action_{{action.name}}_{{unique_reference}}').on('click', function() {
+        var obsType = '{{ _observable.type }}';
+        var b64 = '{{ _observable.value | s64encode }}';
+        var obsValue = new TextDecoder().decode(Uint8Array.from(atob(b64), function(c) { return c.charCodeAt(0); }));
+        show_observable_comment_modal_for(obsType, obsValue);
+    });
+</script>

@@ -64,6 +64,7 @@ class ObservablePresenter:
     def available_actions(self) -> list:
         """Returns a list of ObservableAction objects for this observable."""
         from saq.gui import (
+            ObservableActionAddComment,
             ObservableActionUnWhitelist,
             ObservableActionWhitelist,
             ObservableActionSeparator,
@@ -91,6 +92,8 @@ class ObservablePresenter:
             actions.extend(
                 [ObservableActionSeparator(), ObservableActionEnableDetection()]
             )
+
+        actions.extend([ObservableActionSeparator(), ObservableActionAddComment()])
 
         # add any custom actions for this observable type
         if self._observable.type in _OBSERVABLE_ACTION_REGISTRY:

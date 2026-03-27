@@ -20,6 +20,7 @@ from saq.error.reporting import report_exception
 from saq.util.ui import create_histogram_string, get_tag_score
 from saq.util.url import find_all_url_domains
 from aceapi_v2.sync import run_async_with_session
+from aceapi_v2.observable_comments.service import get_comments_for_observables, get_observable_db_ids
 from aceapi_v2.observable_types.service import get_observable_types
 
 
@@ -301,6 +302,11 @@ def index():
     # get all of the current observable detection data 
     observable_detections = get_all_observable_detections(alert.root_analysis)
 
+    # get all observable comments for the analysis tree
+    all_observables = list(alert.root_analysis.all_observables)
+    observable_comments = run_async_with_session(get_comments_for_observables, all_observables)
+    observable_db_ids = run_async_with_session(get_observable_db_ids, all_observables)
+
     # compute the display tree
 
     # are we viewing all analysis?
@@ -405,5 +411,7 @@ def index():
         # Skip file observables. The calculations will include their hash observables instead.
         num_observables_in_alert=len([o for o in alert.root_analysis.observable_store.values() if o.type != F_FILE]),
         observable_detections=observable_detections,
+        observable_comments=observable_comments,
+        observable_db_ids=observable_db_ids,
         observable_types=run_async_with_session(get_observable_types),
     )
