@@ -598,6 +598,84 @@ function delete_comment(comment_id) {
     $("#delete_comment_form").submit();
 }
 
+// observable comment functions — AJAX to FastAPI at /api/v2/observable-comments/
+function show_observable_comment_modal_for(obsType, obsValue) {
+    $('#obs_comment_type').val(obsType);
+    $('#obs_comment_value').val(obsValue);
+    $('#obs_comment_text').val('');
+    $('#obs_comment_edit_id').val('');
+    $('#obs_comment_modal_title').text('Add Observable Comment');
+    var modal = new bootstrap.Modal(document.getElementById('observable_comment_modal'));
+    modal.show();
+}
+
+function submit_observable_comment() {
+    var commentId = $('#obs_comment_edit_id').val();
+    var commentText = $('#obs_comment_text').val().trim();
+    if (!commentText) { alert('Comment cannot be empty'); return; }
+
+    if (commentId) {
+        // edit existing comment
+        $.ajax({
+            url: '/api/v2/observable-comments/' + commentId,
+            method: 'PATCH',
+            contentType: 'application/json',
+            data: JSON.stringify({ comment: commentText }),
+            success: function() { window.location.reload(); },
+            error: function(xhr) {
+                var msg = 'Error updating comment';
+                try { msg = JSON.parse(xhr.responseText).detail; } catch(e) {}
+                alert(msg);
+            }
+        });
+    } else {
+        // create new comment
+        var obsType = $('#obs_comment_type').val();
+        var obsValue = $('#obs_comment_value').val();
+        $.ajax({
+            url: '/api/v2/observable-comments/',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                observable_type: obsType,
+                observable_value: obsValue,
+                comment: commentText
+            }),
+            success: function() { window.location.reload(); },
+            error: function(xhr) {
+                var msg = 'Error adding comment';
+                try { msg = JSON.parse(xhr.responseText).detail; } catch(e) {}
+                alert(msg);
+            }
+        });
+    }
+}
+
+function delete_observable_comment(commentId) {
+    if (!confirm("Delete observable comment?")) return;
+    $.ajax({
+        url: '/api/v2/observable-comments/' + commentId,
+        method: 'DELETE',
+        success: function() { window.location.reload(); },
+        error: function(xhr) {
+            var msg = 'Error deleting comment';
+            try { msg = JSON.parse(xhr.responseText).detail; } catch(e) {}
+            alert(msg);
+        }
+    });
+}
+
+function edit_observable_comment(commentId, element) {
+    var currentText = $(element).siblings('.obs-comment-text').text().trim();
+    $('#obs_comment_text').val(currentText);
+    $('#obs_comment_edit_id').val(commentId.toString());
+    $('#obs_comment_type').val('');
+    $('#obs_comment_value').val('');
+    $('#obs_comment_modal_title').text('Edit Observable Comment');
+    var modal = new bootstrap.Modal(document.getElementById('observable_comment_modal'));
+    modal.show();
+}
+
 // sets all filters
 function set_filters(filters) {
     (function() {

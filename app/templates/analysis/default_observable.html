@@ -127,3 +127,24 @@
         </div>
     {% endif %}
 {% endblock %}
+
+{# observable comments #}
+{% set obs_comments = observable_comments.get(_observable.uuid, []) %}
+{% if obs_comments %}
+<div class="observable-comments" style="margin-left: 4px; margin-top: 2px;">
+    {% for c in obs_comments %}
+    <div class="observable-comment" style="font-size: 85%; color: #555;">
+        <span class="bi bi-chat-left-text" style="color: #888;"></span>
+        <span class="text-muted">{{ c.insert_date.strftime('%Y-%m-%d %H:%M') }}</span>
+        <strong>{{ c.user.display_name if c.user else 'unknown' }}</strong>:
+        <span class="obs-comment-text">{{ c.comment }}</span>
+        {% if c.user_id == current_user.id %}
+        <span class="bi bi-pencil text-primary" style="cursor:pointer; margin-left: 4px; font-size: 80%;"
+              onclick="edit_observable_comment({{ c.id }}, this)" title="Edit"></span>
+        <span class="bi bi-x-circle text-danger" style="cursor:pointer; margin-left: 2px; font-size: 80%;"
+              onclick="delete_observable_comment({{ c.id }})" title="Delete"></span>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
