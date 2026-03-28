@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.20] - 2026-03-25
+
+- [bumps urlfinderlib version](https://github.com/ACE-Collective/ace3/pull/92)
+- [refactors phishkit to use config file](https://github.com/ACE-Collective/ace3/pull/91)
+- [preserves whitespace and new lines when displaying comments](https://github.com/ACE-Collective/ace3/pull/90)
+- [fix tag display for alerts on Event page](https://github.com/ACE-Collective/ace3/pull/89)
+- [skips adding unresolved interpolated tags](https://github.com/ACE-Collective/ace3/pull/88)
+- [phishkit anti-bot improvements](https://github.com/ACE-Collective/ace3/pull/87)
+
+## [3.0.19] - 2026-03-19
+
+- [Phishkit proxy fallback](https://github.com/ACE-Collective/ace3/pull/85)
+- [fix issue with partial JSON reads mid-write](https://github.com/ACE-Collective/ace3/pull/84)
+
 ## [3.0.18] - 2026-03-18
 
 - [switch to per-type limit on max observable count](https://github.com/ACE-Collective/ace3/pull/82)

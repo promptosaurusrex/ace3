@@ -707,6 +707,8 @@ ACTION_ENABLE_DETECTION = 'enable_detection'
 ACTION_DISABLE_DETECTION = 'disable_detection'
 ACTION_ADJUST_EXPIRATION = 'adjust_expiration'
 ACTION_REVIEW_USER = 'review_user'
+ACTION_MARK_INTERESTING = 'mark_interesting'
+ACTION_UNMARK_INTERESTING = 'unmark_interesting'
 
 # recorded metrics
 METRIC_THREAD_COUNT = 'thread_count'

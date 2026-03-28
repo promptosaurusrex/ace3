@@ -112,7 +112,7 @@
                                 {% for comment in comments[alert.uuid] %}
                                     <br />
                                     <span style="font-size: x-small;">
-                                        ({{ comment.user.gui_display }}) {{ comment.comment }}
+                                        ({{ comment.user.gui_display }}) <span class="comment-text">{{ comment.comment }}</span>
                                     </span>
                                 {% endfor %}
                             {% endif %}

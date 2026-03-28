@@ -1659,6 +1659,12 @@ class Observable(Base):
         default=False,
         server_default=text('0'))
 
+    is_interesting: Mapped[bool] = mapped_column(
+        BOOLEAN,
+        nullable=False,
+        default=False,
+        server_default=text('0'))
+
     expires_on: Mapped[Optional[datetime]] = mapped_column(
         DateTime,
         nullable=True)
@@ -1696,6 +1702,7 @@ class Observable(Base):
             "value": base64.b64encode(self.value).decode(),
             "sha256": self.sha256.hex(),
             "for_detection": self.for_detection == 1,
+            "is_interesting": self.is_interesting == 1,
             "expires_on": self.expires_on,
             "fa_hits": self.fa_hits,
             "enabled_by": self.enabled_by_user.json if self.enabled_by else None,
@@ -2380,6 +2387,38 @@ class Comment(Base):
     user: Mapped["User"] = relationship(
         'User', primaryjoin='Comment.user_id == User.id',
         foreign_keys=[user_id], backref='comments')
+
+
+class ObservableComment(Base):
+
+    __tablename__ = 'observable_comments'
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True)
+
+    insert_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('users.id'),
+        nullable=False,
+        index=True)
+
+    observable_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('observables.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True)
+
+    comment: Mapped[str] = mapped_column(Text, nullable=False)
+
+    user: Mapped["User"] = relationship('User', foreign_keys=[user_id])
+    observable: Mapped["Observable"] = relationship('Observable', backref='observable_comments')
 
 
 class Workload(Base):

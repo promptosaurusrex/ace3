@@ -17,6 +17,151 @@ import magic
 
 logger = logging.getLogger(__name__)
 
+SHARED_CONFIG = "/phishkit/config/phishkit_config.yaml"
+
+PROXY_ERROR_PATTERNS = [
+    "ERR_TUNNEL_CONNECTION_FAILED",
+    "ERR_PROXY_CONNECTION_FAILED",
+    "ERR_PROXY_AUTH_FAILED",
+    "ERR_PROXY_CERTIFICATE_INVALID",
+]
+
+
+def _has_proxy_error(stdout: str, stderr: str) -> bool:
+    combined = (stdout or "") + (stderr or "")
+    return any(pattern in combined for pattern in PROXY_ERROR_PATTERNS)
+
+
+def _sync_config(source_path: str | None) -> str | None:
+    """Copy phishkit config to the shared phishkit volume.
+
+    Returns the destination path inside the shared volume if successful, None otherwise.
+    """
+    if not source_path or not os.path.isfile(source_path):
+        logger.info("no config found at %s", source_path)
+        return None
+
+    try:
+        os.makedirs(os.path.dirname(SHARED_CONFIG), exist_ok=True)
+        shutil.copy2(source_path, SHARED_CONFIG)
+        logger.info("synced config %s to %s", source_path, SHARED_CONFIG)
+        return SHARED_CONFIG
+    except Exception as e:
+        logger.warning("failed to sync config: %s", e)
+        return None
+
+
+def _run_scanner(
+    target_args: list,
+    output_dir: str,
+    job_id: str,
+    timeout: int,
+    proxy: str | None,
+    proxy_fallback_to_direct: bool,
+    config_path: str | None = None,
+) -> tuple:
+    """Run the phishkit scanner, optionally retrying without proxy on proxy errors.
+
+    Returns (stdout, stderr, returncode).
+    """
+    abs_config = os.path.join("/opt/ace", config_path) if config_path else None
+    synced = _sync_config(abs_config)
+
+    cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        "ace-phishkit:/phishkit",
+        os.environ.get("ACE3_PHISHKIT_IMAGE_URL", "phishkit"),
+        "/opt/venv/bin/python",
+        "/opt/app/scanner.py",
+        *target_args,
+        "--output-dir",
+        output_dir,
+    ]
+    if proxy:
+        cmd.extend(["--proxy", proxy])
+    if synced:
+        cmd.extend(["--config", synced])
+
+    process = Popen(cmd, stdout=PIPE, stderr=PIPE, text=True)
+    try:
+        _stdout, _stderr = process.communicate(timeout=timeout)
+    except TimeoutExpired:
+        process.kill()
+        process.wait()
+        raise
+
+    for line in _stdout.splitlines():
+        logging.info(f"stdout> {line}")
+
+    if process.returncode != 0:
+        for line in _stderr.splitlines():
+            logging.info(f"stderr> {line}")
+
+    # check for proxy errors and retry without proxy if configured
+    if proxy and proxy_fallback_to_direct and _has_proxy_error(_stdout, _stderr):
+        logger.warning("proxy error detected for job %s, retrying without proxy", job_id)
+        proxy_stdout = _stdout
+
+        retry_output_dir = f"{output_dir}-direct"
+        os.makedirs(retry_output_dir, exist_ok=True)
+
+        retry_cmd = [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            "ace-phishkit:/phishkit",
+            os.environ.get("ACE3_PHISHKIT_IMAGE_URL", "phishkit"),
+            "/opt/venv/bin/python",
+            "/opt/app/scanner.py",
+            *target_args,
+            "--output-dir",
+            retry_output_dir,
+        ]
+        if synced:
+            retry_cmd.extend(["--config", synced])
+
+        process = Popen(retry_cmd, stdout=PIPE, stderr=PIPE, text=True)
+        try:
+            _stdout, _stderr = process.communicate(timeout=timeout)
+        except TimeoutExpired:
+            process.kill()
+            process.wait()
+            raise
+
+        for line in _stdout.splitlines():
+            logging.info(f"stdout(direct)> {line}")
+
+        if process.returncode != 0:
+            for line in _stderr.splitlines():
+                logging.info(f"stderr(direct)> {line}")
+
+        _stdout = f"--- PROXY ATTEMPT (failed, retried direct) ---\n{proxy_stdout}\n--- DIRECT ATTEMPT ---\n{_stdout}"
+
+        # copy retry output files into the main output directory
+        for entry in os.listdir(retry_output_dir):
+            src = os.path.join(retry_output_dir, entry)
+            dst = os.path.join(output_dir, entry)
+            if os.path.isfile(src):
+                shutil.copy2(src, dst)
+            elif os.path.isdir(src):
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+
+    with open(os.path.join(output_dir, "std.out"), "w") as fp:
+        fp.write(_stdout)
+
+    with open(os.path.join(output_dir, "std.err"), "w") as fp:
+        fp.write(_stderr)
+
+    with open(os.path.join(output_dir, "exit.code"), "w") as fp:
+        fp.write(str(process.returncode))
+
+    return _stdout, _stderr, process.returncode
+
+
 if os.path.exists("/auth/passwords/redis"):
     with open("/auth/passwords/redis", "r") as fp:
         redis_password = fp.read().strip()
@@ -75,7 +220,7 @@ def _correct_file_extension(file_path: str) -> str:
     return new_file_path
 
 @app.task
-def scan_file(file_path: str, timeout: int = 15, proxy: str = None) -> str:
+def scan_file(file_path: str, timeout: int = 15, proxy: str = None, proxy_fallback_to_direct: bool = False, config_path: str = None) -> str:
     # create a place to put the file we're going to render in the browser
     job_id = str(uuid.uuid4())
     input_dir = f"/phishkit/input/{job_id}"
@@ -92,57 +237,20 @@ def scan_file(file_path: str, timeout: int = 15, proxy: str = None) -> str:
     # correct the file extension
     target_file_path = _correct_file_extension(target_file_path)
 
-    # launch the scan job and wait for it to complete
-    cmd = [
-        "docker",
-        "run",
-        "--rm",
-        "-v",
-        "ace-phishkit:/phishkit",
-        os.environ.get("ACE3_PHISHKIT_IMAGE_URL", "phishkit"),
-        "/opt/venv/bin/python",
-        "/opt/app/scanner.py",
-        "--file",
-        target_file_path,
-        "--output-dir",
-        output_dir,
-    ]
-    if proxy:
-        cmd.extend(["--proxy", proxy])
-
-    process = Popen(
-        cmd,
-        stdout=PIPE,
-        stderr=PIPE,
-        text=True,
+    _run_scanner(
+        target_args=["--file", target_file_path],
+        output_dir=output_dir,
+        job_id=job_id,
+        timeout=timeout,
+        proxy=proxy,
+        proxy_fallback_to_direct=proxy_fallback_to_direct,
+        config_path=config_path,
     )
-    try:
-        _stdout, _stderr = process.communicate(timeout=timeout)
-    except TimeoutExpired:
-        process.kill()
-        process.wait()
-        raise
-
-    for line in _stdout.splitlines():
-        logging.info(f"stdout> {line}")
-
-    if process.returncode != 0:
-        for line in _stderr.splitlines():
-            logging.info(f"stderr> {line}")
-
-    with open(os.path.join(output_dir, "std.out"), "w") as fp:
-        fp.write(_stdout)
-
-    with open(os.path.join(output_dir, "std.err"), "w") as fp:
-        fp.write(_stderr)
-
-    with open(os.path.join(output_dir, "exit.code"), "w") as fp:
-        fp.write(str(process.returncode))
 
     return _process_output(job_id, output_dir)
 
 @app.task
-def scan_url(url: str, timeout: int = 15, proxy: str = None) -> str:
+def scan_url(url: str, timeout: int = 15, proxy: str = None, proxy_fallback_to_direct: bool = False, config_path: str = None) -> str:
     # create an output directory for the scan
     job_id = str(uuid.uuid4())
     output_dir = f"/phishkit/output/{job_id}"
@@ -150,53 +258,17 @@ def scan_url(url: str, timeout: int = 15, proxy: str = None) -> str:
 
     logger.info(f"started url job {job_id} for {url}")
 
-    # launch the scan job and wait for it to complete
-    cmd = [
-        "docker",
-        "run",
-        "--rm",
-        "-v",
-        "ace-phishkit:/phishkit",
-        os.environ.get("ACE3_PHISHKIT_IMAGE_URL", "phishkit"),
-        "/opt/venv/bin/python",
-        "/opt/app/scanner.py",
-        url,
-        "--output-dir",
-        output_dir,
-    ]
-    if proxy:
-        cmd.extend(["--proxy", proxy])
-
-    process = Popen(
-        cmd,
-        stdout=PIPE,
-        stderr=PIPE,
-        text=True,
+    _stdout, _stderr, returncode = _run_scanner(
+        target_args=[url],
+        output_dir=output_dir,
+        job_id=job_id,
+        timeout=timeout,
+        proxy=proxy,
+        proxy_fallback_to_direct=proxy_fallback_to_direct,
+        config_path=config_path,
     )
-    try:
-        _stdout, _stderr = process.communicate(timeout=timeout)
-    except TimeoutExpired:
-        process.kill()
-        process.wait()
-        raise
 
-    for line in _stdout.splitlines():
-        logging.info(f"stdout> {line}")
-
-    if process.returncode != 0:
-        for line in _stderr.splitlines():
-            logging.info(f"stderr> {line}")
-
-    with open(os.path.join(output_dir, "std.out"), "w") as fp:
-        fp.write(_stdout)
-
-    with open(os.path.join(output_dir, "std.err"), "w") as fp:
-        fp.write(_stderr)
-
-    with open(os.path.join(output_dir, "exit.code"), "w") as fp:
-        fp.write(str(process.returncode))
-
-    if process.returncode != 0:
+    if returncode != 0:
         raise Exception(f"scan failed: {_stderr}")
 
     return _process_output(job_id, output_dir)

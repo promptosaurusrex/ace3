@@ -314,6 +314,175 @@ $(document).ready(function() {
         }
     }
 
+    // === Breadcrumb Navigation ===
+
+    var manualBreadcrumbTime = 0;
+    var breadcrumbDebounceTimer = null;
+
+    // Walk up the DOM from an observable <li> to build the ancestry chain.
+    // Returns array of {id, type, value} objects, root-first.
+    // Note: The template renders <li> and <ul> as siblings, so the parent
+    // observable <li> is a preceding sibling of an ancestor <ul>, not an
+    // ancestor element itself. We must walk up through parent elements and
+    // check for preceding sibling <li>.saq-observable-node at each level.
+    function getObservableAncestry(liElement) {
+        var ancestry = [];
+        var current = $(liElement);
+
+        while (current.length && current.hasClass('saq-observable-node')) {
+            ancestry.unshift({
+                id: current.attr('id'),
+                type: current.data('observable-type'),
+                value: current.data('observable-value')
+            });
+            var found = $();
+            var node = current.parent();
+            while (node.length && node.prop('tagName')) {
+                var prev = node.prevAll('li.saq-observable-node').first();
+                if (prev.length) {
+                    found = prev;
+                    break;
+                }
+                node = node.parent();
+            }
+            current = found;
+        }
+
+        return ancestry;
+    }
+
+    // Render the breadcrumb bar from an ancestry array.
+    function renderBreadcrumb(ancestry) {
+        var $bar = $('#breadcrumb_bar');
+        var $ol = $('#breadcrumb');
+
+        if (!ancestry || ancestry.length === 0) {
+            $bar.hide();
+            return;
+        }
+
+        $ol.empty();
+
+        // First item: "Alert" root
+        $ol.append(
+            '<li class="breadcrumb-item">' +
+            '<a href="#" class="breadcrumb-scroll-top">Alert</a>' +
+            '</li>'
+        );
+
+        ancestry.forEach(function(node, index) {
+            var isLast = (index === ancestry.length - 1);
+            var typeHtml = '<span class="breadcrumb-type">' + $('<span>').text(node.type).html() + '</span>';
+            var valueHtml = '<span class="breadcrumb-value" title="' + $('<span>').text(node.value).html() + '">' + $('<span>').text(node.value).html() + '</span>';
+            var displayText = typeHtml + ' ' + valueHtml;
+
+            if (isLast) {
+                $ol.append(
+                    '<li class="breadcrumb-item active" aria-current="page">' + displayText + '</li>'
+                );
+            } else {
+                $ol.append(
+                    '<li class="breadcrumb-item">' +
+                    '<a href="#" class="breadcrumb-nav-link" data-target-id="' + node.id + '">' +
+                    displayText + '</a></li>'
+                );
+            }
+        });
+
+        $bar.show();
+    }
+
+    // Expand collapsed parent nodes and scroll to target.
+    function expandAndScrollTo(targetId) {
+        var target = document.getElementById(targetId);
+        if (!target) return;
+
+        // Expand any hidden ancestor <ul> elements
+        $(target).parents('ul').each(function() {
+            if ($(this).css('display') === 'none') {
+                $(this).show();
+                // Update the toggle icon on the preceding <li>
+                $(this).prev('li').find('.toggle-icon.bi-chevron-right')
+                    .removeClass('bi-chevron-right')
+                    .addClass('bi-chevron-down');
+            }
+        });
+
+        scrollToAndHighlight(targetId);
+    }
+
+    // Click handler: navigate button on observables
+    $(document).on('click', '.saq-breadcrumb-btn', function(e) {
+        e.stopPropagation();
+        var $li = $(this).closest('li.saq-observable-node');
+        if ($li.length) {
+            manualBreadcrumbTime = Date.now();
+            var ancestry = getObservableAncestry($li[0]);
+            renderBreadcrumb(ancestry);
+        }
+    });
+
+    // Click handler: breadcrumb item navigation
+    $(document).on('click', '.breadcrumb-nav-link', function(e) {
+        e.preventDefault();
+        var targetId = $(this).data('target-id');
+        if (targetId) {
+            expandAndScrollTo(targetId);
+            // Update breadcrumb to show this node as the active one
+            var target = document.getElementById(targetId);
+            if (target && $(target).hasClass('saq-observable-node')) {
+                manualBreadcrumbTime = Date.now();
+                renderBreadcrumb(getObservableAncestry(target));
+            }
+        }
+    });
+
+    // Click handler: scroll to top from "Alert" breadcrumb item
+    $(document).on('click', '.breadcrumb-scroll-top', function(e) {
+        e.preventDefault();
+        var contentArea = document.getElementById('content_area');
+        if (contentArea) {
+            contentArea.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+    });
+
+    // IntersectionObserver: auto-update breadcrumb on scroll
+    var contentArea = document.getElementById('content_area');
+    if (contentArea) {
+        var observer = new IntersectionObserver(function(entries) {
+            // Skip if user recently clicked the navigate button
+            if (Date.now() - manualBreadcrumbTime < 3000) return;
+
+            // Find the first intersecting observable
+            var intersecting = null;
+            for (var i = 0; i < entries.length; i++) {
+                if (entries[i].isIntersecting) {
+                    intersecting = entries[i].target;
+                    break;
+                }
+            }
+
+            if (intersecting) {
+                // Debounce
+                clearTimeout(breadcrumbDebounceTimer);
+                breadcrumbDebounceTimer = setTimeout(function() {
+                    if (Date.now() - manualBreadcrumbTime < 3000) return;
+                    var ancestry = getObservableAncestry(intersecting);
+                    renderBreadcrumb(ancestry);
+                }, 100);
+            }
+        }, {
+            root: contentArea,
+            rootMargin: '-10% 0px -85% 0px',
+            threshold: 0
+        });
+
+        // Observe all observable nodes
+        document.querySelectorAll('.saq-observable-node').forEach(function(el) {
+            observer.observe(el);
+        });
+    }
+
 });
 
 // attachment downloading
@@ -427,6 +596,84 @@ function delete_comment(comment_id) {
     }
 
     $("#delete_comment_form").submit();
+}
+
+// observable comment functions — AJAX to FastAPI at /api/v2/observable-comments/
+function show_observable_comment_modal_for(obsType, obsValue) {
+    $('#obs_comment_type').val(obsType);
+    $('#obs_comment_value').val(obsValue);
+    $('#obs_comment_text').val('');
+    $('#obs_comment_edit_id').val('');
+    $('#obs_comment_modal_title').text('Add Observable Comment');
+    var modal = new bootstrap.Modal(document.getElementById('observable_comment_modal'));
+    modal.show();
+}
+
+function submit_observable_comment() {
+    var commentId = $('#obs_comment_edit_id').val();
+    var commentText = $('#obs_comment_text').val().trim();
+    if (!commentText) { alert('Comment cannot be empty'); return; }
+
+    if (commentId) {
+        // edit existing comment
+        $.ajax({
+            url: '/api/v2/observable-comments/' + commentId,
+            method: 'PATCH',
+            contentType: 'application/json',
+            data: JSON.stringify({ comment: commentText }),
+            success: function() { window.location.reload(); },
+            error: function(xhr) {
+                var msg = 'Error updating comment';
+                try { msg = JSON.parse(xhr.responseText).detail; } catch(e) {}
+                alert(msg);
+            }
+        });
+    } else {
+        // create new comment
+        var obsType = $('#obs_comment_type').val();
+        var obsValue = $('#obs_comment_value').val();
+        $.ajax({
+            url: '/api/v2/observable-comments/',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                observable_type: obsType,
+                observable_value: obsValue,
+                comment: commentText
+            }),
+            success: function() { window.location.reload(); },
+            error: function(xhr) {
+                var msg = 'Error adding comment';
+                try { msg = JSON.parse(xhr.responseText).detail; } catch(e) {}
+                alert(msg);
+            }
+        });
+    }
+}
+
+function delete_observable_comment(commentId) {
+    if (!confirm("Delete observable comment?")) return;
+    $.ajax({
+        url: '/api/v2/observable-comments/' + commentId,
+        method: 'DELETE',
+        success: function() { window.location.reload(); },
+        error: function(xhr) {
+            var msg = 'Error deleting comment';
+            try { msg = JSON.parse(xhr.responseText).detail; } catch(e) {}
+            alert(msg);
+        }
+    });
+}
+
+function edit_observable_comment(commentId, element) {
+    var currentText = $(element).siblings('.obs-comment-text').text().trim();
+    $('#obs_comment_text').val(currentText);
+    $('#obs_comment_edit_id').val(commentId.toString());
+    $('#obs_comment_type').val('');
+    $('#obs_comment_value').val('');
+    $('#obs_comment_modal_title').text('Edit Observable Comment');
+    var modal = new bootstrap.Modal(document.getElementById('observable_comment_modal'));
+    modal.show();
 }
 
 // sets all filters

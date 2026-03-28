@@ -400,7 +400,8 @@ class QueryHunt(Hunt):
 
         for tag in self.tags:
             for tag_value in interpolate_event_value(tag, event):
-                root.add_tag(tag_value)
+                if not contains_unresolved_placeholders(tag_value):
+                    root.add_tag(tag_value)
 
         for pivot_link in self.pivot_links:
             for pivot_link_url_value in interpolate_event_value(pivot_link["url"], event):

@@ -5,6 +5,8 @@ from saq.gui.observable_actions.file import ObservableActionDownloadFile, Observ
 from saq.gui.observable_actions.vt import ObservableActionUploadToVt, ObservableActionViewInVt
 from saq.gui.observable_actions.whitelist import ObservableActionUnWhitelist, ObservableActionWhitelist
 from saq.gui.observable_actions.detection import ObservableActionDisableableDetection, ObservableActionEnableDetection
+from saq.gui.observable_actions.interesting import ObservableActionMarkInteresting, ObservableActionUnmarkInteresting
 from saq.gui.observable_actions.url import ObservableActionUrlCrawl, ObservableActionUrlscan
+from saq.gui.observable_actions.comment import ObservableActionAddComment
 from saq.gui.observable_actions.management import ObservableActionAddLocalEmailDomain, ObservableActionAddTag, ObservableActionAdjustExpiration
 from saq.gui.translation import node_translate_gui, translate_alert_redirect

@@ -1,6 +1,8 @@
 from typing import Type
 
 from saq import Observable
+from aceapi_v2.observables.service import observable_is_interesting
+from aceapi_v2.sync import run_async_with_session
 from saq.database.database_observable import observable_is_set_for_detection
 
 from saq.environment import get_global_runtime_settings
@@ -64,12 +66,15 @@ class ObservablePresenter:
     def available_actions(self) -> list:
         """Returns a list of ObservableAction objects for this observable."""
         from saq.gui import (
+            ObservableActionAddComment,
             ObservableActionUnWhitelist,
             ObservableActionWhitelist,
             ObservableActionSeparator,
             ObservableActionEnableDetection,
             ObservableActionDisableableDetection,
             ObservableActionAdjustExpiration,
+            ObservableActionMarkInteresting,
+            ObservableActionUnmarkInteresting,
         )
         if self._observable.type in get_global_runtime_settings().gui_whitelist_excluded_observable_types:
             actions = []
@@ -91,6 +96,14 @@ class ObservablePresenter:
             actions.extend(
                 [ObservableActionSeparator(), ObservableActionEnableDetection()]
             )
+
+        # add interesting toggle
+        if run_async_with_session(observable_is_interesting, self._observable.type, self._observable.sha256_bytes):
+            actions.extend([ObservableActionSeparator(), ObservableActionUnmarkInteresting()])
+        else:
+            actions.extend([ObservableActionSeparator(), ObservableActionMarkInteresting()])
+
+        actions.extend([ObservableActionSeparator(), ObservableActionAddComment()])
 
         # add any custom actions for this observable type
         if self._observable.type in _OBSERVABLE_ACTION_REGISTRY:

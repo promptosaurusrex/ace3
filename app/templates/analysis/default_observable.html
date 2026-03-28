@@ -5,13 +5,16 @@
 {% if _observable.display_time %} @ {{ _observable.display_time }} {% endif %}</span>
 {% if _observable.volatile %}<span style="font-size: 50%">(volatile)</span>{% endif %}
 {% if _observable.uuid in observable_detections and observable_detections[_observable.uuid].for_detection %}
-    <span 
-        class="observable_display" 
-        style="font-size: 70%; font-weight: bold; color: darkred" 
-        onmousedown="alert(decodeURI(decodeURI(atob('{{observable_detections[_observable.uuid].detection_context | b64escape}}'))))" 
+    <span
+        class="observable_display"
+        style="font-size: 70%; font-weight: bold; color: darkred"
+        onmousedown="alert(decodeURI(decodeURI(atob('{{observable_detections[_observable.uuid].detection_context | b64escape}}'))))"
         alt="{{observable_detections[_observable.uuid].detection_context | e}}"> (detect enabled 👀)
     </span>
 {% endif %}
+<span id="interesting_badge_{{_observable.uuid}}" class="observable_display" style="font-size: 70%; font-weight: bold; color: goldenrod;{% if _observable.uuid not in interesting_observables %} display: none;{% endif %}">
+    <span class="bi bi-star-fill"></span> interesting
+</span>
 <script type="text/javascript">
     $('#o_filter_{{unique_reference}}').on('click', function() {
         set_filters([{'name': 'Observable', 'inverted': false, 'values': [['{{_observable.type}}',decodeURIComponent(atob('{{_observable.value | b64escape}}'))]]}]);
@@ -20,6 +23,7 @@
 {% endblock %}
 
 <button class="btn btn-outline-dark btn-xs" type="button" id="copy_action_{{unique_reference}}" title="Copy to Clipboard"><span class="bi bi-copy"></span></button>
+<button class="btn btn-outline-dark btn-xs saq-breadcrumb-btn" type="button" title="Show ancestry in breadcrumb"><span class="bi bi-signpost-split"></span></button>
 <script type="text/javascript">
     $('#copy_action_{{unique_reference}}').on('click', function() {
         // avoid escaping issues going from python to javascript by using base64
@@ -123,3 +127,24 @@
         </div>
     {% endif %}
 {% endblock %}
+
+{# observable comments #}
+{% set obs_comments = observable_comments.get(_observable.uuid, []) %}
+{% if obs_comments %}
+<div class="observable-comments" style="margin-left: 4px; margin-top: 2px;">
+    {% for c in obs_comments %}
+    <div class="observable-comment" style="font-size: 85%; color: #555;">
+        <span class="bi bi-chat-left-text" style="color: #888;"></span>
+        <span class="text-muted">{{ c.insert_date.strftime('%Y-%m-%d %H:%M') }}</span>
+        <strong>{{ c.user.display_name if c.user else 'unknown' }}</strong>:
+        <span class="obs-comment-text">{{ c.comment }}</span>
+        {% if c.user_id == current_user.id %}
+        <span class="bi bi-pencil text-primary" style="cursor:pointer; margin-left: 4px; font-size: 80%;"
+              onclick="edit_observable_comment({{ c.id }}, this)" title="Edit"></span>
+        <span class="bi bi-x-circle text-danger" style="cursor:pointer; margin-left: 2px; font-size: 80%;"
+              onclick="delete_observable_comment({{ c.id }})" title="Delete"></span>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% endif %}

@@ -652,8 +652,8 @@ services:
   phishkit-init:
     platform: linux/amd64
     build:
-      context: ./phishkit
-      dockerfile: Dockerfile.phishkit
+      context: .
+      dockerfile: phishkit/Dockerfile.phishkit
       args:
         UBUNTU_DOCKER_IMAGE: ${UBUNTU_DOCKER_IMAGE:-ubuntu:22.04}
     image: ${ACE3_PHISHKIT_IMAGE_URL:-phishkit:latest}
@@ -692,6 +692,9 @@ services:
       - ace-phishkit:/phishkit
       # this volume contains authentication information
       - ace-auth:/auth
+      # bind-mount so phishkit manager can read config files from the repo and analyst-data
+      - ./etc:/opt/ace/etc:ro
+      - ./data/external:/opt/ace/data/external:ro
     networks:
       - ace
 

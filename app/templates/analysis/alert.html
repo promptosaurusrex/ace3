@@ -120,7 +120,7 @@
     {% for comment in alert.comments %}
     <tr>
         <td class="col-md-2">Comment</td>
-        <td class="col-md-10">{% if comment.user.id == current_user.id %}<span class="bi bi-x-circle" onmousedown="delete_comment({{comment.comment_id}})"></span> {% endif %} {{comment.insert_date}} {{comment.user.gui_display}}<br>{{comment.comment}}</td>
+        <td class="col-md-10">{% if comment.user.id == current_user.id %}<span class="bi bi-x-circle" onmousedown="delete_comment({{comment.comment_id}})"></span> {% endif %} {{comment.insert_date}} {{comment.user.gui_display}}<br><span class="comment-text">{{comment.comment}}</span></td>
     </tr>
     {% endfor %}
 
@@ -268,7 +268,8 @@
     {% if (not prune_display_tree or node.visible) and node.should_render %}
         {% set is_default_collapsed = node.default_collapsed and node.is_collapsible(prune_display_tree) %}
         {% if not node.is_root_analysis %}
-            <li class="saq-analysis-li" id="{% if not node.is_analysis and node.reference_node is none %}{{node.obj.uuid}}{% else %}{{node.uuid}}{% endif %}">
+            <li class="saq-analysis-li{% if not node.is_analysis %} saq-observable-node{% endif %}" id="{% if not node.is_analysis and node.reference_node is none %}{{node.obj.uuid}}{% else %}{{node.uuid}}{% endif %}"
+                {% if not node.is_analysis %}data-observable-type="{{node.obj.display_type|e}}" data-observable-value="{{node.obj.display_value|e}}"{% endif %}>
                 {# add collapse button if collapsible #}
                 {% if node.is_collapsible(prune_display_tree) %}
                     <i class="toggle-icon bi {% if is_default_collapsed %}bi-chevron-right{% else %}bi-chevron-down{% endif %}" onclick=collapseTree(this)></i>
@@ -407,6 +408,30 @@
     </div>
 </div>
 {% endif %}
+
+<div class="row" id="interesting_observables_card"{% if not interesting_observable_list %} style="display: none;"{% endif %}>
+    <div class="col">
+        <div class="card mb-3">
+            <div class="card-header">
+                <h5>Interesting Observables <a role="button" data-bs-toggle="collapse" data-bs-target="#collapseInterestingObservables" aria-expanded="true" aria-controls="collapseInterestingObservables">(hide/show)</a></h5>
+            </div>
+            <div class="card-body">
+                <div class="card-text collapse show" id="collapseInterestingObservables">
+                    <ul class="list-unstyled mb-0" id="interesting_observables_list">
+                    {% for obs in interesting_observable_list %}
+                        <li id="interesting_item_{{obs.uuid}}">
+                            <a href="#{{obs.uuid}}" style="text-decoration: none; color: inherit;">
+                                <span class="bi bi-star-fill" style="color: gold;"></span>
+                                <b>{{obs.display_type}}</b> : {{obs.display_value}}
+                            </a>
+                        </li>
+                    {% endfor %}
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 
 <div class="row">
     <div class="col">
