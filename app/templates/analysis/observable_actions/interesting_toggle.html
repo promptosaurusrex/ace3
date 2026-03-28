@@ -76,6 +76,10 @@
             });
         }
 
-        bindUnmark();
+        if ({{ action.is_marking | tojson }}) {
+            bindMark();
+        } else {
+            bindUnmark();
+        }
     })();
 </script>
