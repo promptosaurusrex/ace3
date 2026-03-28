@@ -1,39 +1,81 @@
 <script type="text/javascript">
-    $('#action_{{action.name}}_{{unique_reference}}').on('click', function() {
-        var menuItem = $(this);
-        $.ajax({
-            url: '/api/v2/observables/interesting',
-            type: 'PATCH',
-            contentType: 'application/json',
-            data: JSON.stringify({
-                observable_type: '{{_observable.type}}',
-                observable_value: decodeURIComponent(atob('{{_observable.value | b64escape}}')),
-                is_interesting: true
-            }),
-            success: function(data) {
-                // Show star badges on this observable (may appear multiple times in tree)
-                $('[id="interesting_badge_{{_observable.uuid}}"]').show();
+    (function() {
+        var menuItem = $('#action_{{action.name}}_{{unique_reference}}');
+        var observableValue = decodeURIComponent(atob('{{_observable.value | b64escape}}'));
+        var displayValue = decodeURIComponent(atob('{{_observable.display_value | b64escape}}'));
 
-                // Add to the summary section
-                var list = $('#interesting_observables_list');
-                if ($('#interesting_item_{{_observable.uuid}}').length === 0) {
-                    list.append(
-                        '<li id="interesting_item_{{_observable.uuid}}">' +
-                        '<a href="#{{_observable.uuid}}" style="text-decoration: none; color: inherit;">' +
-                        '<span class="bi bi-star-fill" style="color: gold;"></span> ' +
-                        '<b>{{_observable.display_type}}</b> : ' +
-                        decodeURIComponent(atob('{{_observable.display_value | b64escape}}')) +
-                        '</a></li>'
-                    );
-                }
-                $('#interesting_observables_card').show();
+        function bindMark() {
+            menuItem.off('click').on('click', function() {
+                $.ajax({
+                    url: '/api/v2/observables/interesting',
+                    type: 'PATCH',
+                    contentType: 'application/json',
+                    data: JSON.stringify({
+                        observable_type: '{{_observable.type}}',
+                        observable_value: observableValue,
+                        is_interesting: true
+                    }),
+                    success: function() {
+                        // show star badges on this observable (may appear multiple times in tree)
+                        $('[id="interesting_badge_{{_observable.uuid}}"]').show();
 
-                // Grey out the menu item to indicate it was applied
-                menuItem.css({'opacity': '0.5', 'pointer-events': 'none'});
-            },
-            error: function(data) {
-                alert('Failed to mark observable as interesting');
-            }
-        });
-    });
+                        // add to the summary section
+                        var list = $('#interesting_observables_list');
+                        if ($('#interesting_item_{{_observable.uuid}}').length === 0) {
+                            list.append(
+                                '<li id="interesting_item_{{_observable.uuid}}">' +
+                                '<a href="#{{_observable.uuid}}" style="text-decoration: none; color: inherit;">' +
+                                '<span class="bi bi-star-fill" style="color: gold;"></span> ' +
+                                '<b>{{_observable.display_type}}</b> : ' +
+                                displayValue +
+                                '</a></li>'
+                            );
+                        }
+                        $('#interesting_observables_card').show();
+
+                        // swap menu item to "Unmark as interesting"
+                        menuItem.html('<span class="bi bi-star-fill"></span>  Unmark as interesting');
+                        bindUnmark();
+                    },
+                    error: function() {
+                        alert('Failed to mark observable as interesting');
+                    }
+                });
+            });
+        }
+
+        function bindUnmark() {
+            menuItem.off('click').on('click', function() {
+                $.ajax({
+                    url: '/api/v2/observables/interesting',
+                    type: 'PATCH',
+                    contentType: 'application/json',
+                    data: JSON.stringify({
+                        observable_type: '{{_observable.type}}',
+                        observable_value: observableValue,
+                        is_interesting: false
+                    }),
+                    success: function() {
+                        // hide star badges on this observable
+                        $('[id="interesting_badge_{{_observable.uuid}}"]').hide();
+
+                        // remove from the summary section
+                        $('#interesting_item_{{_observable.uuid}}').remove();
+                        if ($('#interesting_observables_list').children().length === 0) {
+                            $('#interesting_observables_card').hide();
+                        }
+
+                        // swap menu item back to "Mark as interesting"
+                        menuItem.html('<span class="bi bi-star"></span>  Mark as interesting');
+                        bindMark();
+                    },
+                    error: function() {
+                        alert('Failed to unmark observable as interesting');
+                    }
+                });
+            });
+        }
+
+        bindMark();
+    })();
 </script>
