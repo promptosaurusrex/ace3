@@ -41,6 +41,7 @@ from saq.query.extraction import (
     render_sd_header,
 )
 from saq.query.summary_detail_rendering import render_jinja_template
+from saq.collectors.hunter.correlation.schema import CorrelateConfig
 from saq.util import abs_path, create_timedelta, local_time
 
 QUERY_DETAILS_SEARCH_ID = "search_id"
@@ -69,6 +70,7 @@ class QueryHuntConfig(HuntConfig, BaseQueryConfig):
     query_timeout: Optional[str] = Field(default_factory=lambda: get_config().query_hunter.query_timeout, description="The timeout for the query (in HH:MM:SS format).")
     auto_append: str = Field(default="", description="The string to append to the query after the time spec. By default this is an empty string.")
     dedup_key: Optional[str] = Field(default=None, description="Optional interpolation template for deduplication. Uses ${field} syntax. When set, submissions get a key enabling the DuplicateSubmissionFilter to suppress duplicates.")
+    correlate: Optional[CorrelateConfig] = Field(default=None, description="Optional correlation configuration for advanced event processing.")
 
     @model_validator(mode='after')
     def validate_time_range_source(self):
@@ -607,6 +609,22 @@ class QueryHunt(Hunt):
         if query_results is None:
             return None
 
+        # Run correlation if configured
+        event_action_overrides: dict[int, any] = {}
+        if self.config.correlate is not None:
+            from saq.collectors.hunter.correlation.engine import CorrelationEngine
+            engine = CorrelationEngine(
+                correlate_config=self.config.correlate,
+                predefined_commands=getattr(self.config, "_predefined_commands", []),
+                hunt_time=local_time(),
+                max_result_count=self.max_result_count,
+            )
+            result = engine.execute(query_results)
+            if result.discarded:
+                return []
+            query_results = result.events
+            event_action_overrides = result.event_actions
+
         submissions: list[Submission] = [] # of Submission objects
 
         def _create_submission(event: dict):
@@ -665,6 +683,14 @@ class QueryHunt(Hunt):
                 submission = _create_submission(event)
                 submission.key = _compute_dedup_key(event)
                 submission.root.event_time = event_time
+
+                # Apply correlation overrides
+                if event_index in event_action_overrides:
+                    override = event_action_overrides[event_index]
+                    if override.queue_override:
+                        submission.root.queue = override.queue_override
+                    if override.analysis_mode_override:
+                        submission.root.analysis_mode = override.analysis_mode_override
 
                 if self.description_field is not None and self.description_field in event:
                     description_value = event[self.description_field]

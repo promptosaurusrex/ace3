@@ -123,4 +123,14 @@ def load_from_yaml(path: str, config_type: Type["HuntConfig"]) -> tuple["HuntCon
     result = _load_and_merge_yaml(path, resolved_history)
 
     # and then return the validated configuration object and all file paths that were loaded
-    return config_type.model_validate(result["rule"]), resolved_history
+    config = config_type.model_validate(result["rule"])
+
+    # extract predefined commands from top-level YAML if present
+    predefined_commands = []
+    if "commands" in result:
+        from saq.collectors.hunter.correlation.schema import PredefinedCommandConfig
+        for cmd_data in result["commands"]:
+            predefined_commands.append(PredefinedCommandConfig.model_validate(cmd_data))
+    config._predefined_commands = predefined_commands
+
+    return config, resolved_history
