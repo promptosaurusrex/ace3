@@ -7,8 +7,9 @@ class ObservableActionMarkInteresting(ObservableAction):
         super().__init__(*args, **kwargs)
         self.name = ACTION_MARK_INTERESTING
         self.description = "Mark as interesting"
-        self.action_path = 'analysis/observable_actions/mark_interesting.html'
-        self.icon = 'star'
+        self.action_path = "analysis/observable_actions/interesting_toggle.html"
+        self.icon = "star"
+        self.is_marking = True
 
 
 class ObservableActionUnmarkInteresting(ObservableAction):
@@ -16,5 +17,6 @@ class ObservableActionUnmarkInteresting(ObservableAction):
         super().__init__(*args, **kwargs)
         self.name = ACTION_UNMARK_INTERESTING
         self.description = "Unmark as interesting"
-        self.action_path = 'analysis/observable_actions/unmark_interesting.html'
-        self.icon = 'star-fill'
+        self.action_path = "analysis/observable_actions/interesting_toggle.html"
+        self.icon = "star-fill"
+        self.is_marking = False
