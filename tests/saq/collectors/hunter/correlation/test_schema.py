@@ -86,6 +86,14 @@ class TestCommandConfig:
         cmd = CommandConfig(type="defined", name="test")
         assert cmd.timeout == "30s"
 
+    def test_executable_with_env(self):
+        cmd = CommandConfig(type="executable", path="/usr/bin/test", env={"KEY": "value"})
+        assert cmd.env == {"KEY": "value"}
+
+    def test_executable_env_defaults_none(self):
+        cmd = CommandConfig(type="executable", path="/usr/bin/test")
+        assert cmd.env is None
+
 
 @pytest.mark.unit
 class TestTransformConfig:
@@ -295,3 +303,22 @@ class TestPredefinedCommandConfig:
         )
         cmd = predef.to_command_config()
         assert cmd.path == "/usr/bin/lookup.sh"
+
+    def test_env_field(self):
+        predef = PredefinedCommandConfig(
+            name="lookup",
+            type="executable",
+            path="/usr/bin/lookup.sh",
+            env={"API_KEY": "{{ _secrets.key }}"},
+        )
+        assert predef.env == {"API_KEY": "{{ _secrets.key }}"}
+
+    def test_env_carried_to_command_config(self):
+        predef = PredefinedCommandConfig(
+            name="lookup",
+            type="executable",
+            path="/usr/bin/lookup.sh",
+            env={"KEY": "value"},
+        )
+        cmd = predef.to_command_config()
+        assert cmd.env == {"KEY": "value"}

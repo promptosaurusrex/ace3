@@ -15,6 +15,15 @@ def _make_config(logic_data, timeout="15m"):
     })
 
 
+@pytest.fixture(autouse=True)
+def _mock_secrets_and_config():
+    mock_raw = MagicMock()
+    mock_raw._data = {}
+    with patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords", return_value={}), \
+         patch("saq.collectors.hunter.correlation.engine.get_config", return_value=MagicMock(raw=mock_raw)):
+        yield
+
+
 @pytest.mark.unit
 class TestCorrelationEngine:
 

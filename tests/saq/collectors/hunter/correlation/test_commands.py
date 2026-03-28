@@ -126,6 +126,47 @@ class TestExecuteCommand:
         assert result1 == result2
         assert len(source.calls) == 1  # only called once
 
+    def test_executable_with_env(self, tmpdir):
+        cmd = CommandConfig(
+            type="executable",
+            path=PYTHON,
+            args=["-c", "import os; print(os.environ['MY_VAR'])"],
+            env={"MY_VAR": "hello"},
+        )
+        result = execute_command(cmd, {}, [], "event", [], local_time(), str(tmpdir))
+        assert result.strip() == "hello"
+
+    def test_executable_with_jinja_env(self, tmpdir):
+        cmd = CommandConfig(
+            type="executable",
+            path=PYTHON,
+            args=["-c", "import os; print(os.environ['USER_NAME'])"],
+            env={"USER_NAME": "{{ _event.user }}"},
+        )
+        result = execute_command(
+            cmd, {"user": "admin"}, [], "event", [], local_time(), str(tmpdir),
+        )
+        assert result.strip() == "admin"
+
+    def test_executable_with_env_inherits_os_env(self, tmpdir):
+        cmd = CommandConfig(
+            type="executable",
+            path=PYTHON,
+            args=["-c", "import os; print(os.environ.get('PATH', 'missing'))"],
+            env={"MY_VAR": "test"},
+        )
+        result = execute_command(cmd, {}, [], "event", [], local_time(), str(tmpdir))
+        assert result.strip() != "missing"
+
+    def test_executable_without_env_inherits_os_env(self, tmpdir):
+        cmd = CommandConfig(
+            type="executable",
+            path=PYTHON,
+            args=["-c", "import os; print(os.environ.get('PATH', 'missing'))"],
+        )
+        result = execute_command(cmd, {}, [], "event", [], local_time(), str(tmpdir))
+        assert result.strip() != "missing"
+
     def test_executable_timeout(self, tmpdir):
         cmd = CommandConfig(
             type="executable",

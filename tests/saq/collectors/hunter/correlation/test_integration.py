@@ -1,6 +1,7 @@
 import datetime
 import json
 import sys
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -31,6 +32,15 @@ def _clean_registry():
     clear_query_sources()
     yield
     clear_query_sources()
+
+
+@pytest.fixture(autouse=True)
+def _mock_secrets_and_config():
+    mock_raw = MagicMock()
+    mock_raw._data = {}
+    with patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords", return_value={}), \
+         patch("saq.collectors.hunter.correlation.engine.get_config", return_value=MagicMock(raw=mock_raw)):
+        yield
 
 
 @pytest.mark.unit
@@ -248,3 +258,90 @@ class TestCorrelationIntegration:
         result = engine.execute(events)
         # All events should still become alerts (log doesn't interrupt)
         assert len(result.events) == 3
+
+    @patch("saq.collectors.hunter.correlation.engine.get_config")
+    @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
+    def test_secrets_accessible_in_jinja_condition(self, mock_secrets, mock_config):
+        """Test that _secrets is accessible in jinja expressions during full pipeline."""
+        mock_secrets.return_value = {"api_key": "secret_value"}
+        mock_raw = MagicMock()
+        mock_raw._data = {}
+        mock_config.return_value = MagicMock(raw=mock_raw)
+
+        config_data = {
+            "logic": [
+                {
+                    "when": "{{ _secrets.api_key == 'secret_value' }}",
+                    "execute": [{"action": "filter"}],
+                },
+            ],
+        }
+        config = CorrelateConfig.model_validate(config_data)
+        engine = CorrelationEngine(
+            config, [], datetime.datetime.now(datetime.timezone.utc),
+        )
+
+        events = [{"id": 1}]
+        result = engine.execute(events)
+        assert len(result.events) == 0  # filtered because secret matched
+
+    @patch("saq.collectors.hunter.correlation.engine.get_config")
+    @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
+    def test_config_accessible_in_jinja_condition(self, mock_secrets, mock_config):
+        """Test that _config is accessible in jinja expressions during full pipeline."""
+        mock_secrets.return_value = {}
+        mock_raw = MagicMock()
+        mock_raw._data = {"global": {"environment": "production"}}
+        mock_config.return_value = MagicMock(raw=mock_raw)
+
+        config_data = {
+            "logic": [
+                {
+                    "when": "{{ _config.global.environment == 'production' }}",
+                    "execute": [{"action": "filter"}],
+                },
+            ],
+        }
+        config = CorrelateConfig.model_validate(config_data)
+        engine = CorrelationEngine(
+            config, [], datetime.datetime.now(datetime.timezone.utc),
+        )
+
+        events = [{"id": 1}]
+        result = engine.execute(events)
+        assert len(result.events) == 0  # filtered because config matched
+
+    @patch("saq.collectors.hunter.correlation.engine.get_config")
+    @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
+    def test_secrets_in_executable_env(self, mock_secrets, mock_config):
+        """Test that _secrets can be used in executable env values."""
+        mock_secrets.return_value = {"db_pass": "s3cret"}
+        mock_raw = MagicMock()
+        mock_raw._data = {}
+        mock_config.return_value = MagicMock(raw=mock_raw)
+
+        config_data = {
+            "logic": [
+                {
+                    "transform": {
+                        "type": "event",
+                        "method": "property",
+                        "property_name": "result",
+                        "command": {
+                            "type": "executable",
+                            "path": PYTHON,
+                            "args": ["-c", "import os; print(os.environ['DB_PASS'])"],
+                            "env": {"DB_PASS": "{{ _secrets.db_pass }}"},
+                        },
+                    },
+                },
+            ],
+        }
+        config = CorrelateConfig.model_validate(config_data)
+        engine = CorrelationEngine(
+            config, [], datetime.datetime.now(datetime.timezone.utc),
+        )
+
+        events = [{"id": 1}]
+        result = engine.execute(events)
+        assert result.events[0]["result"] == "s3cret"

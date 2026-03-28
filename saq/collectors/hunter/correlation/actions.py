@@ -28,7 +28,13 @@ class ActionResult:
         return self.action_type in ("stop", "discard")
 
 
-def execute_action(action: ActionConfig, event: dict, events: list[dict]) -> ActionResult:
+def execute_action(
+    action: ActionConfig,
+    event: dict,
+    events: list[dict],
+    secrets: dict | None = None,
+    config: dict | None = None,
+) -> ActionResult:
     """Execute an action and return the result."""
     if action.type == "filter":
         return ActionResult(action_type="filter")
@@ -43,15 +49,21 @@ def execute_action(action: ActionConfig, event: dict, events: list[dict]) -> Act
             analysis_mode_override=action.analysis_mode,
         )
     elif action.type == "log":
-        _execute_log(action, event, events)
+        _execute_log(action, event, events, secrets, config)
         return ActionResult(action_type="log")
     else:
         raise ValueError(f"unknown action type: {action.type!r}")
 
 
-def _execute_log(action: ActionConfig, event: dict, events: list[dict]):
+def _execute_log(
+    action: ActionConfig,
+    event: dict,
+    events: list[dict],
+    secrets: dict | None = None,
+    config: dict | None = None,
+):
     """Execute a log action."""
-    context = build_jinja_context(event, events)
+    context = build_jinja_context(event, events, secrets, config)
     try:
         message = _jinja_env.from_string(action.message).render(**context)
     except Exception:

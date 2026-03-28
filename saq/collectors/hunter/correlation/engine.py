@@ -8,6 +8,8 @@ from jinja2.sandbox import SandboxedEnvironment
 
 from saq.collectors.hunter.correlation.actions import ActionResult, execute_action
 from saq.collectors.hunter.correlation.commands import execute_command
+from saq.configuration.config import get_config
+from saq.configuration.encryption import export_encrypted_passwords
 from saq.collectors.hunter.correlation.expressions import build_jinja_context, evaluate_expression
 from saq.collectors.hunter.correlation.schema import (
     ActionConfig,
@@ -57,6 +59,19 @@ class CorrelationEngine:
 
     def execute(self, events: list[dict]) -> CorrelationResult:
         """Execute correlation logic on the event stream."""
+        # Fetch secrets and config once per execution
+        try:
+            self._secrets = export_encrypted_passwords()
+        except Exception:
+            logging.error("unable to load secrets for correlation context", exc_info=True)
+            self._secrets = {}
+
+        try:
+            self._config = get_config().raw._data
+        except Exception:
+            logging.error("unable to load config for correlation context", exc_info=True)
+            self._config = {}
+
         result = CorrelationResult()
         start_time = datetime.datetime.now(datetime.timezone.utc)
         alert_events = []
@@ -150,7 +165,7 @@ class CorrelationEngine:
                 # Note: if _StreamReset is raised, it propagates up
 
             elif isinstance(step.step, ActionConfig):
-                action_result = execute_action(step.step, event, events)
+                action_result = execute_action(step.step, event, events, self._secrets, self._config)
                 if action_result.is_interrupt:
                     return action_result
 
@@ -165,7 +180,7 @@ class CorrelationEngine:
         start_time: datetime.datetime,
     ) -> Optional[ActionResult]:
         """Execute a condition step."""
-        expr_result = evaluate_expression(condition.when, event, events)
+        expr_result = evaluate_expression(condition.when, event, events, self._secrets, self._config)
 
         if expr_result:
             return self._process_event_steps(
@@ -202,6 +217,8 @@ class CorrelationEngine:
                     self.hunt_time,
                     temp_dir,
                     self.stream_query_cache,
+                    self._secrets,
+                    self._config,
                 )
 
             updated_event, new_stream = apply_transform(transform, output, event, events)
@@ -222,7 +239,7 @@ class CorrelationEngine:
             if transform.command.on_error:
                 for action_data in transform.command.on_error:
                     action = ActionConfig.model_validate(action_data)
-                    action_result = execute_action(action, event, events)
+                    action_result = execute_action(action, event, events, self._secrets, self._config)
                     if action_result.is_interrupt:
                         return action_result
             return None
@@ -230,7 +247,7 @@ class CorrelationEngine:
     def _render_debug(self, template: str, event: dict, events: list[dict]):
         """Render and log a debug message."""
         try:
-            context = build_jinja_context(event, events)
+            context = build_jinja_context(event, events, self._secrets, self._config)
             message = _jinja_env.from_string(template).render(**context)
             logging.debug("correlation debug: %s", message)
         except Exception:

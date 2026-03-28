@@ -19,6 +19,28 @@ class TestBuildJinjaContext:
         assert "field1" not in ctx
         assert "field2" not in ctx
 
+    def test_context_without_secrets_and_config(self):
+        ctx = build_jinja_context({}, [])
+        assert "_secrets" not in ctx
+        assert "_config" not in ctx
+
+    def test_context_with_secrets(self):
+        secrets = {"api_key": "secret123"}
+        ctx = build_jinja_context({}, [], secrets=secrets)
+        assert ctx["_secrets"] is secrets
+
+    def test_context_with_config(self):
+        config = {"global": {"key": "value"}}
+        ctx = build_jinja_context({}, [], config=config)
+        assert ctx["_config"] is config
+
+    def test_context_with_secrets_and_config(self):
+        secrets = {"api_key": "secret123"}
+        config = {"global": {"key": "value"}}
+        ctx = build_jinja_context({}, [], secrets=secrets, config=config)
+        assert ctx["_secrets"] is secrets
+        assert ctx["_config"] is config
+
 
 @pytest.mark.unit
 class TestEvaluateExpression:
@@ -125,6 +147,14 @@ class TestEvaluateExpression:
         ])
         assert evaluate_expression(expr, {"user": "admin", "status": "active"}, []) is True
         assert evaluate_expression(expr, {"user": "guest", "status": "active"}, []) is False
+
+    def test_jinja_accesses_secrets(self):
+        expr = ExpressionConfig(type="jinja", value="{{ _secrets.api_key }}")
+        assert evaluate_expression(expr, {}, [], secrets={"api_key": "secret123"}) is True
+
+    def test_jinja_accesses_config(self):
+        expr = ExpressionConfig(type="jinja", value="{{ _config.global.setting }}")
+        assert evaluate_expression(expr, {}, [], config={"global": {"setting": "value"}}) is True
 
     def test_unknown_type_raises(self):
         expr = ExpressionConfig(type="jinja", value="x")

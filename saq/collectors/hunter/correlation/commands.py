@@ -1,6 +1,6 @@
 import datetime
 import json
-import logging
+import os
 import subprocess
 from typing import Optional
 
@@ -24,6 +24,8 @@ def execute_command(
     hunt_time: datetime.datetime,
     temp_dir: str,
     stream_query_cache: Optional[dict] = None,
+    secrets: dict | None = None,
+    config: dict | None = None,
 ) -> str:
     """Execute a command and return its output as a string.
 
@@ -36,16 +38,18 @@ def execute_command(
         hunt_time: The time the hunt was executed.
         temp_dir: Temporary directory for command execution.
         stream_query_cache: Cache for stream query results (memoization within a correlation run).
+        secrets: Decrypted secrets dict for jinja context.
+        config: Configuration dict for jinja context.
 
     Returns:
         Command output as a string.
     """
     if command.type == "defined":
-        return _execute_defined(command, event, events, transform_type, predefined_commands, hunt_time, temp_dir, stream_query_cache)
+        return _execute_defined(command, event, events, transform_type, predefined_commands, hunt_time, temp_dir, stream_query_cache, secrets, config)
     elif command.type == "query":
-        return _execute_query(command, event, events, transform_type, hunt_time, stream_query_cache)
+        return _execute_query(command, event, events, transform_type, hunt_time, stream_query_cache, secrets, config)
     elif command.type == "executable":
-        return _execute_executable(command, event, events, transform_type, temp_dir)
+        return _execute_executable(command, event, events, transform_type, temp_dir, secrets, config)
     else:
         raise ValueError(f"unknown command type: {command.type!r}")
 
@@ -59,6 +63,8 @@ def _execute_defined(
     hunt_time: datetime.datetime,
     temp_dir: str,
     stream_query_cache: Optional[dict],
+    secrets: dict | None = None,
+    config: dict | None = None,
 ) -> str:
     """Execute a predefined command by name."""
     predef = None
@@ -71,7 +77,7 @@ def _execute_defined(
         raise ValueError(f"predefined command not found: {command.name!r}")
 
     resolved = predef.to_command_config(command.arguments)
-    return execute_command(resolved, event, events, transform_type, predefined_commands, hunt_time, temp_dir, stream_query_cache)
+    return execute_command(resolved, event, events, transform_type, predefined_commands, hunt_time, temp_dir, stream_query_cache, secrets, config)
 
 
 def _execute_query(
@@ -81,6 +87,8 @@ def _execute_query(
     transform_type: str,
     hunt_time: datetime.datetime,
     stream_query_cache: Optional[dict],
+    secrets: dict | None = None,
+    config: dict | None = None,
 ) -> str:
     """Execute a query command."""
     # For stream transforms, memoize the result
@@ -100,7 +108,7 @@ def _execute_query(
     start_time, end_time = _resolve_time_range(command, event, transform_type, hunt_time)
 
     # Render query with jinja
-    context = build_jinja_context(event, events)
+    context = build_jinja_context(event, events, secrets, config)
     query_str = _jinja_env.from_string(command.query).render(**context)
 
     timeout = parse_timespec(command.timeout)
@@ -169,9 +177,11 @@ def _execute_executable(
     events: list[dict],
     transform_type: str,
     temp_dir: str,
+    secrets: dict | None = None,
+    config: dict | None = None,
 ) -> str:
     """Execute an executable command."""
-    context = build_jinja_context(event, events)
+    context = build_jinja_context(event, events, secrets, config)
     timeout = parse_timespec(command.timeout)
 
     # Build args with jinja interpolation
@@ -180,6 +190,13 @@ def _execute_executable(
         for arg in command.args:
             rendered = _jinja_env.from_string(arg).render(**context)
             args.append(rendered)
+
+    # Build environment variables with jinja interpolation
+    env_vars = None
+    if command.env:
+        env_vars = dict(os.environ)
+        for key, value in command.env.items():
+            env_vars[key] = _jinja_env.from_string(value).render(**context)
 
     # Prepare stdin
     stdin_data = None
@@ -198,6 +215,7 @@ def _execute_executable(
             capture_output=True,
             text=True,
             input=stdin_data,
+            env=env_vars,
         )
         if result.returncode != 0:
             raise RuntimeError(f"command exited with code {result.returncode}: {result.stderr}")

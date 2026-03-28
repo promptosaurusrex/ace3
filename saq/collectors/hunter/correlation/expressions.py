@@ -9,18 +9,34 @@ from saq.collectors.hunter.correlation.schema import ExpressionConfig
 _jinja_env = SandboxedEnvironment()
 
 
-def build_jinja_context(event: dict, events: list[dict]) -> dict:
+def build_jinja_context(
+    event: dict,
+    events: list[dict],
+    secrets: dict | None = None,
+    config: dict | None = None,
+) -> dict:
     """Build a Jinja template context from event data."""
-    return {"_events": events, "_event": event}
+    context = {"_events": events, "_event": event}
+    if secrets is not None:
+        context["_secrets"] = secrets
+    if config is not None:
+        context["_config"] = config
+    return context
 
 
-def evaluate_expression(expr: ExpressionConfig, event: dict, events: list[dict]) -> bool:
+def evaluate_expression(
+    expr: ExpressionConfig,
+    event: dict,
+    events: list[dict],
+    secrets: dict | None = None,
+    config: dict | None = None,
+) -> bool:
     """Evaluate an expression against an event and event stream.
 
     Returns True or False based on the expression type and value.
     """
     if expr.type == "jinja":
-        return _evaluate_jinja(expr, event, events)
+        return _evaluate_jinja(expr, event, events, secrets, config)
     elif expr.type == "equals":
         return _evaluate_equals(expr, event)
     elif expr.type == "glob":
@@ -28,17 +44,23 @@ def evaluate_expression(expr: ExpressionConfig, event: dict, events: list[dict])
     elif expr.type == "regex":
         return _evaluate_regex(expr, event)
     elif expr.type == "and":
-        return _evaluate_and(expr, event, events)
+        return _evaluate_and(expr, event, events, secrets, config)
     elif expr.type == "or":
-        return _evaluate_or(expr, event, events)
+        return _evaluate_or(expr, event, events, secrets, config)
     elif expr.type == "not":
-        return _evaluate_not(expr, event, events)
+        return _evaluate_not(expr, event, events, secrets, config)
     else:
         raise ValueError(f"unknown expression type: {expr.type!r}")
 
 
-def _evaluate_jinja(expr: ExpressionConfig, event: dict, events: list[dict]) -> bool:
-    context = build_jinja_context(event, events)
+def _evaluate_jinja(
+    expr: ExpressionConfig,
+    event: dict,
+    events: list[dict],
+    secrets: dict | None = None,
+    config: dict | None = None,
+) -> bool:
+    context = build_jinja_context(event, events, secrets, config)
     try:
         template = _jinja_env.from_string(str(expr.value))
         result = template.render(**context)
@@ -100,22 +122,40 @@ def _parse_sub_expression(value) -> ExpressionConfig:
     raise ValueError(f"invalid sub-expression: {value!r}")
 
 
-def _evaluate_and(expr: ExpressionConfig, event: dict, events: list[dict]) -> bool:
+def _evaluate_and(
+    expr: ExpressionConfig,
+    event: dict,
+    events: list[dict],
+    secrets: dict | None = None,
+    config: dict | None = None,
+) -> bool:
     for sub in expr.value:
         sub_expr = _parse_sub_expression(sub)
-        if not evaluate_expression(sub_expr, event, events):
+        if not evaluate_expression(sub_expr, event, events, secrets, config):
             return False
     return True
 
 
-def _evaluate_or(expr: ExpressionConfig, event: dict, events: list[dict]) -> bool:
+def _evaluate_or(
+    expr: ExpressionConfig,
+    event: dict,
+    events: list[dict],
+    secrets: dict | None = None,
+    config: dict | None = None,
+) -> bool:
     for sub in expr.value:
         sub_expr = _parse_sub_expression(sub)
-        if evaluate_expression(sub_expr, event, events):
+        if evaluate_expression(sub_expr, event, events, secrets, config):
             return True
     return False
 
 
-def _evaluate_not(expr: ExpressionConfig, event: dict, events: list[dict]) -> bool:
+def _evaluate_not(
+    expr: ExpressionConfig,
+    event: dict,
+    events: list[dict],
+    secrets: dict | None = None,
+    config: dict | None = None,
+) -> bool:
     sub_expr = _parse_sub_expression(expr.value)
-    return not evaluate_expression(sub_expr, event, events)
+    return not evaluate_expression(sub_expr, event, events, secrets, config)
