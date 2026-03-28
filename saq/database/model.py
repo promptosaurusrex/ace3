@@ -1659,6 +1659,12 @@ class Observable(Base):
         default=False,
         server_default=text('0'))
 
+    is_interesting: Mapped[bool] = mapped_column(
+        BOOLEAN,
+        nullable=False,
+        default=False,
+        server_default=text('0'))
+
     expires_on: Mapped[Optional[datetime]] = mapped_column(
         DateTime,
         nullable=True)
@@ -1696,6 +1702,7 @@ class Observable(Base):
             "value": base64.b64encode(self.value).decode(),
             "sha256": self.sha256.hex(),
             "for_detection": self.for_detection == 1,
+            "is_interesting": self.is_interesting == 1,
             "expires_on": self.expires_on,
             "fa_hits": self.fa_hits,
             "enabled_by": self.enabled_by_user.json if self.enabled_by else None,

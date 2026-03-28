@@ -15,6 +15,7 @@ from saq.constants import CLOSED_EVENT_LIMIT, DIRECTIVE_DESCRIPTIONS, F_FILE, GU
 from saq.database.model import Campaign, Comment, Company, Malware, User, Event
 from saq.database.pool import get_db
 from saq.database.util.observable_detection import get_all_observable_detections
+from aceapi_v2.observables.service import get_interesting_observables_by_hashes
 from saq.disposition import get_dispositions
 from saq.error.reporting import report_exception
 from saq.util.ui import create_histogram_string, get_tag_score
@@ -307,6 +308,20 @@ def index():
     observable_comments = run_async_with_session(get_comments_for_observables, all_observables)
     observable_db_ids = run_async_with_session(get_observable_db_ids, all_observables)
 
+    # get all interesting observables for this alert
+    sha256_list = [obs.sha256_bytes for obs in all_observables]
+    db_interesting = run_async_with_session(get_interesting_observables_by_hashes, sha256_list)
+    interesting_observables = {}
+    for db_obs in db_interesting:
+        for obs in all_observables:
+            if obs.type == db_obs.type and obs.sha256_bytes == db_obs.sha256:
+                interesting_observables[obs.uuid] = True
+                break
+    interesting_observable_list = [
+        obs for obs in all_observables
+        if obs.uuid in interesting_observables
+    ]
+
     # compute the display tree
 
     # are we viewing all analysis?
@@ -413,5 +428,7 @@ def index():
         observable_detections=observable_detections,
         observable_comments=observable_comments,
         observable_db_ids=observable_db_ids,
+        interesting_observables=interesting_observables,
+        interesting_observable_list=interesting_observable_list,
         observable_types=run_async_with_session(get_observable_types),
     )
