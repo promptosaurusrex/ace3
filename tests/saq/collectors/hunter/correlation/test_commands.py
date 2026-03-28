@@ -70,7 +70,7 @@ class TestExecuteCommand:
         cmd = CommandConfig(
             type="executable",
             path=PYTHON,
-            args=["-c", "import sys; print(sys.argv[1], sys.argv[2])", "{{ user }}", "{{ host }}"],
+            args=["-c", "import sys; print(sys.argv[1], sys.argv[2])", "{{ _event.user }}", "{{ _event.host }}"],
         )
         result = execute_command(
             cmd, {"user": "admin", "host": "web1"}, [], "event", [], local_time(), str(tmpdir),
@@ -99,7 +99,7 @@ class TestExecuteCommand:
         cmd = CommandConfig(
             type="defined",
             name="lookup",
-            arguments={"args": ["-c", "import sys; print(sys.argv[1])", "{{ user }}"]},
+            arguments={"args": ["-c", "import sys; print(sys.argv[1])", "{{ _event.user }}"]},
         )
         result = execute_command(
             cmd, {"user": "admin"}, [], "event", [predef], local_time(), str(tmpdir),

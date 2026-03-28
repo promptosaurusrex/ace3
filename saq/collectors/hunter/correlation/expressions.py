@@ -11,7 +11,7 @@ _jinja_env = SandboxedEnvironment()
 
 def build_jinja_context(event: dict, events: list[dict]) -> dict:
     """Build a Jinja template context from event data."""
-    return {**event, "_events": events}
+    return {"_events": events, "_event": event}
 
 
 def evaluate_expression(expr: ExpressionConfig, event: dict, events: list[dict]) -> bool:

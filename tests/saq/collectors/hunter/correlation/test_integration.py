@@ -91,7 +91,7 @@ class TestCorrelationIntegration:
                             "type": "defined",
                             "name": "enrich_user",
                             "arguments": {
-                                "args": ["-c", "import sys; print(f'enriched_{sys.argv[1]}')", "{{ user }}"],
+                                "args": ["-c", "import sys; print(f'enriched_{sys.argv[1]}')", "{{ _event.user }}"],
                             },
                         },
                     },

@@ -64,7 +64,7 @@ class TestExecuteAction:
         assert result.analysis_mode_override is None
 
     def test_log(self, caplog):
-        action = ActionConfig(type="log", message="user={{ user }}", level="WARNING")
+        action = ActionConfig(type="log", message="user={{ _event.user }}", level="WARNING")
         event = {"user": "admin"}
         with caplog.at_level(logging.WARNING):
             result = execute_action(action, event, [event])

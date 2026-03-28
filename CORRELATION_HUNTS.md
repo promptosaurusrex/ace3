@@ -190,7 +190,7 @@ In either case, if time range is not available, then a relative `time_range` is 
 
 Executes a local binary or script.
 
-In the case of an `event transformation`, the script is called for each event. The optional `stdin` setting controls how the event is fed to the script. If `stdin` is true, then the event is written to stdin as JSONL. If `stdin` is false, it is not. In either case, the `args` are jinja interpolated, and thus have access to the values of the event.
+In the case of an `event transformation`, the script is called for each event. The optional `stdin` setting controls how the event is fed to the script. If `stdin` is true, then the event is written to stdin as JSONL. If `stdin` is false, it is not. In either case, the `args` are jinja interpolated with `_event` (current event) and `_events` (full stream) available.
 
 In the case of a `stream transformation`, the script is called once and passed all events in as JSONL to stdin.
 
@@ -203,6 +203,10 @@ command:
       - arg1
       - arg2
     # NOTE arguments are interpolated using jinja
+    env:
+        key_1: value
+        key_2: value
+    # environment values are also interpolated using jinja
 ```
 
 #### defined
@@ -242,7 +246,7 @@ rule:
                     type: defined
                     name: "user_lookup" # <--  reference command by name
                     arguments:
-                        args: ["{{ userId }}"] # <-- pass the value of the userId field as the single argument to the command
+                        args: ["{{ _event.userId }}"] # <-- pass the value of the userId field as the single argument to the command
 ```
 
 ### Actions
@@ -377,8 +381,7 @@ Some predefined interpretations of timestamps are made available.
 - The process of "registering query commands" should work in a similar way that analysis modules are registered.
     - There should be an internal API for registering query commands with the hunting system.
     - There should be a way to define, through configuration, a python module and class to register.
-- All jinja should make the properties of the current event available as top-level variables.
-    - The special variable _events should be available that contains a reference to the full current event stream.
+- All jinja templates have access to two variables: `_event` (the current event dict) and `_events` (the full event stream list). Event properties are accessed via `_event.property_name` or `_event['key.with.dots']` for keys that contain special characters.
 - When merging by time
     - events with identical timestamps are merged in the order of original event stream, then new event stream.
     - the number of events missing timestamps (and thus are not merged) and then a warning is logged with the number of events dropped.

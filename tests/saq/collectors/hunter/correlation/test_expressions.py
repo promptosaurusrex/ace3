@@ -10,32 +10,33 @@ from saq.collectors.hunter.correlation.schema import ExpressionConfig
 @pytest.mark.unit
 class TestBuildJinjaContext:
 
-    def test_event_properties_as_top_level(self):
+    def test_context_contains_event_and_events(self):
         event = {"field1": "value1", "field2": 42}
         events = [event]
         ctx = build_jinja_context(event, events)
-        assert ctx["field1"] == "value1"
-        assert ctx["field2"] == 42
+        assert ctx["_event"] is event
         assert ctx["_events"] is events
+        assert "field1" not in ctx
+        assert "field2" not in ctx
 
 
 @pytest.mark.unit
 class TestEvaluateExpression:
 
     def test_jinja_truthy(self):
-        expr = ExpressionConfig(type="jinja", value="{{ field1 }}")
+        expr = ExpressionConfig(type="jinja", value="{{ _event.field1 }}")
         assert evaluate_expression(expr, {"field1": "hello"}, []) is True
 
     def test_jinja_falsy(self):
-        expr = ExpressionConfig(type="jinja", value="{{ field1 }}")
+        expr = ExpressionConfig(type="jinja", value="{{ _event.field1 }}")
         assert evaluate_expression(expr, {"field1": ""}, []) is False
 
     def test_jinja_missing_field(self):
-        expr = ExpressionConfig(type="jinja", value="{{ missing }}")
+        expr = ExpressionConfig(type="jinja", value="{{ _event.missing }}")
         assert evaluate_expression(expr, {}, []) is False
 
     def test_jinja_string_shorthand(self):
-        expr = ExpressionConfig.model_validate("{{ x }}")
+        expr = ExpressionConfig.model_validate("{{ _event.x }}")
         assert evaluate_expression(expr, {"x": "yes"}, []) is True
 
     @pytest.mark.parametrize("event_value,expr_value,expected", [

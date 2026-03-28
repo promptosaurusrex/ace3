@@ -128,7 +128,7 @@ class TestCorrelationEngine:
     def test_log_action_continues_processing(self):
         """Log action should not interrupt processing."""
         config = _make_config([
-            {"action": {"type": "log", "message": "logging {{ id }}", "level": "INFO"}},
+            {"action": {"type": "log", "message": "logging {{ _event.id }}", "level": "INFO"}},
         ])
         engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
         events = [{"id": 1}, {"id": 2}]
