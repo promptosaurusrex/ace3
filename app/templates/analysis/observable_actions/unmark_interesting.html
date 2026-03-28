@@ -1,0 +1,31 @@
+<script type="text/javascript">
+    $('#action_{{action.name}}_{{unique_reference}}').on('click', function() {
+        var menuItem = $(this);
+        $.ajax({
+            url: '/api/v2/observables/interesting',
+            type: 'PATCH',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                observable_type: '{{_observable.type}}',
+                observable_value: decodeURIComponent(atob('{{_observable.value | b64escape}}')),
+                is_interesting: false
+            }),
+            success: function(data) {
+                // Hide star badges on this observable
+                $('[id="interesting_badge_{{_observable.uuid}}"]').hide();
+
+                // Remove from the summary section
+                $('#interesting_item_{{_observable.uuid}}').remove();
+                if ($('#interesting_observables_list').children().length === 0) {
+                    $('#interesting_observables_card').hide();
+                }
+
+                // Grey out the menu item to indicate it was applied
+                menuItem.css({'opacity': '0.5', 'pointer-events': 'none'});
+            },
+            error: function(data) {
+                alert('Failed to unmark observable as interesting');
+            }
+        });
+    });
+</script>
