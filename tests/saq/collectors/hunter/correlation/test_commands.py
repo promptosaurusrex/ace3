@@ -176,3 +176,80 @@ class TestExecuteCommand:
         )
         with pytest.raises(RuntimeError, match="timed out"):
             execute_command(cmd, {}, [], "event", [], local_time(), str(tmpdir))
+
+    def test_executable_cache_hit(self, tmpdir):
+        cmd = CommandConfig(
+            type="executable",
+            path=PYTHON,
+            args=["-c", "print('hello')"],
+            cache="1h",
+        )
+        with patch("saq.collectors.hunter.correlation.commands.get_cached_result", return_value="cached value") as mock_get:
+            result = execute_command(cmd, {}, [], "event", [], local_time(), str(tmpdir))
+
+        assert result == "cached value"
+        mock_get.assert_called_once_with({"type": "executable", "path": PYTHON, "args": ["-c", "print('hello')"], "env": None})
+
+    def test_executable_cache_miss_stores_result(self, tmpdir):
+        cmd = CommandConfig(
+            type="executable",
+            path=PYTHON,
+            args=["-c", "print('hello')"],
+            cache="1h",
+        )
+        with patch("saq.collectors.hunter.correlation.commands.get_cached_result", return_value=None), \
+             patch("saq.collectors.hunter.correlation.commands.set_cached_result") as mock_set:
+            result = execute_command(cmd, {}, [], "event", [], local_time(), str(tmpdir))
+
+        assert result.strip() == "hello"
+        mock_set.assert_called_once_with(
+            {"type": "executable", "path": PYTHON, "args": ["-c", "print('hello')"], "env": None},
+            result,
+            3600,
+        )
+
+    def test_executable_no_cache_skips_cache(self, tmpdir):
+        cmd = CommandConfig(
+            type="executable",
+            path=PYTHON,
+            args=["-c", "print('hello')"],
+        )
+        with patch("saq.collectors.hunter.correlation.commands.get_cached_result") as mock_get, \
+             patch("saq.collectors.hunter.correlation.commands.set_cached_result") as mock_set:
+            result = execute_command(cmd, {}, [], "event", [], local_time(), str(tmpdir))
+
+        assert result.strip() == "hello"
+        mock_get.assert_not_called()
+        mock_set.assert_not_called()
+
+    def test_executable_cache_key_includes_rendered_args(self, tmpdir):
+        cmd = CommandConfig(
+            type="executable",
+            path=PYTHON,
+            args=["-c", "print('hello')", "{{ _event.user }}"],
+            cache="1h",
+        )
+        with patch("saq.collectors.hunter.correlation.commands.get_cached_result", return_value=None) as mock_get, \
+             patch("saq.collectors.hunter.correlation.commands.set_cached_result"):
+            execute_command(cmd, {"user": "admin"}, [], "event", [], local_time(), str(tmpdir))
+
+        mock_get.assert_called_once_with({"type": "executable", "path": PYTHON, "args": ["-c", "print('hello')", "admin"], "env": None})
+
+    def test_executable_cache_key_includes_rendered_env(self, tmpdir):
+        cmd = CommandConfig(
+            type="executable",
+            path=PYTHON,
+            args=["-c", "import os; print(os.environ['MY_VAR'])"],
+            env={"MY_VAR": "{{ _event.val }}"},
+            cache="1h",
+        )
+        with patch("saq.collectors.hunter.correlation.commands.get_cached_result", return_value=None) as mock_get, \
+             patch("saq.collectors.hunter.correlation.commands.set_cached_result"):
+            execute_command(cmd, {"val": "test123"}, [], "event", [], local_time(), str(tmpdir))
+
+        mock_get.assert_called_once_with({
+            "type": "executable",
+            "path": PYTHON,
+            "args": ["-c", "import os; print(os.environ['MY_VAR'])"],
+            "env": {"MY_VAR": "test123"},
+        })

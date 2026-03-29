@@ -185,18 +185,29 @@ def _execute_executable(
     timeout = parse_timespec(command.timeout)
 
     # Build args with jinja interpolation
-    args = [command.path]
+    rendered_args = []
     if command.args:
         for arg in command.args:
-            rendered = _jinja_env.from_string(arg).render(**context)
-            args.append(rendered)
+            rendered_args.append(_jinja_env.from_string(arg).render(**context))
+
+    args = [command.path] + rendered_args
 
     # Build environment variables with jinja interpolation
+    rendered_env = None
     env_vars = None
     if command.env:
+        rendered_env = {}
         env_vars = dict(os.environ)
         for key, value in command.env.items():
-            env_vars[key] = _jinja_env.from_string(value).render(**context)
+            rendered_env[key] = _jinja_env.from_string(value).render(**context)
+            env_vars[key] = rendered_env[key]
+
+    # Check persistent cache
+    if command.cache:
+        cache_args = {"type": "executable", "path": command.path, "args": rendered_args, "env": rendered_env}
+        cached = get_cached_result(cache_args)
+        if cached is not None:
+            return cached
 
     # Prepare stdin
     stdin_data = None
@@ -219,6 +230,13 @@ def _execute_executable(
         )
         if result.returncode != 0:
             raise RuntimeError(f"command exited with code {result.returncode}: {result.stderr}")
-        return result.stdout
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"command timed out after {timeout}")
+
+    # Store in persistent cache
+    if command.cache:
+        ttl = int(parse_timespec(command.cache).total_seconds())
+        cache_args = {"type": "executable", "path": command.path, "args": rendered_args, "env": rendered_env}
+        set_cached_result(cache_args, result.stdout, ttl)
+
+    return result.stdout

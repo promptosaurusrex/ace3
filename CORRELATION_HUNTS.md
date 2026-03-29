@@ -332,6 +332,7 @@ commands:
       path: "scripts/external_lookup.py"
       cache: 1d
       args: []
+      env: {}
 ```
 
 These are referenced using the `defined` command type.

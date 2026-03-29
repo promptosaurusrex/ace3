@@ -19,7 +19,12 @@ def get_cached_result(command_args: dict) -> Optional[str]:
     try:
         r = get_redis_connection(REDIS_DB_HUNT_CACHE)
         key = _make_cache_key(command_args)
-        return r.get(key)
+        result = r.get(key)
+        if result:
+            logging.info(f"cache hit for {key}")
+
+        return result
+
     except Exception:
         logging.warning("failed to read from hunt cache", exc_info=True)
         return None
@@ -31,5 +36,6 @@ def set_cached_result(command_args: dict, value: str, ttl_seconds: int):
         r = get_redis_connection(REDIS_DB_HUNT_CACHE)
         key = _make_cache_key(command_args)
         r.setex(key, ttl_seconds, value)
+        logging.info(f"cached result with key {key} for {ttl_seconds} seconds")
     except Exception:
         logging.warning("failed to write to hunt cache", exc_info=True)
