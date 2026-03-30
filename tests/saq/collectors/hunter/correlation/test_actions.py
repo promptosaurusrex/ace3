@@ -64,7 +64,7 @@ class TestExecuteAction:
         assert result.analysis_mode_override is None
 
     def test_log(self, caplog):
-        action = ActionConfig(type="log", message="user={{ _event.user }}", level="WARNING")
+        action = ActionConfig(type="log", log_message="user={{ _event.user }}", log_level="WARNING")
         event = {"user": "admin"}
         with caplog.at_level(logging.WARNING):
             result = execute_action(action, event, [event])
@@ -72,8 +72,44 @@ class TestExecuteAction:
         assert "user=admin" in caplog.text
 
     def test_log_default_level(self, caplog):
-        action = ActionConfig(type="log", message="test message")
+        action = ActionConfig(type="log", log_message="test message")
         with caplog.at_level(logging.INFO):
             result = execute_action(action, {}, [])
         assert result.action_type == "log"
         assert "test message" in caplog.text
+
+
+@pytest.mark.unit
+class TestUniversalActionLogging:
+
+    @pytest.mark.parametrize("action_type", ["filter", "stop", "discard", "alert", "log"])
+    def test_default_log_message(self, action_type, caplog):
+        """All action types log a default message when log_message is not set."""
+        action = ActionConfig(type=action_type)
+        with caplog.at_level(logging.INFO):
+            execute_action(action, {}, [])
+        assert f"executed {action_type} action" in caplog.text
+
+    def test_custom_log_message_on_non_log_action(self, caplog):
+        """Non-log action types support custom log_message."""
+        action = ActionConfig(type="filter", log_message="filtering event {{ _event.id }}")
+        event = {"id": 42}
+        with caplog.at_level(logging.INFO):
+            execute_action(action, event, [event])
+        assert "filtering event 42" in caplog.text
+
+    def test_custom_log_level_on_non_log_action(self, caplog):
+        """Non-log action types support custom log_level."""
+        action = ActionConfig(type="stop", log_level="WARNING", log_message="stopping")
+        with caplog.at_level(logging.WARNING):
+            result = execute_action(action, {}, [])
+        assert result.action_type == "stop"
+        assert "stopping" in caplog.text
+
+    def test_log_message_render_error(self, caplog):
+        """A render error in log_message should not prevent the action from returning."""
+        action = ActionConfig(type="filter", log_message="{{ invalid | bad_filter }}")
+        with caplog.at_level(logging.ERROR):
+            result = execute_action(action, {}, [])
+        assert result.action_type == "filter"
+        assert "failed to render log message template" in caplog.text

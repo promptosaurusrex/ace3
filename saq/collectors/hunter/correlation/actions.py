@@ -37,38 +37,45 @@ def execute_action(
 ) -> ActionResult:
     """Execute an action and return the result."""
     if action.type == "filter":
-        return ActionResult(action_type="filter")
+        result = ActionResult(action_type="filter")
     elif action.type == "stop":
-        return ActionResult(action_type="stop")
+        result = ActionResult(action_type="stop")
     elif action.type == "discard":
-        return ActionResult(action_type="discard")
+        result = ActionResult(action_type="discard")
     elif action.type == "alert":
-        return ActionResult(
+        result = ActionResult(
             action_type="alert",
             queue_override=action.queue,
             analysis_mode_override=action.analysis_mode,
         )
     elif action.type == "log":
-        _execute_log(action, event, events, secrets, config)
-        return ActionResult(action_type="log")
+        result = ActionResult(action_type="log")
     else:
         raise ValueError(f"unknown action type: {action.type!r}")
 
+    _log_action(action, event, events, secrets, config, result)
+    return result
 
-def _execute_log(
+
+def _log_action(
     action: ActionConfig,
     event: dict,
     events: list[dict],
-    secrets: dict | None = None,
-    config: dict | None = None,
+    secrets: dict | None,
+    config: dict | None,
+    result: ActionResult,
 ):
-    """Execute a log action."""
+    """Log a message for any action execution."""
     context = build_jinja_context(event, events, secrets, config)
-    try:
-        message = _jinja_env.from_string(action.message).render(**context)
-    except Exception:
-        logging.error("failed to render log message template: %s", action.message, exc_info=True)
-        return
+    level = getattr(logging, action.log_level.upper(), logging.INFO)
 
-    level = getattr(logging, action.level.upper(), logging.INFO)
+    if action.log_message:
+        try:
+            message = _jinja_env.from_string(action.log_message).render(**context)
+        except Exception:
+            logging.error("failed to render log message template: %s", action.log_message, exc_info=True)
+            return
+    else:
+        message = f"executed {action.type} action"
+
     logging.log(level, "correlation log: %s", message)

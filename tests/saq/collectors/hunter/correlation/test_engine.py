@@ -116,7 +116,7 @@ class TestCorrelationEngine:
         config = _make_config([
             {
                 "when": {"type": "equals", "value": "special", "property": "type"},
-                "execute": [{"action": {"type": "log", "message": "found special"}}],
+                "execute": [{"action": {"type": "log", "log_message": "found special"}}],
             },
         ])
         engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
@@ -137,7 +137,7 @@ class TestCorrelationEngine:
     def test_log_action_continues_processing(self):
         """Log action should not interrupt processing."""
         config = _make_config([
-            {"action": {"type": "log", "message": "logging {{ _event.id }}", "level": "INFO"}},
+            {"action": {"type": "log", "log_message": "logging {{ _event.id }}", "log_level": "INFO"}},
         ])
         engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
         events = [{"id": 1}, {"id": 2}]

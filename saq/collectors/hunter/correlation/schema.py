@@ -107,8 +107,8 @@ class ActionConfig(BaseModel):
     type: str = Field(..., description="Action type: filter, stop, discard, alert, log")
     queue: Optional[str] = Field(default=None, description="Queue override for alert action")
     analysis_mode: Optional[str] = Field(default=None, description="Analysis mode override for alert action")
-    level: str = Field(default="INFO", description="Log level for log action")
-    message: Optional[str] = Field(default=None, description="Jinja interpolated message for log action")
+    log_level: str = Field(default="INFO", description="Log level for action logging")
+    log_message: Optional[str] = Field(default=None, description="Jinja interpolated log message for action logging")
 
     @model_validator(mode="before")
     @classmethod
@@ -120,8 +120,6 @@ class ActionConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_action(self):
-        if self.type == "log" and self.message is None:
-            raise ValueError("'message' is required for log actions")
         if self.type not in ("filter", "stop", "discard", "alert", "log"):
             raise ValueError(f"invalid action type: {self.type!r}")
         return self

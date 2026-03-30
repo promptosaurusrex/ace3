@@ -253,6 +253,13 @@ rule:
 
 An `action` defines some kind of an action to take. Actions can interrupt processing (they can stop processing.) Those are denoted here with `(interrupt)`.
 
+All action types support the following optional logging fields:
+
+- `log_level`: the Python logging level for the message (default: INFO)
+- `log_message`: a jinja interpolated message to log when the action executes
+
+When an action executes, it emits a log message. If `log_message` is specified, it is rendered via jinja and logged at the specified `log_level`. If neither field is present, a default INFO-level message is logged indicating which action was executed and the result.
+
 Note that an `action` block has both a short and long syntax.
 
 ```yaml
@@ -309,13 +316,13 @@ action:
 
 #### action: log
 
-Emits a log message to the logging system. Uses the INFO level by default. Processing continues uninterrupted.
+A no-op action that only triggers logging. Processing continues uninterrupted. Since all actions now log by default, this action type is useful when you want to emit a log message without any other side effect.
 
 ```yaml
 action:
     type: log
-    level: INFO # optional
-    message: jinja interpolated message
+    log_level: INFO # optional
+    log_message: jinja interpolated message # optional
 ```
 
 ### Predefined Commands

@@ -244,7 +244,7 @@ class TestCorrelationIntegration:
                 {
                     "when": "{{ _events | length > 2 }}",
                     "execute": [
-                        {"action": {"type": "log", "message": "stream has {{ _events | length }} events"}},
+                        {"action": {"type": "log", "log_message": "stream has {{ _events | length }} events"}},
                     ],
                 },
             ],

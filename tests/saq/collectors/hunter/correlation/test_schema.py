@@ -162,13 +162,18 @@ class TestActionConfig:
         action = ActionConfig.model_validate("filter")
         assert action.type == "filter"
 
-    def test_log_requires_message(self):
-        with pytest.raises(ValidationError):
-            ActionConfig(type="log")
+    def test_log_without_message_valid(self):
+        action = ActionConfig(type="log")
+        assert action.log_message is None
 
     def test_log_valid(self):
-        action = ActionConfig(type="log", message="hello {{ name }}")
-        assert action.message == "hello {{ name }}"
+        action = ActionConfig(type="log", log_message="hello {{ name }}")
+        assert action.log_message == "hello {{ name }}"
+
+    def test_log_fields_on_non_log_action(self):
+        action = ActionConfig(type="filter", log_level="WARNING", log_message="filtering event")
+        assert action.log_level == "WARNING"
+        assert action.log_message == "filtering event"
 
     def test_invalid_type(self):
         with pytest.raises(ValidationError):
