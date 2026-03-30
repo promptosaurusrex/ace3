@@ -762,7 +762,7 @@ class Alert(Base):
             sql = "INSERT IGNORE INTO tags ( name ) VALUES {}".format(','.join(['(%s)' for name in tag_names]))
             c.execute(sql, tag_names)
 
-        all_observables = self.root_analysis.all_observables
+        all_observables = [o for o in self.root_analysis.all_observables if not o.ignored]
 
         observables = []
         for observable in all_observables:

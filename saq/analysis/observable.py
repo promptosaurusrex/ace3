@@ -58,6 +58,7 @@ class Observable(BaseNode):
         self._relationships = [] # [ Relationship ]
         self._grouping_target = False
         self._volatile = volatile
+        self._ignored = False
 
         self._cache_id = None
         self._faqueue_hits = None
@@ -156,6 +157,16 @@ class Observable(BaseNode):
     def volatile(self, value: bool):
         assert isinstance(value, bool)
         self._volatile = value
+
+    @property
+    def ignored(self) -> bool:
+        """Returns True if this observable should be ignored (excluded from display and DB indexing)."""
+        return self._ignored
+
+    @ignored.setter
+    def ignored(self, value: bool):
+        assert isinstance(value, bool)
+        self._ignored = value
 
     @property
     def type(self) -> str:
