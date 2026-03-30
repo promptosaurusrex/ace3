@@ -2,8 +2,8 @@ name: Check Alembic Migrations
 
 on:
   pull_request:
-    paths:
-      - 'alembic/versions/**'
+    # paths:
+    #   - 'alembic/versions/**'
   merge_group:
 
 jobs:

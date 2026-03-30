@@ -2,9 +2,9 @@ name: Check Model Drift
 
 on:
   pull_request:
-    paths:
-      - 'saq/database/model.py'
-      - 'alembic/versions/**'
+    # paths:
+    #   - 'saq/database/model.py'
+    #   - 'alembic/versions/**'
   merge_group:
 
 jobs:
