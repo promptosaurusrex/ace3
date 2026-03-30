@@ -1,0 +1,61 @@
+name: Check Model Drift
+
+on:
+  pull_request:
+    paths:
+      - 'saq/database/model.py'
+      - 'alembic/versions/**'
+  merge_group:
+
+jobs:
+  check-model-drift:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:9.2
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: ace
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=3s
+          --health-retries=10
+          --health-start-period=30s
+          --health-timeout=5s
+          --character-set-server=utf8mb4
+          --collation-server=utf8mb4_unicode_520_ci
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Create database user
+        run: |
+          mysql -h 127.0.0.1 -u root -proot -e "
+            CREATE USER 'ace-superuser'@'%' IDENTIFIED BY 'ci-password';
+            GRANT ALL PRIVILEGES ON *.* TO 'ace-superuser'@'%' WITH GRANT OPTION;
+            FLUSH PRIVILEGES;
+          "
+
+      - name: Install dependencies
+        run: pip install -r installer/requirements.txt
+
+      - name: Run migrations
+        env:
+          ACE_DB_HOST: 127.0.0.1
+          ACE_SUPERUSER_DB_USER_PASSWORD: ci-password
+          DATABASE_NAME: ace
+        run: alembic upgrade head
+
+      - name: Check for model drift
+        env:
+          ACE_DB_HOST: 127.0.0.1
+          ACE_SUPERUSER_DB_USER_PASSWORD: ci-password
+          DATABASE_NAME: ace
+        run: python bin/check_model_drift.py
