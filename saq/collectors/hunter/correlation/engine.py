@@ -19,10 +19,12 @@ from saq.collectors.hunter.correlation.schema import (
     StepConfig,
     TransformConfig,
 )
+from saq.collectors.hunter.correlation.sources import register_default_sources
 from saq.collectors.hunter.correlation.timespec import parse_timespec
 from saq.collectors.hunter.correlation.transforms import apply_transform
 
 _jinja_env = SandboxedEnvironment()
+_sources_registered = False
 
 
 class _StreamReset(Exception):
@@ -50,6 +52,11 @@ class CorrelationEngine:
         hunt_time: datetime.datetime,
         max_result_count: Optional[int] = None,
     ):
+        global _sources_registered
+        if not _sources_registered:
+            register_default_sources()
+            _sources_registered = True
+
         self.config = correlate_config
         self.predefined_commands = predefined_commands or []
         self.hunt_time = hunt_time

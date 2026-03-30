@@ -1,6 +1,5 @@
 import datetime
 import logging
-from typing import Optional
 
 from saq.collectors.hunter.correlation.registry import QuerySource
 
@@ -18,17 +17,14 @@ class SplunkQuerySource(QuerySource):
         end_time: datetime.datetime,
         timeout: datetime.timedelta,
     ) -> list[dict]:
-        from saq.splunk import SplunkQueryObject
+        from saq.splunk import SplunkClient
 
         logging.debug("executing splunk query via correlation source %s", self.config_name)
 
-        splunk_query = SplunkQueryObject(
-            uri=query,
-            start_time=start_time,
-            end_time=end_time,
-            max_result_count=0,
-            query_timeout=timeout,
+        client = SplunkClient(self.config_name)
+        return client.query(
+            query=query,
+            start=start_time,
+            end=end_time,
+            timeout=timeout,
         )
-
-        splunk_query.execute()
-        return splunk_query.json() or []

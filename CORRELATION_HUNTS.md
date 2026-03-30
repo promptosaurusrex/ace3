@@ -174,8 +174,8 @@ command:
     time_range: # NOTE: all time ranges are relative (see below)
         before: timespec
         after: timespec
-        relative_time_field: any string value # optional for relative
-        relative_time_format: any string value # optional for relative
+        relative_time_field: any string value # optional
+        relative_time_format: any string value # optional
 ```
 
 Systems register with the hunter in ACE for the `source` field.
