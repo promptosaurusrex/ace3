@@ -32,6 +32,7 @@ class GUIAlert(Alert):
             "disposition_user_name": self.disposition_user.gui_display if self.disposition_user_id is not None else None,
             "owner_id": self.owner_id,
             "owner_name": self.owner.gui_display if self.owner_id is not None else None,
+            "owner_time": self.owner_time.isoformat() + "Z" if self.owner_time is not None else None,
         }
 
     """Extends the Alert class to add functionality specific to the GUI."""
