@@ -1,0 +1,56 @@
+{# Shared modal for adding observables — used by both index.html and manage.html #}
+<div class="modal fade" id="add_observable_modal" tabindex="-1" role="dialog" aria-labelledby="add_observable_modal_label" aria-hidden="true">
+    <div class="modal-dialog">
+        <form id="add-observable-form" class="form-horizontal" role="form" method="POST" action="{{ add_observable_action | default('', true) }}">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5" id="add_observable_modal_label">Add Observable</h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row">
+                    <div class="col">
+                    <select class="form-control" name="add_observable_type" id="add_observable_type">
+                        <option value="" SELECTED>Select Type</option>
+                        {% for observable_type in observable_types %}
+                        <option value="{{observable_type}}">{{observable_type}}</option>
+                        {% endfor %}
+                    </select>
+                    </div>
+                    <div class="col" id="add_observable_value_content">
+                        <input type="text" class="form-control" id="add_observable_value" name="add_observable_value" value="" placeholder="Enter Value"/>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col">
+                    Time (UTC) - May be left blank
+                    <input type="text" class="form-control" id="add_observable_time" name="add_observable_time" value="" placeholder="YYYY-MM-DD HH:MM:SS"/>
+                    </div>
+                </div>
+                <div class="row" style="margin-top: 10px;">
+                    <div class="col">
+                    Directives (optional)
+                    <div id="add_observable_directives_text_container" style="display: none">
+                        <input class="form-control" type="text" name="add_observable_directives" id="add_observable_directives_text" value="" placeholder="Comma-separated directives">
+                    </div>
+                    <div id="add_observable_directives_multiselect_container">
+                        <select class="form-select" name="add_observable_directives[]" id="add_observable_directives_multiselect" multiple>
+                        {% for directive in directives %}
+                            <option value="{{directive}}" title="{{ directives[directive] }}">{{directive}}</option>
+                        {% endfor %}
+                        </select>
+                    </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                {% if alert is defined and alert %}
+                <input type="hidden" name="alert_uuid" value="{{alert.uuid}}"></input>
+                {% endif %}
+                <button type="button" class="btn btn-outline-black" data-bs-dismiss="modal">Forget It</button>
+                <button type="submit" class="btn btn-outline-primary" id="btn-submit-observable">Add It</button>
+            </div>
+        </div>
+        </form>
+    </div>
+</div>

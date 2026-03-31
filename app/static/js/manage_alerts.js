@@ -232,6 +232,147 @@ $(document).ready(function() {
         $("#tag-remove-form").append('<input type="hidden" name="redirect" value="management" />');
     });
 
+    // --- Add Observable modal handlers ---
+
+    // Reset directive selection when add observable modal opens
+    $('#add_observable_modal').on('show.bs.modal', function () {
+        $("#add_observable_directives_multiselect").val([]);
+        $("#add_observable_directives_text").val("");
+        $("#add_observable_directives_multiselect_container").show();
+        $("#add_observable_directives_text_container").hide();
+        // Reset type and value
+        $("#add_observable_type").val("");
+        var add_observable_input = document.getElementById("add_observable_value");
+        if (add_observable_input) {
+            add_observable_input.parentNode.removeChild(add_observable_input);
+        }
+        $("#add_observable_value_content").empty().append(
+            '<input type="text" class="form-control" id="add_observable_value" name="add_observable_value" value="" placeholder="Enter Value"/>'
+        );
+        $("#add_observable_time").val("");
+    });
+
+    // Handle observable type changes (directive toggle, conversation dual-inputs)
+    $("#add_observable_type").change(function (e) {
+        const observable_type = $("#add_observable_type option:selected").text();
+        var add_observable_input = document.getElementById("add_observable_value");
+        var directives_multiselect = $("#add_observable_directives_multiselect");
+        var directives_multiselect_container = $("#add_observable_directives_multiselect_container");
+        var directives_text_container = $("#add_observable_directives_text_container");
+
+        directives_multiselect.val([]);
+        $("#add_observable_directives_text").val("");
+
+        if (['email_address', 'user'].includes(observable_type)) {
+            directives_multiselect_container.hide();
+            directives_text_container.show();
+        } else {
+            directives_text_container.hide();
+            directives_multiselect_container.show();
+        }
+
+        if (observable_type === 'file') {
+            directives_multiselect.val(['sandbox']);
+        }
+
+        if (!['email_conversation', 'email_delivery', 'ipv4_conversation', 'ipv4_full_conversation'].includes(observable_type)) {
+            add_observable_input.parentNode.removeChild(add_observable_input);
+            $("#add_observable_value_content").append(
+                '<input type="text" class="form-control" id="add_observable_value" name="add_observable_value" value="" placeholder="Enter Value"/>'
+            );
+        } else {
+            add_observable_input.parentNode.removeChild(add_observable_input);
+            let placeholder_src = JSON.parse(window.localStorage.getItem("placeholder_src"));
+            let placeholder_dst = JSON.parse(window.localStorage.getItem("placeholder_dst"));
+            $("#add_observable_value_content").append(
+                '<span id="add_observable_value">' +
+                '<input class="form-control" type="text" name="add_observable_value_A" id="add_observable_value_A" value="" placeholder="' + placeholder_src[observable_type] + '"> to ' +
+                '<input class="form-control" type="text" name="add_observable_value_B" id="add_observable_value_B" value="" placeholder="' + placeholder_dst[observable_type] + '">' +
+                '</span>'
+            );
+        }
+    });
+
+    // Submit add observable form via fetch to FastAPI endpoint
+    $("#add-observable-form").submit(function(e) {
+        e.preventDefault();
+
+        var all_alert_uuids = get_all_checked_alerts();
+        if (all_alert_uuids.length == 0) {
+            alert("You must select one or more alerts to add observables to.");
+            return;
+        }
+
+        var o_type = $("#add_observable_type").val();
+        if (!o_type) {
+            alert("You must select an observable type.");
+            return;
+        }
+
+        // Build observable value (handle conversation types)
+        var o_value;
+        if (['email_conversation', 'email_delivery'].includes(o_type)) {
+            var a = $("#add_observable_value_A").val();
+            var b = $("#add_observable_value_B").val();
+            o_value = a + '|' + b;
+        } else if (o_type === 'ipv4_conversation') {
+            o_value = $("#add_observable_value_A").val() + '_' + $("#add_observable_value_B").val();
+        } else if (o_type === 'ipv4_full_conversation') {
+            o_value = $("#add_observable_value_A").val() + ':' + $("#add_observable_value_B").val();
+        } else {
+            o_value = $("#add_observable_value").val();
+        }
+
+        if (!o_value) {
+            alert("You must enter an observable value.");
+            return;
+        }
+
+        // Collect directives
+        var directives = $("#add_observable_directives_multiselect").val() || [];
+        var directives_text = $("#add_observable_directives_text").val();
+        if (directives_text) {
+            directives = directives_text.split(',').map(function(d) { return d.trim(); }).filter(function(d) { return d !== ''; });
+        }
+
+        var payload = {
+            alert_uuids: all_alert_uuids,
+            observable_type: o_type,
+            observable_value: o_value,
+            observable_time: $("#add_observable_time").val() || null,
+            directives: directives
+        };
+
+        // Close the modal
+        $("#add_observable_modal").modal("hide");
+
+        fetch('/api/v2/alerts/bulk-add-observable', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            credentials: 'same-origin'
+        })
+        .then(function(resp) {
+            if (!resp.ok) {
+                return resp.json().then(function(data) {
+                    throw new Error(data.detail || resp.statusText);
+                });
+            }
+            return resp.json();
+        })
+        .then(function(data) {
+            if (data.failed_count > 0) {
+                alert('Added observable to ' + data.success_count + ' alert(s). Failed on ' + data.failed_count + ' alert(s).');
+            }
+            window.location.replace('/ace/manage');
+        })
+        .catch(function(err) {
+            alert('Failed to add observable: ' + err.message);
+        });
+    });
+
+    // --- End Add Observable modal handlers ---
+
     $("#alert-search-btn").click(function(e) {
         search_alerts();
     });
