@@ -503,6 +503,12 @@
 </div>
 {% endblock event_tag_modal %}
 
+{% block alert_ownership_warning %}
+<div id="ownership_check_warning" class="alert alert-warning d-none" role="alert">
+    <i class="bi bi-wifi-off"></i> Unable to check alert ownership — network may be unreliable.
+</div>
+{% endblock alert_ownership_warning %}
+
 {% block alert_ownership_changed_modal %}
 <div class="modal fade" id="alert_ownership_changed_modal" tabindex="-1" role="dialog" aria-labelledby="alert_ownership_changed_modal_label" aria-hidden="true">
     <div class="modal-dialog">
@@ -512,7 +518,7 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                <b><span id="alert_thief"></span></b> just took ownership of this alert.
+                <b><span id="alert_thief"></span></b> took ownership of this alert <span id="alert_ownership_time">just now</span>.
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">¯\_(ツ)_/¯</button>
