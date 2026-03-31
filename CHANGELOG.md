@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.22] - 2026-03-31
+
+- [Makes get_alert_meta endpoint a bit more robust](https://github.com/ACE-Collective/ace3/pull/101)
+- [Adds support for adding an observable to many alerts at once](https://github.com/ACE-Collective/ace3/pull/102)
+- phishkit bugfixes and enhancements
+
 ## [3.0.21] - 2026-03-30
 
 - [Adds breadcrumb navigation to ACE alerts](https://github.com/ACE-Collective/ace3/pull/94)
