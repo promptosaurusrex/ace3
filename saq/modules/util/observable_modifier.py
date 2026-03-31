@@ -59,7 +59,7 @@ def get_nested_value(data: dict, dot_path: str):
 @dataclass
 class TreeCondition:
     analysis_type: str
-    scope: str = "ancestors"  # "ancestors", "global", or "self"
+    scope: str = "ancestors"  # "ancestors", "global", "self", or "parent"
     details_match: dict[str, re.Pattern] = field(default_factory=dict)
     observable_match: dict[str, re.Pattern] = field(default_factory=dict)
     negate: bool = False
@@ -71,6 +71,8 @@ class TreeCondition:
     def _evaluate_inner(self, observable: Observable, root: RootAnalysis) -> bool:
         if self.scope == "ancestors":
             analyses = _get_ancestor_analyses(observable)
+        elif self.scope == "parent":
+            analyses = observable.parents
         elif self.scope == "self":
             analyses = observable.all_analysis
         else:  # global
@@ -224,6 +226,7 @@ class RuleActions:
     add_detection_points: list[str] = field(default_factory=list)
     exclude_analysis: list[str] = field(default_factory=list)
     limit_analysis: list[str] = field(default_factory=list)
+    ignore: bool = False
 
     def apply(self, observable: Observable) -> dict:
         applied = {}
@@ -251,6 +254,9 @@ class RuleActions:
             for module_name in self.limit_analysis:
                 observable._limited_analysis.append(module_name)
             applied["limit_analysis"] = self.limit_analysis
+
+        if self.ignore:
+            applied["ignore"] = True
 
         return applied
 
@@ -363,6 +369,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
             add_detection_points=actions_data.get("add_detection_points", []) or [],
             exclude_analysis=actions_data.get("exclude_analysis", []) or [],
             limit_analysis=actions_data.get("limit_analysis", []) or [],
+            ignore=bool(actions_data.get("ignore", False)),
         )
 
         return Rule(
@@ -377,7 +384,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
     def _parse_tree_condition(self, tc_data: dict, rule_name: str) -> Optional[TreeCondition]:
         analysis_type = tc_data.get("analysis_type", "")
         scope = tc_data.get("scope", "ancestors")
-        if scope not in ("ancestors", "global", "self"):
+        if scope not in ("ancestors", "global", "self", "parent"):
             logging.warning(f"invalid scope '{scope}' in tree_condition for rule '{rule_name}', defaulting to 'ancestors'")
             scope = "ancestors"
         details_match_raw = tc_data.get("details_match", {}) or {}
@@ -473,6 +480,8 @@ class ObservableModifierAnalyzer(AnalysisModule):
 
         matched_rules = list(self._pre_phase_matches.pop(observable.uuid, []))
 
+        ignore_rules = []
+
         for rule in self._rules:
             if not rule.enabled:
                 continue
@@ -486,6 +495,38 @@ class ObservableModifierAnalyzer(AnalysisModule):
                     "actions_applied": applied,
                 })
                 logging.info(f"observable modifier rule '{rule.name}' matched {observable}")
+
+                if applied.get("ignore"):
+                    ignore_rules.append(rule)
+
+        # Handle ignore action: surgically remove observable from matching parent analyses
+        for rule in ignore_rules:
+            parent_scoped_conditions = [tc for tc in rule.conditions.tree_conditions if tc.scope == "parent"]
+            if parent_scoped_conditions:
+                # Find all non-root analyses that have this observable as a child.
+                # We check _observables directly to avoid RootAnalysis.has_observable()
+                # which searches the global registry rather than its own children.
+                all_parent_analyses = [
+                    a for a in root.all_analysis
+                    if observable in a._observables
+                ]
+                for tc in parent_scoped_conditions:
+                    for parent_analysis in list(all_parent_analyses):
+                        if tc.analysis_type and parent_analysis.module_path == tc.analysis_type:
+                            parent_analysis._observables.remove(observable)
+                            all_parent_analyses.remove(parent_analysis)
+                            logging.info(
+                                f"observable modifier rule '{rule.name}' removed "
+                                f"{observable} from {parent_analysis}"
+                            )
+                # If no non-root parents remain, mark as globally ignored for DB indexing
+                if not all_parent_analyses:
+                    observable.ignored = True
+                    logging.info(f"observable {observable} has no remaining parents, marking as ignored")
+            else:
+                # No parent-scoped tree conditions -- global ignore
+                observable.ignored = True
+                logging.info(f"observable modifier rule '{rule.name}' globally ignored {observable}")
 
         if matched_rules:
             analysis = self.create_analysis(observable)

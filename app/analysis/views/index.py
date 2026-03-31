@@ -155,6 +155,8 @@ def _recurse(current_node, node_tracker=None):
         node_tracker = {}
 
     for observable in analysis.observables:
+        if observable.ignored:
+            continue
         child_node = TreeNode(observable, prune_volatile=current_node.prune_volatile)
         current_node.add_child(child_node)
 

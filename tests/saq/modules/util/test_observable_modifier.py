@@ -11,6 +11,7 @@ from saq.constants import (
     ANALYSIS_MODULE_OBSERVABLE_MODIFIER,
     DIRECTIVE_OCR,
     DIRECTIVE_YARA_META_PREFIX,
+    F_EMAIL_ADDRESS,
     F_FQDN,
     F_URL,
     AnalysisExecutionResult,
@@ -239,6 +240,15 @@ class ActionTracker:
         self.detection_points = []
         self._excluded_analysis = []
         self._limited_analysis = []
+        self._ignored = False
+
+    @property
+    def ignored(self):
+        return self._ignored
+
+    @ignored.setter
+    def ignored(self, value):
+        self._ignored = value
 
     def add_directive(self, d):
         self.directives.append(d)
@@ -2469,3 +2479,277 @@ def test_has_yara_meta_tags_no_match_integration():
     result = adapter.analyze(observable, final_analysis=True)
     assert result == AnalysisExecutionResult.COMPLETED
     assert not observable.has_directive("ocr")
+
+
+# ============================================================
+# Tests for ignore action
+# ============================================================
+
+
+@pytest.mark.unit
+def test_actions_ignore():
+    """ignore: true should record 'ignore' in the applied dict."""
+    actions = RuleActions(ignore=True)
+    tracker = ActionTracker()
+    applied = actions.apply(tracker)
+    assert applied["ignore"] is True
+
+
+@pytest.mark.unit
+def test_actions_ignore_default():
+    """Default ignore=False should not add 'ignore' to applied dict."""
+    actions = RuleActions()
+    tracker = ActionTracker()
+    applied = actions.apply(tracker)
+    assert "ignore" not in applied
+
+
+# ============================================================
+# Tests for parent scope in tree conditions
+# ============================================================
+
+
+@pytest.mark.unit
+def test_tree_condition_parent_scope_match():
+    """Parent scope should match when the analysis type is a direct parent of the observable."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    parent_observable = root.add_observable_by_spec(F_FQDN, "email.vendor.com")
+
+    class ParentEmailAnalysis(Analysis):
+        pass
+
+    email_analysis = ParentEmailAnalysis()
+    email_analysis.details = {}
+    email_analysis.details_modified = True
+    parent_observable.add_analysis(email_analysis)
+
+    # target is a direct child of email_analysis
+    target = email_analysis.add_observable_by_spec(F_EMAIL_ADDRESS, "user@example.com")
+
+    module_path = f"{ParentEmailAnalysis.__module__}:{ParentEmailAnalysis.__name__}"
+    tc = TreeCondition(
+        analysis_type=module_path,
+        scope="parent",
+    )
+    assert tc.evaluate(target, root) is True
+
+
+@pytest.mark.unit
+def test_tree_condition_parent_scope_no_match():
+    """Parent scope should not match when the analysis type is an ancestor but not a direct parent."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    parent_observable = root.add_observable_by_spec(F_FQDN, "email.vendor.com")
+
+    class GrandparentAnalysis(Analysis):
+        pass
+
+    class ChildAnalysis(Analysis):
+        pass
+
+    grandparent_analysis = GrandparentAnalysis()
+    grandparent_analysis.details = {}
+    grandparent_analysis.details_modified = True
+    parent_observable.add_analysis(grandparent_analysis)
+
+    mid_observable = grandparent_analysis.add_observable_by_spec(F_FQDN, "mid.example.com")
+    child_analysis = ChildAnalysis()
+    child_analysis.details = {}
+    child_analysis.details_modified = True
+    mid_observable.add_analysis(child_analysis)
+
+    # target is a child of child_analysis, NOT a direct child of grandparent_analysis
+    target = child_analysis.add_observable_by_spec(F_EMAIL_ADDRESS, "user@example.com")
+
+    module_path = f"{GrandparentAnalysis.__module__}:{GrandparentAnalysis.__name__}"
+    tc = TreeCondition(
+        analysis_type=module_path,
+        scope="parent",
+    )
+    # grandparent_analysis is an ancestor but NOT a direct parent
+    assert tc.evaluate(target, root) is False
+
+
+@pytest.mark.unit
+def test_tree_condition_parent_scope_parsed_from_yaml():
+    """scope: 'parent' should be read correctly from YAML rule config."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    parent_observable = root.add_observable_by_spec(F_FQDN, "email.vendor.com")
+
+    class YAMLParentAnalysis(Analysis):
+        pass
+
+    email_analysis = YAMLParentAnalysis()
+    email_analysis.details = {}
+    email_analysis.details_modified = True
+    parent_observable.add_analysis(email_analysis)
+
+    target = email_analysis.add_observable_by_spec(F_EMAIL_ADDRESS, "user@example.com")
+
+    module_path = f"{YAMLParentAnalysis.__module__}:{YAMLParentAnalysis.__name__}"
+    rules = [{
+        "name": "parent scope test",
+        "conditions": {
+            "observable_types": ["email_address"],
+            "tree_conditions": [{
+                "analysis_type": module_path,
+                "scope": "parent",
+            }],
+        },
+        "actions": {
+            "add_tags": ["matched_parent"],
+        },
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(target)
+    result = adapter.analyze(target, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert target.has_tag("matched_parent")
+
+
+# ============================================================
+# Integration tests for ignore action with parent removal
+# ============================================================
+
+
+@pytest.mark.unit
+def test_ignore_removes_observable_from_matching_parent():
+    """ignore action with parent scope should remove observable from the matching parent analysis."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    parent_observable = root.add_observable_by_spec(F_FQDN, "email.vendor.com")
+
+    class EmailAnalysisStub(Analysis):
+        pass
+
+    email_analysis = EmailAnalysisStub()
+    email_analysis.details = {}
+    email_analysis.details_modified = True
+    parent_observable.add_analysis(email_analysis)
+
+    # Add email_address observable as child of email analysis (envelope recipient)
+    target = email_analysis.add_observable_by_spec(F_EMAIL_ADDRESS, "team@example.com")
+    assert target in email_analysis.observables
+
+    module_path = f"{EmailAnalysisStub.__module__}:{EmailAnalysisStub.__name__}"
+    rules = [{
+        "name": "ignore team emails",
+        "conditions": {
+            "observable_types": ["email_address"],
+            "value_pattern": r"team@example\.com",
+            "tree_conditions": [{
+                "analysis_type": module_path,
+                "scope": "parent",
+            }],
+        },
+        "actions": {
+            "ignore": True,
+        },
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(target)
+    result = adapter.analyze(target, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+    # Observable should be removed from email_analysis._observables
+    assert target not in email_analysis.observables
+    # Observable has no remaining parents, so it should be globally ignored
+    assert target.ignored is True
+
+
+@pytest.mark.unit
+def test_ignore_preserves_observable_in_other_parents():
+    """ignore action should only remove from matching parent, preserving other parent references."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    parent_observable = root.add_observable_by_spec(F_FQDN, "email.vendor.com")
+
+    class EmailAnalysisStub2(Analysis):
+        pass
+
+    class IOCExtractionStub(Analysis):
+        pass
+
+    email_analysis = EmailAnalysisStub2()
+    email_analysis.details = {}
+    email_analysis.details_modified = True
+    parent_observable.add_analysis(email_analysis)
+
+    # Add email as child of email_analysis (envelope recipient)
+    target = email_analysis.add_observable_by_spec(F_EMAIL_ADDRESS, "team@example.com")
+
+    # Also add the SAME observable as child of IOC extraction (simulating IOC extraction finding it too)
+    ioc_parent = root.add_observable_by_spec(F_FQDN, "body.example.com")
+    ioc_analysis = IOCExtractionStub()
+    ioc_analysis.details = {}
+    ioc_analysis.details_modified = True
+    ioc_parent.add_analysis(ioc_analysis)
+    ioc_analysis.add_observable_to_tree(target)
+
+    assert target in email_analysis.observables
+    assert target in ioc_analysis.observables
+
+    email_module_path = f"{EmailAnalysisStub2.__module__}:{EmailAnalysisStub2.__name__}"
+    rules = [{
+        "name": "ignore team emails",
+        "conditions": {
+            "observable_types": ["email_address"],
+            "value_pattern": r"team@example\.com",
+            "tree_conditions": [{
+                "analysis_type": email_module_path,
+                "scope": "parent",
+            }],
+        },
+        "actions": {
+            "ignore": True,
+        },
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(target)
+    result = adapter.analyze(target, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+    # Observable should be removed from email_analysis
+    assert target not in email_analysis.observables
+    # But preserved in ioc_analysis
+    assert target in ioc_analysis.observables
+    # Should NOT be globally ignored since it still has a parent
+    assert target.ignored is False
+
+
+@pytest.mark.unit
+def test_ignore_global_without_parent_scope():
+    """ignore action without parent-scoped tree conditions should globally ignore the observable."""
+    root = create_root_analysis(analysis_mode="test_single", alert_type="test_alert")
+    root.initialize_storage()
+
+    target = root.add_observable_by_spec(F_EMAIL_ADDRESS, "team@example.com")
+
+    rules = [{
+        "name": "global ignore",
+        "conditions": {
+            "observable_types": ["email_address"],
+            "value_pattern": r"team@example\.com",
+        },
+        "actions": {
+            "ignore": True,
+        },
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(target)
+    result = adapter.analyze(target, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+    # No parent-scoped tree conditions, so should be globally ignored
+    assert target.ignored is True
