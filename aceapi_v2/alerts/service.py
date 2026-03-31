@@ -22,8 +22,8 @@ def _add_observable_to_alert(
     o_value: str,
     o_time: datetime | None,
     directives: list[str],
-) -> bool:
-    """Add an observable to a single alert. Returns True on success, False on failure.
+) -> str | None:
+    """Add an observable to a single alert. Returns None on success, or a failure reason string.
 
     This is a synchronous function that performs filesystem lock/load/sync
     operations. It uses the sync get_db() because Alert.sync()
@@ -36,14 +36,14 @@ def _add_observable_to_alert(
     """
     alert = get_db().query(GUIAlert).filter(GUIAlert.uuid == alert_uuid).one_or_none()
     if alert is None:
-        logger.error(f"alert {alert_uuid} not found in database")
-        return False
+        logger.error("alert %s not found in database", alert_uuid)
+        return "alert not found"
 
     lock_uuid = str(uuidlib.uuid4())
     try:
         if not acquire_lock(uuid=str(alert.uuid), lock_uuid=lock_uuid):
-            logger.warning(f"unable to acquire lock on alert {alert_uuid}")
-            return False
+            logger.warning("unable to acquire lock on alert %s", alert_uuid)
+            return "alert is currently locked"
 
         alert.lock_uuid = lock_uuid
         alert.load()
@@ -58,18 +58,18 @@ def _add_observable_to_alert(
         alert.root_analysis.analysis_mode = ANALYSIS_MODE_CORRELATION
         alert.sync()
         add_workload(alert.root_analysis)
-        return True
+        return None
 
     except Exception as e:
-        logger.error(f"unable to add observable to alert {alert_uuid}: {e}")
-        return False
+        logger.error("unable to add observable to alert %s: %s", alert_uuid, e)
+        return f"unexpected error: {e}"
 
     finally:
         try:
             if alert.lock_uuid:
                 release_lock(str(alert.uuid), alert.lock_uuid)
         except Exception:
-            logger.error(f"unable to release lock on alert {alert_uuid}")
+            logger.error("unable to release lock on alert %s", alert_uuid)
 
 
 async def bulk_add_observable(
@@ -94,18 +94,21 @@ async def bulk_add_observable(
 
     success_count = 0
     failed_uuids = []
+    failed_details = {}
 
     for alert_uuid in alert_uuids:
-        result = await asyncio.to_thread(
+        failure_reason = await asyncio.to_thread(
             _add_observable_to_alert, alert_uuid, o_type, o_value, o_time, valid_directives
         )
-        if result:
+        if failure_reason is None:
             success_count += 1
         else:
             failed_uuids.append(alert_uuid)
+            failed_details[alert_uuid] = failure_reason
 
     return BulkAddObservableResult(
         success_count=success_count,
         failed_count=len(failed_uuids),
         failed_uuids=failed_uuids,
+        failed_details=failed_details,
     )

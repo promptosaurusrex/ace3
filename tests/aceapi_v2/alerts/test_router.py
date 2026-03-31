@@ -226,6 +226,7 @@ class TestBulkAddObservable:
         assert data["success_count"] == 0
         assert data["failed_count"] == 1
         assert data["failed_uuids"] == ["uuid-1"]
+        assert data["failed_details"]["uuid-1"] == "alert is currently locked"
 
     @pytest.mark.asyncio
     @patch("aceapi_v2.alerts.service.get_db")
@@ -252,6 +253,7 @@ class TestBulkAddObservable:
         assert data["success_count"] == 0
         assert data["failed_count"] == 1
         assert data["failed_uuids"] == ["nonexistent-uuid"]
+        assert data["failed_details"]["nonexistent-uuid"] == "alert not found"
 
     @pytest.mark.asyncio
     @patch("aceapi_v2.alerts.service.add_workload")
@@ -287,6 +289,7 @@ class TestBulkAddObservable:
         assert data["success_count"] == 1
         assert data["failed_count"] == 1
         assert data["failed_uuids"] == ["uuid-2"]
+        assert data["failed_details"]["uuid-2"] == "alert not found"
 
     @pytest.mark.asyncio
     @patch("aceapi_v2.alerts.service.add_workload")

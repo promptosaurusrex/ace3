@@ -15,3 +15,4 @@ class BulkAddObservableResult(BaseModel):
     success_count: int
     failed_count: int
     failed_uuids: list[str]
+    failed_details: dict[str, str] = {}

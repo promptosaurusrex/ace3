@@ -362,7 +362,14 @@ $(document).ready(function() {
         })
         .then(function(data) {
             if (data.failed_count > 0) {
-                alert('Added observable to ' + data.success_count + ' alert(s). Failed on ' + data.failed_count + ' alert(s).');
+                var msg = 'Added observable to ' + data.success_count + ' alert(s). Failed on ' + data.failed_count + ' alert(s).';
+                if (data.failed_details && Object.keys(data.failed_details).length > 0) {
+                    msg += '\n\nFailure details:';
+                    for (var uuid in data.failed_details) {
+                        msg += '\n  ' + uuid + ': ' + data.failed_details[uuid];
+                    }
+                }
+                alert(msg);
             }
             window.location.replace('/ace/manage');
         })
