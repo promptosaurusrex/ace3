@@ -2,12 +2,13 @@ import json
 import os
 import shutil
 from subprocess import TimeoutExpired
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 
-FULL_FALLBACK_CONFIG = {
+FULL_PROXY_FALLBACK = {
     "error_patterns": [
         "ERR_TUNNEL_CONNECTION_FAILED",
         "ERR_PROXY_CONNECTION_FAILED",
@@ -18,73 +19,7 @@ FULL_FALLBACK_CONFIG = {
     "retry_on_timeout": True,
 }
 
-EMPTY_FALLBACK_CONFIG = {
-    "error_patterns": [],
-    "proxy_status_codes": [],
-    "retry_on_timeout": False,
-}
-
-
-# ---------------------------------------------------------------------------
-# _load_proxy_fallback_config
-# ---------------------------------------------------------------------------
-
-class TestLoadProxyFallbackConfig:
-
-    @pytest.mark.unit
-    def test_returns_empty_when_no_path(self):
-        from phishkit.phishkit import _load_proxy_fallback_config
-
-        result = _load_proxy_fallback_config(None)
-        assert result == EMPTY_FALLBACK_CONFIG
-
-    @pytest.mark.unit
-    def test_returns_empty_when_file_missing(self):
-        from phishkit.phishkit import _load_proxy_fallback_config
-
-        result = _load_proxy_fallback_config("/nonexistent/config.yaml")
-        assert result == EMPTY_FALLBACK_CONFIG
-
-    @pytest.mark.unit
-    def test_loads_full_config(self, tmpdir):
-        from phishkit.phishkit import _load_proxy_fallback_config
-
-        config = tmpdir.join("config.yaml")
-        config.write(
-            "proxy_fallback:\n"
-            "  error_patterns:\n"
-            '    - "CUSTOM_ERROR"\n'
-            "  proxy_status_codes:\n"
-            "    - 999\n"
-            "  retry_on_timeout: false\n"
-        )
-        result = _load_proxy_fallback_config(str(config))
-        assert result["error_patterns"] == ["CUSTOM_ERROR"]
-        assert result["proxy_status_codes"] == [999]
-        assert result["retry_on_timeout"] is False
-
-    @pytest.mark.unit
-    def test_partial_config_defaults_missing_keys(self, tmpdir):
-        from phishkit.phishkit import _load_proxy_fallback_config
-
-        config = tmpdir.join("config.yaml")
-        config.write(
-            "proxy_fallback:\n"
-            "  retry_on_timeout: true\n"
-        )
-        result = _load_proxy_fallback_config(str(config))
-        assert result["error_patterns"] == []
-        assert result["proxy_status_codes"] == []
-        assert result["retry_on_timeout"] is True
-
-    @pytest.mark.unit
-    def test_no_proxy_fallback_section(self, tmpdir):
-        from phishkit.phishkit import _load_proxy_fallback_config
-
-        config = tmpdir.join("config.yaml")
-        config.write("skip_body_extensions:\n  - .png\n")
-        result = _load_proxy_fallback_config(str(config))
-        assert result == EMPTY_FALLBACK_CONFIG
+FULL_CONFIG = {"proxy_fallback": FULL_PROXY_FALLBACK}
 
 
 # ---------------------------------------------------------------------------
@@ -102,35 +37,35 @@ class TestHasProxyError:
         "ERR_PROXY_CERTIFICATE_INVALID",
     ])
     def test_has_proxy_error_each_pattern(self, pattern):
-        from phishkit.phishkit import _has_proxy_error
-        patterns = FULL_FALLBACK_CONFIG["error_patterns"]
+        from phishkit import _has_proxy_error
+        patterns = FULL_PROXY_FALLBACK["error_patterns"]
 
         assert _has_proxy_error(f"some output {pattern} here", "", patterns) is True
 
     @pytest.mark.unit
     def test_has_proxy_error_no_match(self):
-        from phishkit.phishkit import _has_proxy_error
-        patterns = FULL_FALLBACK_CONFIG["error_patterns"]
+        from phishkit import _has_proxy_error
+        patterns = FULL_PROXY_FALLBACK["error_patterns"]
 
         assert _has_proxy_error("all good", "no errors", patterns) is False
 
     @pytest.mark.unit
     def test_has_proxy_error_none_inputs(self):
-        from phishkit.phishkit import _has_proxy_error
-        patterns = FULL_FALLBACK_CONFIG["error_patterns"]
+        from phishkit import _has_proxy_error
+        patterns = FULL_PROXY_FALLBACK["error_patterns"]
 
         assert _has_proxy_error(None, None, patterns) is False
 
     @pytest.mark.unit
     def test_has_proxy_error_in_stderr_only(self):
-        from phishkit.phishkit import _has_proxy_error
-        patterns = FULL_FALLBACK_CONFIG["error_patterns"]
+        from phishkit import _has_proxy_error
+        patterns = FULL_PROXY_FALLBACK["error_patterns"]
 
         assert _has_proxy_error("", "ERR_TUNNEL_CONNECTION_FAILED", patterns) is True
 
     @pytest.mark.unit
     def test_has_proxy_error_custom_patterns(self):
-        from phishkit.phishkit import _has_proxy_error
+        from phishkit import _has_proxy_error
 
         assert _has_proxy_error("CUSTOM_ERR occurred", "", ["CUSTOM_ERR"]) is True
         assert _has_proxy_error("CUSTOM_ERR occurred", "", ["OTHER_ERR"]) is False
@@ -144,7 +79,7 @@ class TestHasProxyStatusCode:
 
     @pytest.mark.unit
     def test_matching_status_code(self, tmpdir):
-        from phishkit.phishkit import _has_proxy_status_code
+        from phishkit import _has_proxy_status_code
 
         output_dir = str(tmpdir)
         requests_data = [
@@ -158,7 +93,7 @@ class TestHasProxyStatusCode:
 
     @pytest.mark.unit
     def test_non_matching_status_code(self, tmpdir):
-        from phishkit.phishkit import _has_proxy_status_code
+        from phishkit import _has_proxy_status_code
 
         output_dir = str(tmpdir)
         requests_data = [
@@ -172,13 +107,13 @@ class TestHasProxyStatusCode:
 
     @pytest.mark.unit
     def test_missing_requests_json(self, tmpdir):
-        from phishkit.phishkit import _has_proxy_status_code
+        from phishkit import _has_proxy_status_code
 
         assert _has_proxy_status_code(str(tmpdir), [502]) is False
 
     @pytest.mark.unit
     def test_empty_requests_json(self, tmpdir):
-        from phishkit.phishkit import _has_proxy_status_code
+        from phishkit import _has_proxy_status_code
 
         output_dir = str(tmpdir)
         with open(os.path.join(output_dir, "requests.json"), "w") as f:
@@ -188,13 +123,13 @@ class TestHasProxyStatusCode:
 
     @pytest.mark.unit
     def test_empty_status_codes_list(self, tmpdir):
-        from phishkit.phishkit import _has_proxy_status_code
+        from phishkit import _has_proxy_status_code
 
         assert _has_proxy_status_code(str(tmpdir), []) is False
 
     @pytest.mark.unit
     def test_only_checks_first_response(self, tmpdir):
-        from phishkit.phishkit import _has_proxy_status_code
+        from phishkit import _has_proxy_status_code
 
         output_dir = str(tmpdir)
         requests_data = [
@@ -216,7 +151,7 @@ class TestSyncConfig:
 
     @pytest.mark.unit
     def test_sync_config_valid_file(self, tmpdir, monkeypatch):
-        import phishkit.phishkit as phishkit_mod
+        import phishkit as phishkit_mod
 
         source = str(tmpdir.join("source_config.yaml"))
         with open(source, "w") as f:
@@ -232,19 +167,19 @@ class TestSyncConfig:
 
     @pytest.mark.unit
     def test_sync_config_none_path(self):
-        from phishkit.phishkit import _sync_config
+        from phishkit import _sync_config
 
         assert _sync_config(None) is None
 
     @pytest.mark.unit
     def test_sync_config_nonexistent_path(self):
-        from phishkit.phishkit import _sync_config
+        from phishkit import _sync_config
 
         assert _sync_config("/nonexistent/config.yaml") is None
 
     @pytest.mark.unit
     def test_sync_config_copy_failure(self, tmpdir, monkeypatch):
-        import phishkit.phishkit as phishkit_mod
+        import phishkit as phishkit_mod
 
         source = str(tmpdir.join("source.yaml"))
         with open(source, "w") as f:
@@ -272,17 +207,29 @@ class TestRunScanner:
         proc.wait = MagicMock()
         return proc
 
-    @pytest.mark.unit
-    @patch("phishkit.phishkit._load_proxy_fallback_config", return_value=FULL_FALLBACK_CONFIG)
-    @patch("phishkit.phishkit._sync_config", return_value=None)
-    def test_run_scanner_successful(self, mock_sync, mock_cfg, tmpdir):
-        from phishkit.phishkit import _run_scanner
+    def _write_config(self, tmpdir, config_data=None):
+        """Write a YAML config file and return its absolute path.
 
+        Passing an absolute path as config_path causes os.path.join("/opt/ace", abs)
+        to return the absolute path unchanged, so the real file is read.
+        """
+        if config_data is None:
+            config_data = FULL_CONFIG
+        config_file = tmpdir.join("phishkit_config.yaml")
+        config_file.write(yaml.dump(config_data))
+        return str(config_file)
+
+    @pytest.mark.unit
+    @patch("phishkit._sync_config", return_value=None)
+    def test_run_scanner_successful(self, mock_sync, tmpdir):
+        from phishkit import _run_scanner
+
+        config_path = self._write_config(tmpdir)
         output_dir = str(tmpdir.join("output"))
         os.makedirs(output_dir)
 
         proc = self._make_mock_process(stdout="scan complete", stderr="", returncode=0)
-        with patch("phishkit.phishkit.Popen", return_value=proc):
+        with patch("phishkit.Popen", return_value=proc):
             stdout, stderr, rc = _run_scanner(
                 target_args=["https://example.com"],
                 output_dir=output_dir,
@@ -290,6 +237,7 @@ class TestRunScanner:
                 timeout=30,
                 proxy=None,
                 proxy_fallback_to_direct=False,
+                config_path=config_path,
             )
 
         assert stdout == "scan complete"
@@ -302,12 +250,12 @@ class TestRunScanner:
             assert f.read() == "0"
 
     @pytest.mark.unit
-    @patch("phishkit.phishkit._load_proxy_fallback_config", return_value=FULL_FALLBACK_CONFIG)
-    @patch("phishkit.phishkit._sync_config", return_value=None)
-    def test_run_scanner_timeout_no_proxy_raises(self, mock_sync, mock_cfg, tmpdir):
+    @patch("phishkit._sync_config", return_value=None)
+    def test_run_scanner_timeout_no_proxy_raises(self, mock_sync, tmpdir):
         """Timeout without proxy still raises TimeoutExpired."""
-        from phishkit.phishkit import _run_scanner
+        from phishkit import _run_scanner
 
+        config_path = self._write_config(tmpdir)
         output_dir = str(tmpdir.join("output"))
         os.makedirs(output_dir)
 
@@ -316,7 +264,7 @@ class TestRunScanner:
         proc.kill = MagicMock()
         proc.wait = MagicMock()
 
-        with patch("phishkit.phishkit.Popen", return_value=proc):
+        with patch("phishkit.Popen", return_value=proc):
             with pytest.raises(TimeoutExpired):
                 _run_scanner(
                     target_args=["https://example.com"],
@@ -325,16 +273,17 @@ class TestRunScanner:
                     timeout=10,
                     proxy=None,
                     proxy_fallback_to_direct=False,
+                    config_path=config_path,
                 )
         proc.kill.assert_called_once()
 
     @pytest.mark.unit
-    @patch("phishkit.phishkit._load_proxy_fallback_config", return_value=FULL_FALLBACK_CONFIG)
-    @patch("phishkit.phishkit._sync_config", return_value=None)
-    def test_run_scanner_timeout_with_proxy_retries(self, mock_sync, mock_cfg, tmpdir):
+    @patch("phishkit._sync_config", return_value=None)
+    def test_run_scanner_timeout_with_proxy_retries(self, mock_sync, tmpdir):
         """Timeout with proxy + fallback enabled retries without proxy."""
-        from phishkit.phishkit import _run_scanner
+        from phishkit import _run_scanner
 
+        config_path = self._write_config(tmpdir)
         output_dir = str(tmpdir.join("output"))
         os.makedirs(output_dir)
 
@@ -353,7 +302,7 @@ class TestRunScanner:
                 return proc
             return direct_proc
 
-        with patch("phishkit.phishkit.Popen", side_effect=popen_side_effect):
+        with patch("phishkit.Popen", side_effect=popen_side_effect):
             stdout, stderr, rc = _run_scanner(
                 target_args=["https://example.com"],
                 output_dir=output_dir,
@@ -361,6 +310,7 @@ class TestRunScanner:
                 timeout=10,
                 proxy="http://proxy:8080",
                 proxy_fallback_to_direct=True,
+                config_path=config_path,
             )
 
         assert call_count == 2
@@ -369,15 +319,15 @@ class TestRunScanner:
         assert rc == 0
 
     @pytest.mark.unit
-    @patch("phishkit.phishkit._load_proxy_fallback_config", return_value={
-        **FULL_FALLBACK_CONFIG,
-        "retry_on_timeout": False,
-    })
-    @patch("phishkit.phishkit._sync_config", return_value=None)
-    def test_run_scanner_timeout_retry_disabled_raises(self, mock_sync, mock_cfg, tmpdir):
+    @patch("phishkit._sync_config", return_value=None)
+    def test_run_scanner_timeout_retry_disabled_raises(self, mock_sync, tmpdir):
         """Timeout with retry_on_timeout=False raises even with proxy."""
-        from phishkit.phishkit import _run_scanner
+        from phishkit import _run_scanner
 
+        config_path = self._write_config(tmpdir, {"proxy_fallback": {
+            **FULL_PROXY_FALLBACK,
+            "retry_on_timeout": False,
+        }})
         output_dir = str(tmpdir.join("output"))
         os.makedirs(output_dir)
 
@@ -386,7 +336,7 @@ class TestRunScanner:
         proc.kill = MagicMock()
         proc.wait = MagicMock()
 
-        with patch("phishkit.phishkit.Popen", return_value=proc):
+        with patch("phishkit.Popen", return_value=proc):
             with pytest.raises(TimeoutExpired):
                 _run_scanner(
                     target_args=["https://example.com"],
@@ -395,14 +345,15 @@ class TestRunScanner:
                     timeout=10,
                     proxy="http://proxy:8080",
                     proxy_fallback_to_direct=True,
+                    config_path=config_path,
                 )
 
     @pytest.mark.unit
-    @patch("phishkit.phishkit._load_proxy_fallback_config", return_value=FULL_FALLBACK_CONFIG)
-    @patch("phishkit.phishkit._sync_config", return_value=None)
-    def test_run_scanner_proxy_fallback(self, mock_sync, mock_cfg, tmpdir):
-        from phishkit.phishkit import _run_scanner
+    @patch("phishkit._sync_config", return_value=None)
+    def test_run_scanner_proxy_fallback(self, mock_sync, tmpdir):
+        from phishkit import _run_scanner
 
+        config_path = self._write_config(tmpdir)
         output_dir = str(tmpdir.join("output"))
         os.makedirs(output_dir)
 
@@ -423,7 +374,7 @@ class TestRunScanner:
                 return proxy_proc
             return direct_proc
 
-        with patch("phishkit.phishkit.Popen", side_effect=popen_side_effect):
+        with patch("phishkit.Popen", side_effect=popen_side_effect):
             stdout, stderr, rc = _run_scanner(
                 target_args=["https://example.com"],
                 output_dir=output_dir,
@@ -431,6 +382,7 @@ class TestRunScanner:
                 timeout=30,
                 proxy="http://proxy:8080",
                 proxy_fallback_to_direct=True,
+                config_path=config_path,
             )
 
         assert call_count == 2
@@ -439,12 +391,12 @@ class TestRunScanner:
         assert rc == 0
 
     @pytest.mark.unit
-    @patch("phishkit.phishkit._load_proxy_fallback_config", return_value=FULL_FALLBACK_CONFIG)
-    @patch("phishkit.phishkit._sync_config", return_value=None)
-    def test_run_scanner_proxy_status_code_fallback(self, mock_sync, mock_cfg, tmpdir):
+    @patch("phishkit._sync_config", return_value=None)
+    def test_run_scanner_proxy_status_code_fallback(self, mock_sync, tmpdir):
         """Proxy error status code in requests.json triggers retry."""
-        from phishkit.phishkit import _run_scanner
+        from phishkit import _run_scanner
 
+        config_path = self._write_config(tmpdir)
         output_dir = str(tmpdir.join("output"))
         os.makedirs(output_dir)
 
@@ -468,7 +420,7 @@ class TestRunScanner:
                 return proxy_proc
             return direct_proc
 
-        with patch("phishkit.phishkit.Popen", side_effect=popen_side_effect):
+        with patch("phishkit.Popen", side_effect=popen_side_effect):
             stdout, stderr, rc = _run_scanner(
                 target_args=["https://example.com"],
                 output_dir=output_dir,
@@ -476,6 +428,7 @@ class TestRunScanner:
                 timeout=30,
                 proxy="http://proxy:8080",
                 proxy_fallback_to_direct=True,
+                config_path=config_path,
             )
 
         assert call_count == 2
@@ -483,11 +436,11 @@ class TestRunScanner:
         assert rc == 0
 
     @pytest.mark.unit
-    @patch("phishkit.phishkit._load_proxy_fallback_config", return_value=FULL_FALLBACK_CONFIG)
-    @patch("phishkit.phishkit._sync_config", return_value=None)
-    def test_run_scanner_proxy_no_fallback(self, mock_sync, mock_cfg, tmpdir):
-        from phishkit.phishkit import _run_scanner
+    @patch("phishkit._sync_config", return_value=None)
+    def test_run_scanner_proxy_no_fallback(self, mock_sync, tmpdir):
+        from phishkit import _run_scanner
 
+        config_path = self._write_config(tmpdir)
         output_dir = str(tmpdir.join("output"))
         os.makedirs(output_dir)
 
@@ -495,7 +448,7 @@ class TestRunScanner:
             stdout="ERR_TUNNEL_CONNECTION_FAILED", stderr="", returncode=1
         )
 
-        with patch("phishkit.phishkit.Popen", return_value=proc) as mock_popen:
+        with patch("phishkit.Popen", return_value=proc) as mock_popen:
             _run_scanner(
                 target_args=["https://example.com"],
                 output_dir=output_dir,
@@ -503,23 +456,24 @@ class TestRunScanner:
                 timeout=30,
                 proxy="http://proxy:8080",
                 proxy_fallback_to_direct=False,
+                config_path=config_path,
             )
 
         # should only be called once (no retry)
         assert mock_popen.call_count == 1
 
     @pytest.mark.unit
-    @patch("phishkit.phishkit._load_proxy_fallback_config", return_value=FULL_FALLBACK_CONFIG)
-    @patch("phishkit.phishkit._sync_config", return_value="/phishkit/config/phishkit_config.yaml")
-    def test_run_scanner_with_config(self, mock_sync, mock_cfg, tmpdir):
-        from phishkit.phishkit import _run_scanner
+    @patch("phishkit._sync_config", return_value="/phishkit/config/phishkit_config.yaml")
+    def test_run_scanner_with_config(self, mock_sync, tmpdir):
+        from phishkit import _run_scanner
 
+        config_path = self._write_config(tmpdir)
         output_dir = str(tmpdir.join("output"))
         os.makedirs(output_dir)
 
         proc = self._make_mock_process(stdout="ok", stderr="", returncode=0)
 
-        with patch("phishkit.phishkit.Popen", return_value=proc) as mock_popen:
+        with patch("phishkit.Popen", return_value=proc) as mock_popen:
             _run_scanner(
                 target_args=["https://example.com"],
                 output_dir=output_dir,
@@ -527,7 +481,7 @@ class TestRunScanner:
                 timeout=30,
                 proxy=None,
                 proxy_fallback_to_direct=False,
-                config_path="etc/phishkit_config.yaml",
+                config_path=config_path,
             )
 
         cmd = mock_popen.call_args[0][0]
@@ -535,17 +489,17 @@ class TestRunScanner:
         assert "/phishkit/config/phishkit_config.yaml" in cmd
 
     @pytest.mark.unit
-    @patch("phishkit.phishkit._load_proxy_fallback_config", return_value=FULL_FALLBACK_CONFIG)
-    @patch("phishkit.phishkit._sync_config", return_value=None)
-    def test_run_scanner_output_files_content(self, mock_sync, mock_cfg, tmpdir):
-        from phishkit.phishkit import _run_scanner
+    @patch("phishkit._sync_config", return_value=None)
+    def test_run_scanner_output_files_content(self, mock_sync, tmpdir):
+        from phishkit import _run_scanner
 
+        config_path = self._write_config(tmpdir)
         output_dir = str(tmpdir.join("output"))
         os.makedirs(output_dir)
 
         proc = self._make_mock_process(stdout="hello stdout", stderr="hello stderr", returncode=42)
 
-        with patch("phishkit.phishkit.Popen", return_value=proc):
+        with patch("phishkit.Popen", return_value=proc):
             _run_scanner(
                 target_args=["https://example.com"],
                 output_dir=output_dir,
@@ -553,6 +507,7 @@ class TestRunScanner:
                 timeout=30,
                 proxy=None,
                 proxy_fallback_to_direct=False,
+                config_path=config_path,
             )
 
         with open(os.path.join(output_dir, "std.out")) as f:
@@ -571,13 +526,13 @@ class TestCorrectFileExtension:
 
     @pytest.mark.unit
     def test_correct_file_extension_already_correct(self, tmpdir):
-        from phishkit.phishkit import _correct_file_extension
+        from phishkit import _correct_file_extension
 
         file_path = str(tmpdir.join("page.html"))
         with open(file_path, "w") as f:
             f.write("<html></html>")
 
-        with patch("phishkit.phishkit.magic") as mock_magic:
+        with patch("phishkit.magic") as mock_magic:
             mock_magic.from_file.return_value = "text/html"
             result = _correct_file_extension(file_path)
 
@@ -585,13 +540,13 @@ class TestCorrectFileExtension:
 
     @pytest.mark.unit
     def test_correct_file_extension_needs_correction(self, tmpdir):
-        from phishkit.phishkit import _correct_file_extension
+        from phishkit import _correct_file_extension
 
         file_path = str(tmpdir.join("page.txt"))
         with open(file_path, "w") as f:
             f.write("<html></html>")
 
-        with patch("phishkit.phishkit.magic") as mock_magic:
+        with patch("phishkit.magic") as mock_magic:
             mock_magic.from_file.return_value = "text/html"
             result = _correct_file_extension(file_path)
 
@@ -600,13 +555,13 @@ class TestCorrectFileExtension:
 
     @pytest.mark.unit
     def test_correct_file_extension_no_mime(self, tmpdir):
-        from phishkit.phishkit import _correct_file_extension
+        from phishkit import _correct_file_extension
 
         file_path = str(tmpdir.join("mystery"))
         with open(file_path, "w") as f:
             f.write("data")
 
-        with patch("phishkit.phishkit.magic") as mock_magic:
+        with patch("phishkit.magic") as mock_magic:
             mock_magic.from_file.return_value = None
             result = _correct_file_extension(file_path)
 
@@ -614,14 +569,14 @@ class TestCorrectFileExtension:
 
     @pytest.mark.unit
     def test_correct_file_extension_no_extension_guess(self, tmpdir):
-        from phishkit.phishkit import _correct_file_extension
+        from phishkit import _correct_file_extension
 
         file_path = str(tmpdir.join("file.bin"))
         with open(file_path, "w") as f:
             f.write("data")
 
-        with patch("phishkit.phishkit.magic") as mock_magic, \
-             patch("phishkit.phishkit.mimetypes") as mock_mimetypes:
+        with patch("phishkit.magic") as mock_magic, \
+             patch("phishkit.mimetypes") as mock_mimetypes:
             mock_magic.from_file.return_value = "application/x-custom"
             mock_mimetypes.guess_extension.return_value = None
             result = _correct_file_extension(file_path)
@@ -636,23 +591,23 @@ class TestCorrectFileExtension:
 class TestScanUrl:
 
     @pytest.mark.unit
-    @patch("phishkit.phishkit._process_output", return_value="/phishkit/output/job-1")
-    @patch("phishkit.phishkit._run_scanner", return_value=("ok", "", 0))
-    @patch("phishkit.phishkit.os.makedirs")
-    @patch("phishkit.phishkit.uuid.uuid4", return_value="job-1")
+    @patch("phishkit._process_output", return_value="/phishkit/output/job-1")
+    @patch("phishkit._run_scanner", return_value=("ok", "", 0))
+    @patch("phishkit.os.makedirs")
+    @patch("phishkit.uuid.uuid4", return_value="job-1")
     def test_scan_url_success(self, mock_uuid, mock_makedirs, mock_run, mock_process):
-        from phishkit.phishkit import scan_url
+        from phishkit import scan_url
 
         result = scan_url("https://example.com", timeout=15)
         mock_run.assert_called_once()
         assert result == "/phishkit/output/job-1"
 
     @pytest.mark.unit
-    @patch("phishkit.phishkit._run_scanner", return_value=("", "error occurred", 1))
-    @patch("phishkit.phishkit.os.makedirs")
-    @patch("phishkit.phishkit.uuid.uuid4", return_value="job-1")
+    @patch("phishkit._run_scanner", return_value=("", "error occurred", 1))
+    @patch("phishkit.os.makedirs")
+    @patch("phishkit.uuid.uuid4", return_value="job-1")
     def test_scan_url_nonzero_exit(self, mock_uuid, mock_makedirs, mock_run):
-        from phishkit.phishkit import scan_url
+        from phishkit import scan_url
 
         with pytest.raises(Exception, match="scan failed"):
             scan_url("https://example.com", timeout=15)
@@ -661,15 +616,15 @@ class TestScanUrl:
 class TestScanFile:
 
     @pytest.mark.unit
-    @patch("phishkit.phishkit._process_output", return_value="/phishkit/output/job-1")
-    @patch("phishkit.phishkit._run_scanner", return_value=("ok", "", 0))
-    @patch("phishkit.phishkit._correct_file_extension", side_effect=lambda p: p)
-    @patch("phishkit.phishkit.shutil.copy2")
-    @patch("phishkit.phishkit.os.makedirs")
-    @patch("phishkit.phishkit.uuid.uuid4", return_value="job-1")
+    @patch("phishkit._process_output", return_value="/phishkit/output/job-1")
+    @patch("phishkit._run_scanner", return_value=("ok", "", 0))
+    @patch("phishkit._correct_file_extension", side_effect=lambda p: p)
+    @patch("phishkit.shutil.copy2")
+    @patch("phishkit.os.makedirs")
+    @patch("phishkit.uuid.uuid4", return_value="job-1")
     def test_scan_file_success(self, mock_uuid, mock_makedirs, mock_copy,
                                mock_correct, mock_run, mock_process):
-        from phishkit.phishkit import scan_file
+        from phishkit import scan_file
 
         result = scan_file("/some/path/malware.html", timeout=15)
         mock_run.assert_called_once()

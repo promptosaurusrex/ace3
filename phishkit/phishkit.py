@@ -20,35 +20,6 @@ logger = logging.getLogger(__name__)
 
 SHARED_CONFIG = "/phishkit/config/phishkit_config.yaml"
 
-_EMPTY_PROXY_FALLBACK = {
-    "error_patterns": [],
-    "proxy_status_codes": [],
-    "retry_on_timeout": False,
-}
-
-
-def _load_proxy_fallback_config(config_path: str | None) -> dict:
-    """Load proxy_fallback section from phishkit config.
-
-    Returns empty/disabled defaults when the config is missing or unreadable,
-    so the config file is the single source of truth for retry behaviour.
-    """
-    if not config_path or not os.path.isfile(config_path):
-        return dict(_EMPTY_PROXY_FALLBACK)
-    try:
-        with open(config_path, "r") as f:
-            data = load(f, Loader=SafeLoader)
-        if isinstance(data, dict) and "proxy_fallback" in data:
-            cfg = data["proxy_fallback"]
-            return {
-                "error_patterns": cfg.get("error_patterns", []),
-                "proxy_status_codes": cfg.get("proxy_status_codes", []),
-                "retry_on_timeout": cfg.get("retry_on_timeout", False),
-            }
-    except Exception as e:
-        logger.warning("failed to load proxy fallback config: %s", e)
-    return dict(_EMPTY_PROXY_FALLBACK)
-
 
 def _has_proxy_error(stdout: str, stderr: str, error_patterns: list[str]) -> bool:
     combined = (stdout or "") + (stderr or "")
@@ -110,14 +81,22 @@ def _run_scanner(
     timeout: int,
     proxy: str | None,
     proxy_fallback_to_direct: bool,
-    config_path: str | None = None,
+    config_path: str,
 ) -> tuple:
     """Run the phishkit scanner, optionally retrying without proxy on proxy errors.
 
     Returns (stdout, stderr, returncode).
     """
-    abs_config = os.path.join("/opt/ace", config_path) if config_path else None
-    fallback_cfg = _load_proxy_fallback_config(abs_config)
+    if not config_path:
+        raise ValueError("config_path is required")
+    abs_config = os.path.join("/opt/ace", config_path)
+    if not os.path.isfile(abs_config):
+        raise FileNotFoundError(f"phishkit config not found: {abs_config}")
+
+    with open(abs_config, "r") as f:
+        config = load(f, Loader=SafeLoader)
+    proxy_fallback = config.get("proxy_fallback", {}) if isinstance(config, dict) else {}
+
     synced = _sync_config(abs_config)
 
     def build_cmd(use_proxy, out_dir):
@@ -153,7 +132,7 @@ def _run_scanner(
         process.kill()
         process.wait()
         timed_out = True
-        if proxy and proxy_fallback_to_direct and fallback_cfg["retry_on_timeout"]:
+        if proxy and proxy_fallback_to_direct and proxy_fallback.get("retry_on_timeout", False):
             should_retry = True
             logger.warning("timeout for job %s, retrying without proxy", job_id)
         else:
@@ -168,10 +147,10 @@ def _run_scanner(
                 logging.info(f"stderr> {line}")
 
         if proxy and proxy_fallback_to_direct:
-            if _has_proxy_error(_stdout, _stderr, fallback_cfg["error_patterns"]):
+            if _has_proxy_error(_stdout, _stderr, proxy_fallback.get("error_patterns", [])):
                 should_retry = True
                 logger.warning("proxy error detected for job %s, retrying without proxy", job_id)
-            elif _has_proxy_status_code(output_dir, fallback_cfg["proxy_status_codes"]):
+            elif _has_proxy_status_code(output_dir, proxy_fallback.get("proxy_status_codes", [])):
                 should_retry = True
                 logger.warning("proxy error status code for job %s, retrying without proxy", job_id)
 

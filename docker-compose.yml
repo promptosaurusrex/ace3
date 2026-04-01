@@ -666,7 +666,8 @@ services:
       ACE3_PHISHKIT_IMAGE_URL: ${ACE3_PHISHKIT_IMAGE_URL:-phishkit:latest}
     hostname: phishkit
     build:
-      context: ./phishkit
+      context: .
+      dockerfile: phishkit/Dockerfile
       args:
         DOCKER_IN_DOCKER_IMAGE: ${DOCKER_IN_DOCKER_IMAGE:-docker:dind}
     image: ${ACE3_PHISHKIT_MANAGER_IMAGE_URL:-phishkit-manager:latest}
