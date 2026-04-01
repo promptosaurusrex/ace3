@@ -495,41 +495,76 @@ class TestBypassRecaptcha:
 class TestVisualCheckboxBypass:
 
     @pytest.mark.unit
-    @patch("scanner.Image.open", return_value=MagicMock())
-    def test_visual_checkbox_bypass_found(self, mock_image_open, scanner):
-        mock_pyautogui = MagicMock()
-        rect = MagicMock()
-        rect.left = 100
-        rect.top = 200
-        rect.width = 30
-        rect.height = 30
-        mock_pyautogui.locate.return_value = rect
-        mock_pyautogui.screenshot.return_value = MagicMock()
+    @patch("scanner.cv2")
+    @patch("scanner.Image.open")
+    def test_visual_checkbox_bypass_found(self, mock_image_open, mock_cv2, scanner, tmpdir):
+        # create a fake screenshot image with a known size
+        fake_screenshot = MagicMock()
+        fake_screenshot.size = (800, 600)
+        fake_checkbox = MagicMock()
+        fake_checkbox.mode = "RGB"
+
+        mock_image_open.side_effect = [fake_checkbox, fake_screenshot]
+
+        # mock numpy array conversion and template matching
+        screenshot_gray = MagicMock()
+        screenshot_gray.shape = [600, 800]
+        needle_gray = MagicMock()
+        needle_gray.shape = [30, 30]
+        mock_cv2.cvtColor.side_effect = [screenshot_gray, needle_gray]
+        mock_cv2.TM_CCOEFF_NORMED = 5
+        mock_cv2.matchTemplate.return_value = MagicMock()
+        # return a high confidence match at (100, 200)
+        mock_cv2.minMaxLoc.return_value = (0, 0.95, (0, 0), (100, 200))
 
         sb = MagicMock()
+        sb.execute_cdp_cmd.return_value = {"data": "AAAA"}
+        scanner._output_dir = str(tmpdir)
         config = {"checkbox_pngs": ["iVBORw0KGgo="]}
 
-        import sys
-        with patch.dict(sys.modules, {"pyautogui": mock_pyautogui}):
-            scanner.visual_checkbox_bypass(sb, config)
+        scanner.visual_checkbox_bypass(sb, config)
 
-        sb.uc_gui_click_x_y.assert_called_once_with(115, 215)
+        # should click at center of matched region: (100 + 15, 200 + 15)
+        click_calls = [
+            c for c in sb.execute_cdp_cmd.call_args_list
+            if c[0][0] == "Input.dispatchMouseEvent" and c[0][1].get("type") == "mousePressed"
+        ]
+        assert len(click_calls) == 1
+        assert click_calls[0][0][1]["x"] == 115
+        assert click_calls[0][0][1]["y"] == 215
 
     @pytest.mark.unit
-    @patch("scanner.Image.open", return_value=MagicMock())
-    def test_visual_checkbox_bypass_not_found(self, mock_image_open, scanner, capsys):
-        mock_pyautogui = MagicMock()
-        mock_pyautogui.ImageNotFoundException = type("ImageNotFoundException", (Exception,), {})
-        mock_pyautogui.locate.side_effect = mock_pyautogui.ImageNotFoundException()
-        mock_pyautogui.screenshot.return_value = MagicMock()
+    @patch("scanner.cv2")
+    @patch("scanner.Image.open")
+    def test_visual_checkbox_bypass_not_found(self, mock_image_open, mock_cv2, scanner, tmpdir, capsys):
+        fake_screenshot = MagicMock()
+        fake_screenshot.size = (800, 600)
+        fake_checkbox = MagicMock()
+        fake_checkbox.mode = "RGB"
+
+        mock_image_open.side_effect = [fake_checkbox, fake_screenshot]
+
+        screenshot_gray = MagicMock()
+        screenshot_gray.shape = [600, 800]
+        needle_gray = MagicMock()
+        needle_gray.shape = [30, 30]
+        mock_cv2.cvtColor.side_effect = [screenshot_gray, needle_gray]
+        mock_cv2.TM_CCOEFF_NORMED = 5
+        mock_cv2.matchTemplate.return_value = MagicMock()
+        # return a low confidence score — no match
+        mock_cv2.minMaxLoc.return_value = (0, 0.5, (0, 0), (0, 0))
 
         sb = MagicMock()
+        sb.execute_cdp_cmd.return_value = {"data": "AAAA"}
+        scanner._output_dir = str(tmpdir)
         config = {"checkbox_pngs": ["iVBORw0KGgo="]}
 
-        import sys
-        with patch.dict(sys.modules, {"pyautogui": mock_pyautogui}):
-            scanner.visual_checkbox_bypass(sb, config)
+        scanner.visual_checkbox_bypass(sb, config)
 
-        sb.uc_gui_click_x_y.assert_not_called()
+        click_calls = [
+            c for c in sb.execute_cdp_cmd.call_args_list
+            if c[0][0] == "Input.dispatchMouseEvent"
+        ]
+        assert len(click_calls) == 0
         captured = capsys.readouterr()
         assert "Failed to find checkbox visually" in captured.out
