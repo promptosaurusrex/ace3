@@ -17,6 +17,7 @@ KEY_EXCLUDED_ANALYSIS = 'excluded_analysis'
 KEY_RELATIONSHIPS = 'relationships'
 KEY_GROUPING_TARGET = 'grouping_target'
 KEY_VOLATILE = 'volatile'
+KEY_IGNORED = 'ignored'
 KEY_LLM_CONTEXT_DOCUMENTS = 'llm_context_documents'
 KEY_DISPLAY_VALUE = 'display_value'
 KEY_DISPLAY_TYPE = 'display_type'
@@ -44,6 +45,7 @@ class ObservableSerializer:
             KEY_RELATIONSHIPS: [r.json for r in observable._relationships],
             KEY_GROUPING_TARGET: observable._grouping_target,
             KEY_VOLATILE: observable._volatile,
+            KEY_IGNORED: observable._ignored,
             KEY_LLM_CONTEXT_DOCUMENTS: observable.llm_context_documents,
             KEY_DISPLAY_VALUE: observable._display_value,
             KEY_DISPLAY_TYPE: observable._display_type,
@@ -99,6 +101,8 @@ class ObservableSerializer:
             observable._grouping_target = data[KEY_GROUPING_TARGET]
         if KEY_VOLATILE in data:
             observable._volatile = data[KEY_VOLATILE]
+        if KEY_IGNORED in data:
+            observable._ignored = data[KEY_IGNORED]
         if KEY_LLM_CONTEXT_DOCUMENTS in data:
             observable.llm_context_documents = data[KEY_LLM_CONTEXT_DOCUMENTS]
         if KEY_DISPLAY_VALUE in data:

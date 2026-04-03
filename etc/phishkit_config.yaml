@@ -102,3 +102,31 @@ handlers:
       - "iVBORw0KGgoAAAANSUhEUgAAAB4AAAAdCAYAAAC9pNwMAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAACdSURBVEhL7ZbBCQMhEEVTi5agdSjYm4JYkdqBzUz4wgYXdnPJEAOZw7uN73n8D6017eA3wtZaSilRrZXGGCzABSfca+sULqVcPuYA7rV1Cvfe55FzjpRSLHjvp7O1dh8+fncl+ITDu7YkLGEWJAwkLGEWJAwkvCeMeYIDzukTQpjOt9Nn29jDBM05v0YfB5i3MUYyxtyHv8m/hTU9Ad+2Lz6J6lqSAAAAAElFTkSuQmCC"
       - "iVBORw0KGgoAAAANSUhEUgAAAB4AAAAfCAYAAADwbH0HAAAABHNCSVQICAgIfAhkiAAAABl0RVh0U29mdHdhcmUAZ25vbWUtc2NyZWVuc2hvdO8Dvz4AAADNSURBVEiJ7dexDYMwEIXhPygdgikM04DEJAzjSVywhgtKsKfAQEGTVERYEVUsEil+nV9xn64737Zte/CFJN9AI3xp7sfHNE10Xcc4jjjnggBZllGWJVVVkef5q/c2VkqhtQ6GAjjn0FqjlPJ6b2NjDABt2yKECAJba5FSYq31em/jdV0BgqHHWcuynMNXJsIRjnCEIxzhCP8YnKYpwNuZ8kmGYfBm7/FuLiEEfd8jpQwG7ymK4hxumoYkSTDGMM9zEHA/b+u69vrb333anrLARsXk3WtJAAAAAElFTkSuQmCC"
       - "iVBORw0KGgoAAAANSUhEUgAAACMAAAAiCAYAAADVhWD8AAAABHNCSVQICAgIfAhkiAAAABl0RVh0U29mdHdhcmUAZ25vbWUtc2NyZWVuc2hvdO8Dvz4AAAEISURBVFiF7dfNaYVAFEDh80I22oBag26sQmEq0YpsZECxCBGLGHXvD7hIFsGQQG5A3yPmwZytw/VDZmC8bdv2xj/p5WrA1yxGymKkXn972LYtdV3T9z3Lspx+ieM4+L5PmqZEUSSuu0lHu+s6iqI4DZDKskwEiV+mqioA4jhGKUUQBKcBxhi01jRNQ1mWIkbcM+M4AtwNAQiCAKUUAMMwiOtEzDRNn4Me0T5nnufjmCuyGCmLkbIYKYuRshgpi5F6DozrusDHxegR7XP2uYcwnucBoLWm7/u7IVrrb3N/6s/vwHmeE4bhMcwOqqoKYwzrup4GuK6L7/skSXLu7+CKnuM0XZHFSL0D8Ydjznm/9PUAAAAASUVORK5CYII="
+
+# Proxy fallback configuration. Controls when the scanner retries a scan
+# without the proxy after detecting proxy-related failures.
+# Only used by the Celery worker (phishkit.py), not by scanner.py.
+#
+# NOTE: Only used if proxy_fallback_to_direct is enabled in main config.
+proxy_fallback:
+  # Chrome network error strings that indicate a proxy failure.
+  # Checked against combined stdout+stderr of the scanner process.
+  error_patterns:
+    - "ERR_TUNNEL_CONNECTION_FAILED"
+    - "ERR_PROXY_CONNECTION_FAILED"
+    - "ERR_PROXY_AUTH_FAILED"
+    - "ERR_PROXY_CERTIFICATE_INVALID"
+
+  # HTTP status codes returned by the proxy on the main page request
+  # that should trigger a retry without proxy.
+  proxy_status_codes:
+    - 400
+    - 403
+    - 407
+    - 500
+    - 502
+    - 504
+    - 522
+
+  # Whether to retry without proxy when the scanner process times out.
+  retry_on_timeout: true

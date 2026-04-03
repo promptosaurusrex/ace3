@@ -2,24 +2,26 @@
 
 import argparse
 import base64
-from io import BytesIO
 import json
 import os
+import random
 import shutil
 import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from io import BytesIO
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urlparse
 
-from yaml import safe_load  # type: ignore
-
-from seleniumbase import SB  # type: ignore
+import cv2  # type: ignore
 import mycdp  # type: ignore
-from selenium_recaptcha_solver import RecaptchaSolver  # type: ignore
+import numpy as np
 from PIL import Image  # type: ignore
+from selenium_recaptcha_solver import RecaptchaSolver  # type: ignore
+from seleniumbase import SB  # type: ignore
+from yaml import safe_load  # type: ignore
 
 # Stealth JS to inject into ServiceWorker/Worker contexts via CDP.
 # Must be self-contained (no references to main page globals).
@@ -581,32 +583,102 @@ class Scanner:
 
     def visual_checkbox_bypass(self, sb: SB, config: dict):
         # This one is always changing and requires special handling: https://github.com/seleniumbase/SeleniumBase/issues/2842
-        import pyautogui  # type: ignore
-
         print("visual checkbox bypass handler")
         sb.wait(
             5
         )  # wait a few sec for the turnstile loading symbol to be replaced by a check box
         checkbox_pngs = config.get("checkbox_pngs", [])
         checkboxes = [Image.open(BytesIO(base64.b64decode(png))) for png in checkbox_pngs]
-        screenshot = pyautogui.screenshot()
-        rect = None
+
+        # Use CDP screenshot instead of pyautogui.screenshot() because
+        # headless2 mode renders via CDP, not to the Xvfb display (which is black).
+        result = sb.execute_cdp_cmd("Page.captureScreenshot", {
+            "format": "png",
+            "fromSurface": True,
+            "captureBeyondViewport": False,
+        })
+        screenshot = Image.open(BytesIO(base64.b64decode(result["data"])))
+        pre_bypass_path = os.path.join(self._output_dir, "pre_bypass_screenshot.png")
+        screenshot.save(pre_bypass_path)
+        print(f"saved pre-bypass screenshot to {pre_bypass_path} (size={screenshot.size})")
+
+        # Convert screenshot to grayscale numpy array for template matching
+        screenshot_gray = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2GRAY)
+
+        match_loc = None
+        match_size = None
+        confidence = 0.88
         for checkbox in checkboxes:
-            try:
-                rect = pyautogui.locate(
-                    checkbox, screenshot, grayscale=True, confidence=0.88
-                )
-            except pyautogui.ImageNotFoundException:
-                print(f"no match found for {checkbox}")
-            if rect:
+            # Convert needle to grayscale numpy array
+            if checkbox.mode == "RGBA":
+                needle_gray = cv2.cvtColor(np.array(checkbox.convert("RGB")), cv2.COLOR_RGB2GRAY)
+            else:
+                needle_gray = cv2.cvtColor(np.array(checkbox), cv2.COLOR_RGB2GRAY)
+
+            if needle_gray.shape[0] > screenshot_gray.shape[0] or needle_gray.shape[1] > screenshot_gray.shape[1]:
+                print(f"skipping {checkbox.size}: larger than screenshot")
+                continue
+
+            # cv2.matchTemplate is what pyautogui.locate delegates to internally
+            result = cv2.matchTemplate(screenshot_gray, needle_gray, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+            print(f"template match for {checkbox.size}: score={max_val:.4f} (threshold={confidence})")
+            if max_val >= confidence:
+                match_loc = max_loc
+                match_size = (needle_gray.shape[1], needle_gray.shape[0])
                 break
 
-        if rect:
-            print(f"Visual match at {rect}")
-            x = rect.left + rect.width // 2
-            y = rect.top + rect.height // 2
-            print(f"Clicking checkbox at ({x},{y})")
-            sb.uc_gui_click_x_y(x, y)
+        if match_loc and match_size:
+            x = match_loc[0] + match_size[0] // 2
+            y = match_loc[1] + match_size[1] // 2
+            print(f"Visual match — clicking checkbox at ({x},{y})")
+            # Use CDP mouse events instead of pyautogui (which requires a display).
+            # Coordinates from the CDP screenshot are already in viewport space.
+            # Simulate mouse movement toward the checkbox first — phishing pages
+            # track mousemove events and flag clicks with no prior movement as bots.
+            start_x = random.randint(100, 400)
+            start_y = random.randint(100, 400)
+            steps = 5
+            for i in range(steps):
+                frac = (i + 1) / steps
+                mx = int(start_x + (x - start_x) * frac)
+                my = int(start_y + (y - start_y) * frac)
+                sb.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                    "type": "mouseMoved",
+                    "x": mx,
+                    "y": my,
+                })
+                time.sleep(0.05)
+            url_before = sb.cdp.get_current_url()
+            for event_type in ("mousePressed", "mouseReleased"):
+                sb.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                    "type": event_type,
+                    "x": x,
+                    "y": y,
+                    "button": "left",
+                    "buttons": 1 if event_type == "mousePressed" else 0,
+                    "clickCount": 1,
+                })
+            # Wait for the page to navigate after the click (some phishing
+            # pages show a "verifying" animation for 10+ seconds before
+            # redirecting to the credential-harvesting page).
+            max_wait = 30
+            poll_interval = 1
+            waited = 0
+            print(f"waiting up to {max_wait}s for navigation after click")
+            while waited < max_wait:
+                time.sleep(poll_interval)
+                waited += poll_interval
+                try:
+                    url_now = sb.cdp.get_current_url()
+                except Exception:
+                    continue
+                if url_now != url_before:
+                    print(f"navigation detected after {waited}s: {url_now}")
+                    sb.wait_for_ready_state_complete(timeout=5)
+                    break
+            else:
+                print(f"no navigation after {max_wait}s")
         else:
             print("Failed to find checkbox visually")
 
@@ -622,6 +694,7 @@ class Scanner:
         if not os.path.isdir(output_dir):
             raise Exception(f"output_dir {output_dir} does not exist")
 
+        self._output_dir = output_dir
         scan_start_time = time.time()
         screenshot_path = None
         downloads = []

@@ -8,7 +8,9 @@ from app.analysis.views.session.filters import _reset_filters, create_filter, ge
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
-from saq.constants import CLOSED_EVENT_LIMIT
+from aceapi_v2.observable_types.service import get_observable_types
+from aceapi_v2.sync import run_async_with_session
+from saq.constants import CLOSED_EVENT_LIMIT, DIRECTIVE_DESCRIPTIONS, GUI_DIRECTIVES
 from saq.database.model import Campaign, DispositionBy, Observable, ObservableMapping, ObservableRemediationMapping, Owner, RemediatedBy, Remediation, Tag, TagMapping, Comment, Event, User
 from saq.database.pool import get_db
 from saq.disposition import get_dispositions
@@ -210,4 +212,8 @@ def manage():
 
         # search data
         search_result_mapping=search_result_mapping,
+
+        # observable modal data
+        observable_types=run_async_with_session(get_observable_types),
+        directives={directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in GUI_DIRECTIVES},
     )

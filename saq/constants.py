@@ -582,7 +582,9 @@ GUI_DIRECTIVES = [
 def register_directive(directive: str, description: str, gui: bool = False):
     global DIRECTIVE_DESCRIPTIONS
     global GUI_DIRECTIVES
+    global VALID_DIRECTIVES
     DIRECTIVE_DESCRIPTIONS[directive] = description
+    VALID_DIRECTIVES.append(directive)
     if gui:
         GUI_DIRECTIVES.append(directive)
 

@@ -1217,8 +1217,11 @@ analysis_module_file_hash_analyzer:
   # ignore_pattern_email = */email.rfc822
   ignore_pattern_email_headers: "*email.rfc822.headers"
   ignore_pattern_email_plain_text: "*email.rfc822.unknown_text_plain_*"
+  ignore_pattern_email_combined: email.rfc822.combined
+  ignore_pattenr_eml: "*.eml"
+  ignore_pattenr_eml_extra: "*.eml.*"
   # Added on 06/10/21 in conjunction with disabling the ignore text/html mimetype setting to help cut down on noise
-  ignore_pattern_email_html: "*email.rfc822.unknown_text_html_*"
+  ignore_pattern_email_html: "*.unknown_text_html_*"
   ignore_mime_type_xml: application/xml
   ignore_mime_type_text_xml: text/xml
   # Disabled on 06/10/21 so that we hash .wsf files (that have text/html mimetype)
@@ -1237,6 +1240,10 @@ analysis_module_file_hash_analyzer:
   ignore_pattern_pdf_txt: "*.pdf.txt"
   ignore_pattern_olevba: "*.olevba/*.bas"
   ignore_pattern_pcode: "*.pcode.bas"
+  ignore_pattern_phishkit: "phishkit/*"
+  ignore_pattern_gs: "*.pdf.gs.pdf"
+  ignore_pattern_ocr: "*.ocr"
+  ignore_pattern_synchrony: "*/synchrony-*"
 
 analysis_module_correlated_tag_analyzer:
   name: correlated_tag_analyzer

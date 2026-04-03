@@ -210,9 +210,41 @@ def test_get_alert_metadata_with_alert(web_client, root_analysis):
                           query_string={'direct': alert.uuid})
     assert result.status_code == 200
     assert result.mimetype == 'application/json'
-    
+
     data = result.get_json()
     assert isinstance(data, dict)
+    assert "owner_id" in data
+    assert "owner_name" in data
+    assert "owner_time" in data
+    # no owner set yet
+    assert data["owner_id"] is None
+    assert data["owner_name"] is None
+    assert data["owner_time"] is None
+
+
+@pytest.mark.integration
+def test_get_alert_metadata_with_owner(web_client, root_analysis):
+    """Test get_alert_metadata returns owner_time when an owner is set."""
+    from datetime import datetime
+    from flask_login import current_user
+
+    root_analysis.save()
+    alert = ALERT(root_analysis)
+
+    db = get_db()
+    db_alert = db.query(Alert).filter(Alert.uuid == alert.uuid).one()
+    db_alert.owner_id = current_user.id
+    db_alert.owner_time = datetime(2026, 3, 30, 12, 0, 0)
+    db.commit()
+
+    result = web_client.get(url_for("analysis.get_alert_metadata"),
+                          query_string={'direct': alert.uuid})
+    assert result.status_code == 200
+    data = result.get_json()
+    assert data["owner_id"] == current_user.id
+    assert data["owner_name"] is not None
+    assert data["owner_time"] is not None
+    assert data["owner_time"].endswith("Z")
 
 
 @pytest.mark.integration

@@ -4,39 +4,70 @@
 
 // this gets loaded when the document loads up
 var current_alert_uuid = null;
+var ownership_check_failures = 0;
+var last_successful_check = null;
+var FAILURE_WARNING_THRESHOLD = 3;
+
+function format_time_ago(date) {
+    var seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+    if (seconds < 30) return "just now";
+    if (seconds < 60) return "less than a minute ago";
+    var minutes = Math.floor(seconds / 60);
+    if (minutes === 1) return "1 minute ago";
+    if (minutes < 60) return minutes + " minutes ago";
+    var hours = Math.floor(minutes / 60);
+    if (hours === 1) return "about 1 hour ago";
+    return "about " + hours + " hours ago";
+}
 
 function check_alert_meta() {
     try {
         if (current_alert_uuid == null)
             return;
 
-        // Modern fetch equivalent of the above $.ajax GET request
-        const params = new URLSearchParams({ direct: current_alert_uuid });
-        fetch(`get_alert_meta?${params.toString()}`, {
+        var params = new URLSearchParams({ direct: current_alert_uuid });
+        fetch("get_alert_meta?" + params.toString(), {
             method: 'GET',
             headers: { 'Accept': 'application/json' },
             credentials: 'same-origin'
         })
-        .then(response => {
+        .then(function(response) {
             if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
+                throw new Error("HTTP " + response.status);
             }
             return response.json();
         })
-        .then(data => {
-            if (data["owner_id"] != null && data["owner_id"] != current_alert_owner_id) {
-                current_alert_owner_id = data["owner_id"];
+        .then(function(data) {
+            ownership_check_failures = 0;
+            last_successful_check = Date.now();
+            $("#ownership_check_warning").addClass("d-none");
+
+            var response_owner_id = data["owner_id"] != null ? Number(data["owner_id"]) : null;
+            var local_owner_id = current_alert_owner_id != null ? Number(current_alert_owner_id) : null;
+
+            if (response_owner_id !== null && response_owner_id !== local_owner_id) {
+                current_alert_owner_id = response_owner_id;
                 $("#alert_thief").text(data["owner_name"]);
+
+                if (data["owner_time"]) {
+                    var ownerDate = new Date(data["owner_time"]);
+                    $("#alert_ownership_time").text(format_time_ago(ownerDate));
+                } else {
+                    $("#alert_ownership_time").text("just now");
+                }
+
                 $("#alert_ownership_changed_modal").modal("show");
-            } else {
-                //console.log(data);
             }
         })
-        .catch(error => {
-            console.log("failed: " + error);
+        .catch(function(error) {
+            ownership_check_failures++;
+            console.log("failed to check alert meta: " + error);
+            if (ownership_check_failures >= FAILURE_WARNING_THRESHOLD) {
+                $("#ownership_check_warning").removeClass("d-none");
+            }
         });
     } catch(error) {
-        console.log("unable to check alert meta: " + e);
+        console.log("unable to check alert meta: " + error);
     } finally {
         setTimeout(check_alert_meta, 5000);
     }

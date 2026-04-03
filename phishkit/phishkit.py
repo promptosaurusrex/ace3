@@ -5,6 +5,7 @@
 #
 
 import argparse
+import json
 import logging
 import mimetypes
 import os
@@ -19,17 +20,39 @@ logger = logging.getLogger(__name__)
 
 SHARED_CONFIG = "/phishkit/config/phishkit_config.yaml"
 
-PROXY_ERROR_PATTERNS = [
-    "ERR_TUNNEL_CONNECTION_FAILED",
-    "ERR_PROXY_CONNECTION_FAILED",
-    "ERR_PROXY_AUTH_FAILED",
-    "ERR_PROXY_CERTIFICATE_INVALID",
-]
 
-
-def _has_proxy_error(stdout: str, stderr: str) -> bool:
+def _has_proxy_error(stdout: str, stderr: str, error_patterns: list[str]) -> bool:
     combined = (stdout or "") + (stderr or "")
-    return any(pattern in combined for pattern in PROXY_ERROR_PATTERNS)
+    return any(pattern in combined for pattern in error_patterns)
+
+
+def _has_proxy_status_code(output_dir: str, proxy_status_codes: list[int]) -> bool:
+    """Check if the main page response in requests.json has a proxy error status code.
+
+    The main page response is the first entry with type=="response" in requests.json.
+    """
+    if not proxy_status_codes:
+        return False
+    requests_path = os.path.join(output_dir, "requests.json")
+    try:
+        with open(requests_path, "r") as f:
+            requests_data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
+        logger.debug("could not read requests.json from %s: %s", output_dir, e)
+        return False
+
+    for entry in requests_data:
+        if entry.get("type") == "response":
+            status_code = entry.get("status_code")
+            if status_code in proxy_status_codes:
+                logger.info(
+                    "main page returned proxy error status %s in %s",
+                    status_code, output_dir,
+                )
+                return True
+            return False
+
+    return False
 
 
 def _sync_config(source_path: str | None) -> str | None:
@@ -58,57 +81,26 @@ def _run_scanner(
     timeout: int,
     proxy: str | None,
     proxy_fallback_to_direct: bool,
-    config_path: str | None = None,
+    config_path: str,
 ) -> tuple:
     """Run the phishkit scanner, optionally retrying without proxy on proxy errors.
 
     Returns (stdout, stderr, returncode).
     """
-    abs_config = os.path.join("/opt/ace", config_path) if config_path else None
+    if not config_path:
+        raise ValueError("config_path is required")
+    abs_config = os.path.join("/opt/ace", config_path)
+    if not os.path.isfile(abs_config):
+        raise FileNotFoundError(f"phishkit config not found: {abs_config}")
+
+    with open(abs_config, "r") as f:
+        config = load(f, Loader=SafeLoader)
+    proxy_fallback = config.get("proxy_fallback", {}) if isinstance(config, dict) else {}
+
     synced = _sync_config(abs_config)
 
-    cmd = [
-        "docker",
-        "run",
-        "--rm",
-        "-v",
-        "ace-phishkit:/phishkit",
-        os.environ.get("ACE3_PHISHKIT_IMAGE_URL", "phishkit"),
-        "/opt/venv/bin/python",
-        "/opt/app/scanner.py",
-        *target_args,
-        "--output-dir",
-        output_dir,
-    ]
-    if proxy:
-        cmd.extend(["--proxy", proxy])
-    if synced:
-        cmd.extend(["--config", synced])
-
-    process = Popen(cmd, stdout=PIPE, stderr=PIPE, text=True)
-    try:
-        _stdout, _stderr = process.communicate(timeout=timeout)
-    except TimeoutExpired:
-        process.kill()
-        process.wait()
-        raise
-
-    for line in _stdout.splitlines():
-        logging.info(f"stdout> {line}")
-
-    if process.returncode != 0:
-        for line in _stderr.splitlines():
-            logging.info(f"stderr> {line}")
-
-    # check for proxy errors and retry without proxy if configured
-    if proxy and proxy_fallback_to_direct and _has_proxy_error(_stdout, _stderr):
-        logger.warning("proxy error detected for job %s, retrying without proxy", job_id)
-        proxy_stdout = _stdout
-
-        retry_output_dir = f"{output_dir}-direct"
-        os.makedirs(retry_output_dir, exist_ok=True)
-
-        retry_cmd = [
+    def build_cmd(use_proxy, out_dir):
+        cmd = [
             "docker",
             "run",
             "--rm",
@@ -119,11 +111,56 @@ def _run_scanner(
             "/opt/app/scanner.py",
             *target_args,
             "--output-dir",
-            retry_output_dir,
+            out_dir,
         ]
+        if use_proxy and proxy:
+            cmd.extend(["--proxy", proxy])
         if synced:
-            retry_cmd.extend(["--config", synced])
+            cmd.extend(["--config", synced])
+        return cmd
 
+    cmd = build_cmd(use_proxy=True, out_dir=output_dir)
+    process = Popen(cmd, stdout=PIPE, stderr=PIPE, text=True)
+
+    should_retry = False
+    timed_out = False
+    _stdout, _stderr = "", ""
+
+    try:
+        _stdout, _stderr = process.communicate(timeout=timeout)
+    except TimeoutExpired:
+        process.kill()
+        process.wait()
+        timed_out = True
+        if proxy and proxy_fallback_to_direct and proxy_fallback.get("retry_on_timeout", False):
+            should_retry = True
+            logger.warning("timeout for job %s, retrying without proxy", job_id)
+        else:
+            raise
+
+    if not timed_out:
+        for line in _stdout.splitlines():
+            logging.info(f"stdout> {line}")
+
+        if process.returncode != 0:
+            for line in _stderr.splitlines():
+                logging.info(f"stderr> {line}")
+
+        if proxy and proxy_fallback_to_direct:
+            if _has_proxy_error(_stdout, _stderr, proxy_fallback.get("error_patterns", [])):
+                should_retry = True
+                logger.warning("proxy error detected for job %s, retrying without proxy", job_id)
+            elif _has_proxy_status_code(output_dir, proxy_fallback.get("proxy_status_codes", [])):
+                should_retry = True
+                logger.warning("proxy error status code for job %s, retrying without proxy", job_id)
+
+    if should_retry:
+        proxy_stdout = _stdout
+
+        retry_output_dir = f"{output_dir}-direct"
+        os.makedirs(retry_output_dir, exist_ok=True)
+
+        retry_cmd = build_cmd(use_proxy=False, out_dir=retry_output_dir)
         process = Popen(retry_cmd, stdout=PIPE, stderr=PIPE, text=True)
         try:
             _stdout, _stderr = process.communicate(timeout=timeout)
@@ -139,7 +176,8 @@ def _run_scanner(
             for line in _stderr.splitlines():
                 logging.info(f"stderr(direct)> {line}")
 
-        _stdout = f"--- PROXY ATTEMPT (failed, retried direct) ---\n{proxy_stdout}\n--- DIRECT ATTEMPT ---\n{_stdout}"
+        reason = "timed out" if timed_out else "failed"
+        _stdout = f"--- PROXY ATTEMPT ({reason}, retried direct) ---\n{proxy_stdout}\n--- DIRECT ATTEMPT ---\n{_stdout}"
 
         # copy retry output files into the main output directory
         for entry in os.listdir(retry_output_dir):

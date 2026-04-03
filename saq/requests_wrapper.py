@@ -52,10 +52,6 @@ class Session(requests.Session):
         self.mount('https://', adapter)
         self.mount('http://', adapter)
 
-        # apply base url if one exists
-        if not url.startswith(self.base_url):
-            url = f'{self.base_url}{url}'
-
         response = super().request(method, url, timeout=timeout, **kwargs)
 
         # raise status code exceptions
