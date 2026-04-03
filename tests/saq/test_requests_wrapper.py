@@ -61,7 +61,7 @@ def test_session(monkeypatch):
 
     # verify
     assert response.request['method'] == 'GET'
-    assert response.request['url'] == 'https://www.google.com/url'
+    assert response.request['url'] == '/url'
     assert response.request['timeout'] == 1
     assert response.request['https'] == response.request['http']
     assert isinstance(response.request['https'], HTTPAdapter)
@@ -86,7 +86,7 @@ def test_session_override(monkeypatch):
 
     # verify
     assert response.request['method'] == 'GET'
-    assert response.request['url'] == 'https://www.google.com/url'
+    assert response.request['url'] == '/url'
     assert response.request['timeout'] == 10
     assert response.request['https'] == response.request['http']
     assert isinstance(response.request['https'], HTTPAdapter)
