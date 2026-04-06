@@ -2,10 +2,12 @@
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import random
 import shutil
+import struct
 import sys
 import time
 from dataclasses import dataclass
@@ -141,6 +143,11 @@ if (typeof Navigator !== 'undefined') {
     ].join('\\n');
 
     // Patch Worker/SharedWorker constructors for URL-based Workers.
+    // For blob-URL Workers created from PoW-patched blobs, wrap postMessage
+    // to capture challenge params and store the Worker so Python can inject
+    // a fake solution message later.
+    window.__powWorkers = [];
+
     function patchWorkerCtor(Orig, name) {
         const Patched = function(scriptURL, options) {
             if (options && options.type === 'module') {
@@ -149,7 +156,18 @@ if (typeof Navigator !== 'undefined') {
             try {
                 const url = String(scriptURL);
                 if (url.startsWith('blob:')) {
-                    return new Orig(scriptURL, options);
+                    const w = new Orig(scriptURL, options);
+                    // Wrap postMessage to capture PoW challenge parameters.
+                    // The page's solve() sends {challenge, difficulty, workerId, workers, rounds}.
+                    const origPM = w.postMessage.bind(w);
+                    w.postMessage = function(data) {
+                        if (data && data.challenge && data.difficulty) {
+                            console.log('__POW_PARAMS__:' + JSON.stringify(data));
+                            window.__powWorkers.push(w);
+                        }
+                        return origPM(data);
+                    };
+                    return w;
                 }
                 const resolved = new URL(url, location.href).href;
                 const blob = new Blob(
@@ -248,10 +266,75 @@ window.matchMedia = function(query) {
     }
     return result;
 };
+
+// 10. Proof-of-Work bypass: intercept fetch for challenge params, replace PoW Worker
+// blobs with no-op stubs.  The Worker constructor patch (section 7) wraps postMessage
+// to emit __POW_PARAMS__ via console.log and stores Worker refs on window.__powWorkers.
+// Python solves the PoW and dispatches a fake onmessage event on the first Worker.
+(function() {
+    // Intercept fetch responses containing PoW challenge parameters (?api=1)
+    const _origFetch = window.fetch;
+    window.fetch = async function(...args) {
+        const resp = await _origFetch.apply(this, args);
+        try {
+            if (resp.url && resp.url.includes('api=1')) {
+                const clone = resp.clone();
+                const json = await clone.json();
+                if (json.nonce && json.difficulty) {
+                    console.log('__POW_CHALLENGE__:' + JSON.stringify(json));
+                }
+            }
+        } catch(e) {}
+        return resp;
+    };
+
+    // Patch Blob constructor to detect PoW Worker scripts and replace with
+    // a no-op stub.  The stub does nothing — the solution is injected by
+    // dispatching a fake message event on the Worker from the main page.
+    const _origBlob = window.Blob;
+    window.Blob = function(parts, options) {
+        if (parts && parts.length > 0 && options && /javascript/i.test(options.type || '')) {
+            try {
+                var src = '';
+                for (var i = 0; i < parts.length; i++) {
+                    if (typeof parts[i] === 'string') src += parts[i];
+                }
+                if (src.includes('crypto.subtle.digest') && src.includes('SHA-256')) {
+                    console.log('__POW_BLOB_REPLACED__');
+                    return new _origBlob(['self.onmessage=function(){};'], options);
+                }
+            } catch(e) {}
+        }
+        return new _origBlob(parts, options);
+    };
+    window.Blob.prototype = _origBlob.prototype;
+    Object.defineProperty(window.Blob, 'name', { value: 'Blob' });
+})();
 """
 
 # Default config path baked into the scanner Docker image.
 DEFAULT_CONFIG_PATH = "/opt/app/phishkit_config.yaml"
+
+
+def solve_pow_challenge(challenge: str, difficulty: int, rounds: int) -> int:
+    """Solve a SHA-256 proof-of-work challenge matching the phishing kit's Worker algorithm.
+
+    The Worker JS computes: SHA256(challenge + nonce), then iterates `rounds` more
+    SHA256 digests, and checks if the first 4 bytes (big-endian uint32) are below
+    the target threshold (2^32 / 2^difficulty).
+
+    Returns the winning nonce (integer).
+    """
+    target = (1 << 32) // (1 << difficulty)
+    attempt = 0
+    while True:
+        h = hashlib.sha256((challenge + str(attempt)).encode()).digest()
+        for _ in range(rounds):
+            h = hashlib.sha256(h).digest()
+        value = struct.unpack(">I", h[:4])[0]
+        if value < target:
+            return attempt
+        attempt += 1
 
 
 @dataclass
@@ -319,6 +402,7 @@ class Scanner:
         self._bypass_handlers = {
             "visual_checkbox_bypass": self.visual_checkbox_bypass,
         }
+        self._pow_params = None  # set by console handler when PoW challenge is detected
 
     def _get_domain_stats(self, domain: str) -> dict:
         if domain not in self.domain_stats:
@@ -481,6 +565,24 @@ class Scanner:
                 )
             except Exception:
                 pass
+
+    async def console_api_handler(self, event: mycdp.runtime.ConsoleAPICalled):
+        """Watch for PoW-related console messages emitted by our injected JS."""
+        try:
+            if event.type_ != "log" or not event.args:
+                return
+            text = str(event.args[0].value) if event.args[0].value else ""
+            if text.startswith("__POW_PARAMS__:"):
+                payload = json.loads(text[len("__POW_PARAMS__:"):])
+                self._pow_params = payload
+                print(f"PoW params received: challenge={payload.get('challenge', '?')[:40]}... "
+                      f"difficulty={payload.get('difficulty')} rounds={payload.get('rounds')}")
+            elif text.startswith("__POW_CHALLENGE__:"):
+                print(f"PoW API challenge received: {text[len('__POW_CHALLENGE__:'):]}")
+            elif text.startswith("__POW_BLOB_REPLACED__"):
+                print("PoW Worker blob replaced with stub")
+        except Exception as e:
+            print(f"console handler error: {e}")
 
     async def send_handler(self, event: mycdp.network.RequestWillBeSent):
         # print(f"send handler callback received event {event}")
@@ -659,26 +761,62 @@ class Scanner:
                     "buttons": 1 if event_type == "mousePressed" else 0,
                     "clickCount": 1,
                 })
-            # Wait for the page to navigate after the click (some phishing
-            # pages show a "verifying" animation for 10+ seconds before
-            # redirecting to the credential-harvesting page).
-            max_wait = 30
-            poll_interval = 1
-            waited = 0
+            # Wait for the page to navigate after the click.  Also watch for
+            # a proof-of-work challenge: our injected JS replaces PoW Worker
+            # blobs with stubs and emits the challenge params via console.log.
+            # When we see them, solve in Python and inject the answer back.
+            max_wait = 60
+            poll_interval = 0.5
+            waited = 0.0
+            pow_solved = False
+            self._pow_params = None
             print(f"waiting up to {max_wait}s for navigation after click")
             while waited < max_wait:
                 time.sleep(poll_interval)
                 waited += poll_interval
+
+                # Check for PoW challenge params from our stub Workers
+                if self._pow_params and not pow_solved:
+                    params = self._pow_params
+                    challenge = params.get("challenge", "")
+                    difficulty = params.get("difficulty", 6)
+                    rounds = params.get("rounds", 10000)
+                    print(f"solving PoW: challenge={challenge[:40]}... difficulty={difficulty} rounds={rounds}")
+                    t0 = time.time()
+                    solution = solve_pow_challenge(challenge, difficulty, rounds)
+                    elapsed = time.time() - t0
+                    print(f"PoW solved: nonce={solution} in {elapsed:.2f}s")
+                    # Dispatch a fake message event on the first stored PoW Worker.
+                    # The page's solve() sets worker.onmessage to handle solutions;
+                    # triggering it with our answer lets the page's own POST logic run.
+                    sb.execute_cdp_cmd("Runtime.evaluate", {
+                        "expression": (
+                            f"(function() {{"
+                            f"  var w = window.__powWorkers && window.__powWorkers[0];"
+                            f"  if (w && w.onmessage) {{"
+                            f"    w.onmessage(new MessageEvent('message', {{data: {{solution: {solution}, value: 0}}}}));"
+                            f"  }}"
+                            f"}})()"
+                        )
+                    })
+                    pow_solved = True
+
                 try:
                     url_now = sb.cdp.get_current_url()
                 except Exception:
                     continue
                 if url_now != url_before:
-                    print(f"navigation detected after {waited}s: {url_now}")
-                    sb.wait_for_ready_state_complete(timeout=5)
+                    print(f"navigation detected after {waited:.1f}s: {url_now}")
+                    sb.wait_for_ready_state_complete(timeout=10)
+                    # After PoW bypass, the destination page often renders
+                    # dynamically (e.g. a fake login form with a loading
+                    # spinner).  Give it extra time to fully settle.
+                    if pow_solved:
+                        print("waiting 5s for post-PoW page to render")
+                        time.sleep(5)
                     break
             else:
-                print(f"no navigation after {max_wait}s")
+                print(f"no navigation after {max_wait}s (pow_solved={pow_solved})")
         else:
             print("Failed to find checkbox visually")
 
@@ -746,6 +884,10 @@ class Scanner:
                 'waitForDebuggerOnStart': True,
                 'flatten': True,
             })
+
+            # Enable Runtime domain to receive console messages from our PoW intercept JS
+            sb.execute_cdp_cmd('Runtime.enable', {})
+            sb.cdp.add_handler(mycdp.runtime.ConsoleAPICalled, self.console_api_handler)
 
             # phishkits detecting on User Agent + Sec-Ch-Ua-Platform on 2025-02-26
             sb.execute_cdp_cmd(
