@@ -22,7 +22,9 @@
 #       # Observable-level conditions
 #       observable_types: [file]           # Observable type must be one of these
 #       value_pattern: ".*\\.html$"        # Regex match on observable value
-#       file_name_pattern: ".*\\.html$"   # Regex match on file name (file observables only)
+#       file_name_pattern: ".*\\.html$"    # Regex match on file name (file observables only)
+#       display_type_pattern: "Recipient"  # Regex match on observable display_type
+#       display_value_pattern: "decoded"   # Regex match on observable display_value
 #       has_tags: [some_tag]               # Observable must have ALL of these tags
 #       has_directives: [some_directive]   # Observable must have ALL of these directives
 #       has_yara_meta_tags: [type=document.text.qrcode]  # Observable must have ALL of these yara meta tags (auto-prefixed with "yara_meta:")
@@ -44,6 +46,8 @@
 #       add_detection_points: ["Matched observable modifier rule: suspicious file"]
 #       exclude_analysis: ["saq.modules.sandbox:SandboxAnalyzer"]
 #       limit_analysis: ["saq.modules.file_analysis.ioc_extraction:IOCExtractionAnalyzer"]
+#       set_display_type: "Phishing URL"   # Override observable display_type
+#       set_display_value: "decoded payload" # Override observable display_value
 #
 # All condition fields are optional. Multiple conditions within a rule use AND logic.
 # Multiple rules are evaluated independently.
