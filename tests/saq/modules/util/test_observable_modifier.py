@@ -122,11 +122,33 @@ def test_analysis_summary_with_matches():
 class MockObservable:
     """Minimal mock for condition testing."""
 
-    def __init__(self, type="file", value="test.html", tags=None, directives=None):
+    def __init__(self, type="file", value="test.html", tags=None, directives=None, display_type=None, display_value=None):
         self.type = type
         self.value = value
         self._tags = tags or []
         self._directives = directives or []
+        self._display_type = display_type
+        self._display_value = display_value
+
+    @property
+    def display_type(self) -> str:
+        if self._display_type is not None:
+            return f"{self._display_type} ({self.type})"
+        return self.type
+
+    @display_type.setter
+    def display_type(self, value: str):
+        self._display_type = value
+
+    @property
+    def display_value(self) -> str:
+        if self._display_value is not None:
+            return f"{self._display_value} ({self.value})"
+        return self.value
+
+    @display_value.setter
+    def display_value(self, value: str):
+        self._display_value = value
 
     def has_tag(self, tag):
         return tag in self._tags
@@ -209,6 +231,42 @@ def test_conditions_value_pattern():
 
 
 @pytest.mark.unit
+def test_conditions_display_type_pattern():
+    cond = RuleConditions(display_type_pattern=re.compile(r"Phishing"))
+    # display_type with _display_type set returns "Phishing URL (url)"
+    assert cond.evaluate(MockObservable(type="url", display_type="Phishing URL"), MockRoot()) is True
+    # display_type without _display_type returns the raw type "url"
+    assert cond.evaluate(MockObservable(type="url"), MockRoot()) is False
+    # display_type "file" doesn't match "Phishing"
+    assert cond.evaluate(MockObservable(type="file"), MockRoot()) is False
+
+
+@pytest.mark.unit
+def test_conditions_display_value_pattern():
+    cond = RuleConditions(display_value_pattern=re.compile(r"decoded"))
+    # display_value with _display_value set returns "decoded payload (test.html)"
+    assert cond.evaluate(MockObservable(display_value="decoded payload"), MockRoot()) is True
+    # display_value without _display_value returns "test.html"
+    assert cond.evaluate(MockObservable(value="test.html"), MockRoot()) is False
+
+
+@pytest.mark.unit
+def test_conditions_display_type_pattern_early():
+    """evaluate_early should also check display_type_pattern."""
+    cond = RuleConditions(display_type_pattern=re.compile(r"Phishing"))
+    assert cond.evaluate_early(MockObservable(type="url", display_type="Phishing URL"), MockRoot()) is True
+    assert cond.evaluate_early(MockObservable(type="url"), MockRoot()) is False
+
+
+@pytest.mark.unit
+def test_conditions_display_value_pattern_early():
+    """evaluate_early should also check display_value_pattern."""
+    cond = RuleConditions(display_value_pattern=re.compile(r"decoded"))
+    assert cond.evaluate_early(MockObservable(display_value="decoded payload"), MockRoot()) is True
+    assert cond.evaluate_early(MockObservable(value="test.html"), MockRoot()) is False
+
+
+@pytest.mark.unit
 def test_conditions_and_logic():
     """All conditions must match (AND logic)."""
     cond = RuleConditions(
@@ -241,6 +299,8 @@ class ActionTracker:
         self._excluded_analysis = []
         self._limited_analysis = []
         self._ignored = False
+        self._display_type = None
+        self._display_value = None
 
     @property
     def ignored(self):
@@ -249,6 +309,22 @@ class ActionTracker:
     @ignored.setter
     def ignored(self, value):
         self._ignored = value
+
+    @property
+    def display_type(self):
+        return self._display_type
+
+    @display_type.setter
+    def display_type(self, value):
+        self._display_type = value
+
+    @property
+    def display_value(self):
+        return self._display_value
+
+    @display_value.setter
+    def display_value(self, value):
+        self._display_value = value
 
     def add_directive(self, d):
         self.directives.append(d)
@@ -312,6 +388,35 @@ def test_actions_empty():
     tracker = ActionTracker()
     applied = actions.apply(tracker)
     assert applied == {}
+
+
+@pytest.mark.unit
+def test_actions_set_display_type():
+    actions = RuleActions(set_display_type="Phishing URL")
+    tracker = ActionTracker()
+    applied = actions.apply(tracker)
+    assert tracker.display_type == "Phishing URL"
+    assert applied["set_display_type"] == "Phishing URL"
+
+
+@pytest.mark.unit
+def test_actions_set_display_value():
+    actions = RuleActions(set_display_value="decoded payload")
+    tracker = ActionTracker()
+    applied = actions.apply(tracker)
+    assert tracker.display_value == "decoded payload"
+    assert applied["set_display_value"] == "decoded payload"
+
+
+@pytest.mark.unit
+def test_actions_set_display_type_and_value():
+    actions = RuleActions(set_display_type="Phishing URL", set_display_value="decoded payload")
+    tracker = ActionTracker()
+    applied = actions.apply(tracker)
+    assert tracker.display_type == "Phishing URL"
+    assert tracker.display_value == "decoded payload"
+    assert applied["set_display_type"] == "Phishing URL"
+    assert applied["set_display_value"] == "decoded payload"
 
 
 # ============================================================
@@ -799,6 +904,60 @@ def test_invalid_regex_in_details_match(caplog):
                     "email.from": "[bad regex(",
                 },
             }],
+        },
+        "actions": {
+            "add_directives": ["should_not_appear"],
+        },
+    }]
+
+    with caplog.at_level(logging.WARNING):
+        adapter = _create_analyzer_with_rules(root, rules)
+        adapter.execute_analysis(observable)
+        result = adapter.analyze(observable, final_analysis=True)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert not observable.has_directive("should_not_appear")
+    assert any("invalid" in msg.lower() for msg in [r.message for r in caplog.records])
+
+
+@pytest.mark.unit
+def test_invalid_regex_in_display_type_pattern(caplog):
+    """Invalid regex in display_type_pattern should skip the rule with a warning."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "bad display_type regex rule",
+        "conditions": {
+            "display_type_pattern": "[invalid regex(",
+        },
+        "actions": {
+            "add_directives": ["should_not_appear"],
+        },
+    }]
+
+    with caplog.at_level(logging.WARNING):
+        adapter = _create_analyzer_with_rules(root, rules)
+        adapter.execute_analysis(observable)
+        result = adapter.analyze(observable, final_analysis=True)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert not observable.has_directive("should_not_appear")
+    assert any("invalid" in msg.lower() for msg in [r.message for r in caplog.records])
+
+
+@pytest.mark.unit
+def test_invalid_regex_in_display_value_pattern(caplog):
+    """Invalid regex in display_value_pattern should skip the rule with a warning."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "bad display_value regex rule",
+        "conditions": {
+            "display_value_pattern": "[invalid regex(",
         },
         "actions": {
             "add_directives": ["should_not_appear"],
