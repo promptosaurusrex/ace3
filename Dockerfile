@@ -137,7 +137,7 @@ RUN apt-get update && \
     apt-get install -y dotnet-sdk-8.0
 
 # install ilspycmd
-RUN dotnet tool install --tool-path /opt/dotnet ilspycmd
+RUN dotnet tool install --tool-path /opt/dotnet ilspycmd --version 9.1.0.7988
 
 # create necessary directories
 RUN mkdir -p /opt/signatures /opt/ace /venv /opt/tools && \
