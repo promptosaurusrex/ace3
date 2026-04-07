@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.26] - 2026-04-07
+
+- [Update pivot link icon handling in alert template to support external URLs](https://github.com/ACE-Collective/ace3/pull/113)
+- [Pins ilspy to last known working version for .NET 8.0](https://github.com/ACE-Collective/ace3/pull/112)
+
 ## [3.0.25] - 2026-04-07
 
 - [Observable modifier rules match by display_type/value](https://github.com/ACE-Collective/ace3/pull/110)
