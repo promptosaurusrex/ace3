@@ -137,7 +137,7 @@ RUN apt-get update && \
     apt-get install -y dotnet-sdk-8.0
 
 # install ilspycmd
-RUN dotnet tool install --tool-path /opt/dotnet ilspycmd
+RUN dotnet tool install --tool-path /opt/dotnet ilspycmd --version 9.1.0.7988
 
 # create necessary directories
 RUN mkdir -p /opt/signatures /opt/ace /venv /opt/tools && \
@@ -268,7 +268,7 @@ USER root
 
 # ACE_VERSION is set late in the Dockerfile so that version bumps don't
 # invalidate the expensive apt-get, pip, and John the Ripper build layers
-ARG ACE_VERSION=3.0.24
+ARG ACE_VERSION=3.0.26
 LABEL version="${ACE_VERSION}"
 ENV ACE_VERSION=${ACE_VERSION}
 

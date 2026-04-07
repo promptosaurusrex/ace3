@@ -139,6 +139,8 @@ class RuleConditions:
     has_tags: list[str] = field(default_factory=list)
     has_directives: list[str] = field(default_factory=list)
     has_yara_meta_tags: list[str] = field(default_factory=list)
+    display_type_pattern: Optional[re.Pattern] = None
+    display_value_pattern: Optional[re.Pattern] = None
     tree_conditions: list[TreeCondition] = field(default_factory=list)
 
     def evaluate_early(self, observable: Observable, root: RootAnalysis) -> bool:
@@ -159,6 +161,12 @@ class RuleConditions:
         if self.file_name_pattern is not None:
             file_name = getattr(observable, "file_name", None)
             if file_name is None or not self.file_name_pattern.search(file_name):
+                return False
+        if self.display_type_pattern is not None:
+            if not self.display_type_pattern.search(str(observable.display_type)):
+                return False
+        if self.display_value_pattern is not None:
+            if not self.display_value_pattern.search(str(observable.display_value)):
                 return False
         return True
 
@@ -211,6 +219,16 @@ class RuleConditions:
             if file_name is None or not self.file_name_pattern.search(file_name):
                 return False
 
+        # Display type pattern (regex)
+        if self.display_type_pattern is not None:
+            if not self.display_type_pattern.search(str(observable.display_type)):
+                return False
+
+        # Display value pattern (regex)
+        if self.display_value_pattern is not None:
+            if not self.display_value_pattern.search(str(observable.display_value)):
+                return False
+
         # Tree conditions (most expensive — disk I/O)
         for tc in self.tree_conditions:
             if not tc.evaluate(observable, root):
@@ -226,6 +244,8 @@ class RuleActions:
     add_detection_points: list[str] = field(default_factory=list)
     exclude_analysis: list[str] = field(default_factory=list)
     limit_analysis: list[str] = field(default_factory=list)
+    set_display_type: Optional[str] = None
+    set_display_value: Optional[str] = None
     ignore: bool = False
 
     def apply(self, observable: Observable) -> dict:
@@ -254,6 +274,14 @@ class RuleActions:
             for module_name in self.limit_analysis:
                 observable._limited_analysis.append(module_name)
             applied["limit_analysis"] = self.limit_analysis
+
+        if self.set_display_type is not None:
+            observable.display_type = self.set_display_type
+            applied["set_display_type"] = self.set_display_type
+
+        if self.set_display_value is not None:
+            observable.display_value = self.set_display_value
+            applied["set_display_value"] = self.set_display_value
 
         if self.ignore:
             applied["ignore"] = True
@@ -343,6 +371,24 @@ class ObservableModifierAnalyzer(AnalysisModule):
                 logging.warning(f"invalid file_name_pattern regex '{raw_fn_pattern}' in rule '{name}': {e}")
                 return None
 
+        display_type_pattern = None
+        raw_dt_pattern = conditions_data.get("display_type_pattern")
+        if raw_dt_pattern:
+            try:
+                display_type_pattern = re.compile(raw_dt_pattern)
+            except re.error as e:
+                logging.warning(f"invalid display_type_pattern regex '{raw_dt_pattern}' in rule '{name}': {e}")
+                return None
+
+        display_value_pattern = None
+        raw_dv_pattern = conditions_data.get("display_value_pattern")
+        if raw_dv_pattern:
+            try:
+                display_value_pattern = re.compile(raw_dv_pattern)
+            except re.error as e:
+                logging.warning(f"invalid display_value_pattern regex '{raw_dv_pattern}' in rule '{name}': {e}")
+                return None
+
         tree_conditions = []
         for tc_data in conditions_data.get("tree_conditions", []) or []:
             tc = self._parse_tree_condition(tc_data, name)
@@ -357,6 +403,8 @@ class ObservableModifierAnalyzer(AnalysisModule):
             observable_types=conditions_data.get("observable_types", []) or [],
             value_pattern=value_pattern,
             file_name_pattern=file_name_pattern,
+            display_type_pattern=display_type_pattern,
+            display_value_pattern=display_value_pattern,
             has_tags=conditions_data.get("has_tags", []) or [],
             has_directives=conditions_data.get("has_directives", []) or [],
             has_yara_meta_tags=conditions_data.get("has_yara_meta_tags", []) or [],
@@ -369,6 +417,8 @@ class ObservableModifierAnalyzer(AnalysisModule):
             add_detection_points=actions_data.get("add_detection_points", []) or [],
             exclude_analysis=actions_data.get("exclude_analysis", []) or [],
             limit_analysis=actions_data.get("limit_analysis", []) or [],
+            set_display_type=actions_data.get("set_display_type"),
+            set_display_value=actions_data.get("set_display_value"),
             ignore=bool(actions_data.get("ignore", False)),
         )
 
