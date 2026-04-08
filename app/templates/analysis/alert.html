@@ -110,7 +110,7 @@
         <td class="col-md-10">
             <a target="_blank" href="{{pivot_link.url}}">
             {% if pivot_link.icon %}
-                <img src="{% if '://' in pivot_link.icon %}{{ pivot_link.icon }}{% else %}{{ url_for('static', filename=pivot_link.icon) }}{% endif %}" width="12" height="12" align="absmiddle">
+                <img src="{% if '://' in pivot_link.icon or pivot_link.icon.startswith('data:') %}{{ pivot_link.icon }}{% else %}{{ url_for('static', filename=pivot_link.icon) }}{% endif %}" width="12" height="12" align="absmiddle">
             {% endif %}
                 {{pivot_link.text}}
             </a></td>
@@ -308,7 +308,7 @@
                     {# display any external (pivot) links #}
                     {% for pivot_link in node.obj.pivot_links %}
                         <a target="_blank" href="{{pivot_link.url}}">
-                            {% if pivot_link.icon %}<img src="{% if '://' in pivot_link.icon %}{{ pivot_link.icon }}{% else %}{{ url_for('static', filename=pivot_link.icon) }}{% endif %}" width="12" height="12" align="absmiddle" alt="{{pivot_link.text}}">{% else %}{{pivot_link.text}}{% endif %}
+                            {% if pivot_link.icon %}<img src="{% if '://' in pivot_link.icon or pivot_link.icon.startswith('data:') %}{{ pivot_link.icon }}{% else %}{{ url_for('static', filename=pivot_link.icon) }}{% endif %}" width="12" height="12" align="absmiddle" alt="{{pivot_link.text}}">{% else %}{{pivot_link.text}}{% endif %}
                         </a>
                     {% endfor %}
 
