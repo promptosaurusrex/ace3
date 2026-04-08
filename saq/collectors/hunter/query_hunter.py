@@ -48,6 +48,7 @@ QUERY_DETAILS_SEARCH_ID = "search_id"
 QUERY_DETAILS_SEARCH_LINK = "search_link"
 QUERY_DETAILS_QUERY = "query"
 QUERY_DETAILS_EVENTS = "events"
+QUERY_DETAILS_CORRELATION_TRACE = "correlation_trace"
 
 T = TypeVar("T")
 
@@ -621,6 +622,7 @@ class QueryHunt(Hunt):
                 max_result_count=self.max_result_count,
             )
             result = engine.execute(query_results)
+            self.correlation_trace = result.trace
             if result.discarded:
                 return []
             query_results = result.events
@@ -796,5 +798,11 @@ class QueryHunt(Hunt):
                 submission.root.description += f' ({len(submission.root.details.get(QUERY_DETAILS_EVENTS, []))} event{"" if len(submission.root.details.get(QUERY_DETAILS_EVENTS, [])) == 1 else "s"})'
 
         self._process_summary_details(query_results, event_submission_map)
+
+        # Attach correlation trace to each submission's details for alert persistence
+        if hasattr(self, "correlation_trace") and self.correlation_trace is not None:
+            trace_data = self.correlation_trace.model_dump()
+            for submission in submissions:
+                submission.root.details[QUERY_DETAILS_CORRELATION_TRACE] = trace_data
 
         return submissions

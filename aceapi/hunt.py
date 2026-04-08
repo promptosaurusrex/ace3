@@ -172,7 +172,16 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
         for record in collected_logs:
             formatted_logs.append(log_formatter.format(record))
 
-        return jsonify({"valid": True, "roots": root_json_results, "logs": formatted_logs}), 200
+        correlation_trace = None
+        if hasattr(hunt, "correlation_trace") and hunt.correlation_trace is not None:
+            correlation_trace = hunt.correlation_trace.model_dump()
+
+        return jsonify({
+            "valid": True,
+            "roots": root_json_results,
+            "logs": formatted_logs,
+            "correlation_trace": correlation_trace,
+        }), 200
     finally:
         root_logger.removeHandler(log_handler)
 
