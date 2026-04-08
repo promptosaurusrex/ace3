@@ -1,5 +1,6 @@
 from datetime import datetime
 import logging
+import os
 import shutil
 import tempfile
 from typing import List, Optional
@@ -17,11 +18,24 @@ from saq.collectors.hunter.base_hunter import HuntConfig
 from saq.collectors.hunter.loader import load_from_yaml
 from saq.collectors.hunter.query_hunter import QueryHunt
 from saq.collectors.hunter.service import HunterService
+from saq.configuration import get_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, QUEUE_DEFAULT
 from saq.error.remote import RemoteApiError
 from saq.database.util.alert import ALERT
-from saq.environment import get_temp_dir
+from saq.environment import get_data_dir
 from saq.util.uuid import storage_dir_from_uuid
+
+
+def get_compiled_hunt_dir() -> str:
+    """Return a directory for compiled hunt temp files that supports execution.
+
+    The default temp directory (/tmp) may be mounted as a noexec tmpfs in Docker,
+    preventing extracted scripts from being executed. This uses a configurable
+    subdirectory under the data directory instead.
+    """
+    path = os.path.join(get_data_dir(), get_config().global_settings.compiled_hunt_dir)
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 class ListLogHandler(logging.Handler):
@@ -200,7 +214,7 @@ def validate_hunt():
     except ValidationError as e:
         return jsonify({"valid": False, "error": f"invalid compiled_hunt: {e}"}), 400
 
-    temp_dir = tempfile.mkdtemp(dir=get_temp_dir())
+    temp_dir = tempfile.mkdtemp(dir=get_compiled_hunt_dir())
 
     try:
         try:

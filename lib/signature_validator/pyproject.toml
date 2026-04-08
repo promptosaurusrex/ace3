@@ -3,16 +3,24 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hunt-compiler"
+name = "signature-validator"
 version = "1.0.0"
-description = "Compiler for ACE hunt definitions - produces self-contained, serializable intermediate format"
+description = "Compiler and validator for ACE signature definitions"
 requires-python = ">=3.10"
 dependencies = [
     "pydantic>=2",
     "pyyaml",
+    "requests",
+    "urllib3",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest",
 ]
+p12 = [
+    "requests-pkcs12",
+]
+
+[project.scripts]
+validate-hunt = "hunt_compiler.validate:main"

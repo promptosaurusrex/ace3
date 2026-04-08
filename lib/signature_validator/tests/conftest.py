@@ -1,5 +1,6 @@
 import os
 import struct
+import tempfile
 
 import pytest
 
@@ -8,6 +9,19 @@ import pytest
 def hunt_dir(tmp_path):
     """Create a minimal hunt directory structure for testing."""
     return tmp_path
+
+
+@pytest.fixture
+def exec_tmp_path():
+    """Temp directory on a filesystem that allows execution.
+
+    The default tmp_path uses /tmp which may be mounted as noexec tmpfs in
+    Docker. This fixture creates a temp directory under the project root
+    instead, which is on a regular filesystem that allows execution.
+    """
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    with tempfile.TemporaryDirectory(dir=project_root) as d:
+        yield d
 
 
 @pytest.fixture

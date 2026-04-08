@@ -1,6 +1,6 @@
 import os
 import stat
-
+import subprocess
 
 from hunt_compiler import compile_hunt, load_compiled_hunt, CompiledHunt
 
@@ -170,3 +170,45 @@ class TestRoundTrip:
         assert binary_path.read_bytes() == original_bytes
         file_mode = stat.S_IMODE(os.stat(binary_path).st_mode)
         assert file_mode == 0o755
+
+
+class TestExecutableScripts:
+    """Verify that loaded executable scripts can actually be executed, not just
+    that their permission bits are set correctly.
+
+    Uses exec_tmp_path fixture which creates a temp directory on a filesystem
+    that allows execution (unlike /tmp which may be noexec tmpfs in Docker).
+    """
+
+    def test_loaded_script_can_execute(self, hunt_with_executables, hunt_dir, exec_tmp_path):
+        compiled = compile_hunt(str(hunt_with_executables), root_dir=str(hunt_dir))
+        target_dir = os.path.join(exec_tmp_path, "output")
+        os.makedirs(target_dir)
+
+        load_compiled_hunt(compiled, target_dir)
+
+        script_path = os.path.join(target_dir, "hunts", "scripts", "check_user.py")
+        result = subprocess.run(
+            [script_path],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        assert result.returncode == 0
+        assert "true" in result.stdout
+
+    def test_loaded_inline_script_can_execute(self, hunt_with_inline_executable, hunt_dir, exec_tmp_path):
+        compiled = compile_hunt(str(hunt_with_inline_executable), root_dir=str(hunt_dir))
+        target_dir = os.path.join(exec_tmp_path, "output")
+        os.makedirs(target_dir)
+
+        load_compiled_hunt(compiled, target_dir)
+
+        script_path = os.path.join(target_dir, "hunts", "scripts", "enrich.py")
+        result = subprocess.run(
+            [script_path],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        assert result.returncode == 0

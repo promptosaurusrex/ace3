@@ -1,0 +1,584 @@
+#!/usr/bin/env python3
+
+import argparse
+from datetime import datetime, timedelta, timezone
+import getpass
+import glob
+import json
+import os
+import sys
+import traceback
+from typing import Optional
+import urllib3
+import warnings
+from zoneinfo import ZoneInfo
+
+import requests
+
+try:
+    from requests_pkcs12 import post as pkcs12_post
+    PKCS12_AVAILABLE = True
+except ImportError:
+    PKCS12_AVAILABLE = False
+
+from hunt_compiler import compile_hunt
+
+warnings.simplefilter("ignore", urllib3.exceptions.SecurityWarning)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Validate a hunt")
+    parser.add_argument(
+        "file_paths", type=str, nargs="*",
+        help="the hunt YAML file(s) to validate (defaults to all *.yaml files in the current directory)"
+    )
+    parser.add_argument(
+        "-r",
+        "--remote-host",
+        type=str,
+        help="The remote host to connect to",
+        default=os.environ.get("ACE_API_HOST", "aceatu.com:443"),
+    )
+    parser.add_argument(
+        "-u",
+        "--ui-host",
+        type=str,
+        help="The UI host to link to",
+        default=os.environ.get("ACE_UI_HOST", "aceatu.com:443"),
+    )
+    parser.add_argument(
+        "-k",
+        "--api-key",
+        type=str,
+        help="The api key to use",
+        default=os.environ.get("ACE_API_KEY", None),
+    )
+    parser.add_argument(
+        "-V",
+        "--disable-ssl-verification",
+        action="store_true",
+        help="Whether to disable the ssl certificate verification",
+        default=False,
+    )
+    parser.add_argument(
+        "--ca-bundle",
+        type=str,
+        help="Path to a custom root CA bundle file for SSL certificate verification",
+        default=os.environ.get("ACE_CA_BUNDLE", None),
+    )
+    parser.add_argument(
+        "--client-cert",
+        type=str,
+        help="Path to a client SSL certificate file (can be combined cert+key or specify --client-key separately)",
+        default=os.environ.get("ACE_CLIENT_CERT", None),
+    )
+    parser.add_argument(
+        "--client-key",
+        type=str,
+        help="Path to a client SSL certificate key file (required if --client-cert is not a combined file)",
+        default=os.environ.get("ACE_CLIENT_KEY", None),
+    )
+    parser.add_argument(
+        "--client-p12",
+        type=str,
+        help="Path to a PKCS#12 (.p12/.pfx) client certificate file (alternative to --client-cert)",
+        default=os.environ.get("ACE_CLIENT_P12", None),
+    )
+    parser.add_argument(
+        "--client-p12-password",
+        type=str,
+        help="Password for the PKCS#12 file (can also be set via ACE_CLIENT_P12_PASSWORD env var)",
+        default=os.environ.get("ACE_CLIENT_P12_PASSWORD", None),
+    )
+
+    parser.add_argument(
+        "-s",
+        "--start-time",
+        type=str,
+        help="The start time to use for the hunt in MM/DD/YYYY:HH:MM:SS format",
+    )
+    parser.add_argument(
+        "-e",
+        "--end-time",
+        type=str,
+        help="The end time to use for the hunt in MM/DD/YYYY:HH:MM:SS format",
+    )
+    parser.add_argument(
+        "-z",
+        "--timezone",
+        type=str,
+        help="The timezone to use for the hunt specified by tz database (IANA) time zone identifier. If not specified, UTC is assumed.",
+    )
+    parser.add_argument(
+        "--analyze-results",
+        action="store_true",
+        help="Submit any results to the ACE instance for analysis. This is implied if -a is specified.",
+    )
+    parser.add_argument(
+        "-a",
+        "--alert",
+        action="store_true",
+        help="Submit any results to the ACE instance as alerts.",
+    )
+    parser.add_argument(
+        "-q",
+        "--queue",
+        type=str,
+        help="The queue to use for the hunt. If not specified, defaults to the current user name.",
+        default=getpass.getuser(),
+    )
+    parser.add_argument(
+        "--print-results", action="store_true", help="Print the raw query results."
+    )
+    parser.add_argument(
+        "--print-logs", action="store_true", help="Print the execution logs."
+    )
+    parser.add_argument(
+        "--print-trace",
+        action="store_true",
+        help="Print the correlation trace data when present in results.",
+    )
+    parser.add_argument(
+        "-o", "--output-file", help="Save the raw JSON to the given file."
+    )
+    rel_group = parser.add_argument_group(
+        "Relative time window (mutually exclusive with -s/-e)"
+    )
+    rel_group.add_argument(
+        "-H",
+        "--hours",
+        type=int,
+        default=0,
+        help="Look back N hours (e.g., -H 12 or --hours 12)",
+    )
+    rel_group.add_argument(
+        "-D",
+        "--days",
+        type=int,
+        default=0,
+        help="Look back N days (e.g., -D 3 or --days 3)",
+    )
+    rel_group.add_argument(
+        "-S",
+        "--seconds",
+        type=int,
+        default=0,
+        help="Look back N seconds (e.g., -S 30 or --seconds 30)",
+    )
+    rel_group.add_argument(
+        "-M",
+        "--minutes",
+        type=int,
+        default=0,
+        help="Look back N minutes (e.g., -M 5 or --minutes 5)",
+    )
+
+    return parser.parse_args()
+
+
+def validate_args(args: argparse.Namespace) -> None:
+    if args.api_key is None:
+        raise ValueError(
+            "The API key is not set! Please set the ACE_API_KEY environment variable."
+        )
+
+    # Validate that PEM and p12 options are not both specified
+    if args.client_cert and args.client_p12:
+        raise ValueError(
+            "Cannot specify both --client-cert and --client-p12. Use one or the other."
+        )
+
+    if args.client_p12 and not PKCS12_AVAILABLE:
+        raise ValueError(
+            "requests-pkcs12 library is not installed. Install it with: pip install requests-pkcs12"
+        )
+
+    # Disallow partial absolute
+    if (args.start_time and not args.end_time) or (args.end_time and not args.start_time):
+        raise ValueError("Provide both --start-time and --end-time, or use --hours/--days.")
+
+    rel_any = (
+        (args.seconds and args.seconds > 0)
+        or (args.minutes and args.minutes > 0)
+        or (args.hours and args.hours > 0)
+        or (args.days and args.days > 0)
+    )
+
+    # Disallow mixing absolute and relative
+    if rel_any and (args.start_time or args.end_time):
+        raise ValueError(
+            "Specify either absolute times (-s/-e) OR relative (-S/--seconds, -M/--minutes, -H/--hours, -D/--days), not both."
+        )
+
+    # Non-negative relative inputs
+    if args.seconds is not None and args.seconds < 0:
+        raise ValueError("--seconds must be >= 0")
+    if args.minutes is not None and args.minutes < 0:
+        raise ValueError("--minutes must be >= 0")
+    if args.hours is not None and args.hours < 0:
+        raise ValueError("--hours must be >= 0")
+    if args.days is not None and args.days < 0:
+        raise ValueError("--days must be >= 0")
+
+    # Validate timezone (if provided)
+    if args.timezone:
+        try:
+            ZoneInfo(args.timezone)  # ensure it's a valid IANA TZ
+        except Exception as e:
+            raise ValueError(
+                f"Invalid timezone '{args.timezone}'. Use an IANA zone like 'UTC' or 'America/Chicago'."
+            ) from e
+
+    if args.start_time is not None and args.end_time is not None:
+        date_fmt = "%m/%d/%Y:%H:%M:%S"
+        try:
+            start_dt = datetime.strptime(args.start_time, date_fmt)
+            end_dt = datetime.strptime(args.end_time, date_fmt)
+        except ValueError as e:
+            raise ValueError(
+                "Start and end times must be in MM/DD/YYYY:HH:MM:SS format. %s" % e
+            ) from e
+        if end_dt <= start_dt:
+            raise ValueError(
+                "End time must be after start time (got start=%s, end=%s)"
+                % (args.start_time, args.end_time)
+            )
+
+
+def validate_hunt(
+    file_path: str,
+    remote_host: str,
+    api_key: str,
+    disable_ssl_verification: bool = False,
+    ca_bundle: Optional[str] = None,
+    client_cert: Optional[str] = None,
+    client_key: Optional[str] = None,
+    client_p12: Optional[str] = None,
+    client_p12_password: Optional[str] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    timezone: Optional[str] = None,
+    analyze_results: bool = False,
+    create_alerts: bool = False,
+    queue: Optional[str] = None,
+) -> bool:
+    compiled = compile_hunt(file_path, root_dir=os.path.dirname(file_path))
+
+    json_data = {
+        "compiled_hunt": compiled.model_dump(),
+    }
+
+    if start_time is not None and end_time is not None:
+        json_data["execution_arguments"] = {
+            "start_time": start_time,
+            "end_time": end_time,
+            "timezone": timezone,
+            "analyze_results": analyze_results,
+            "create_alerts": create_alerts,
+            "queue": queue,
+        }
+
+    # Configure SSL verification
+    if disable_ssl_verification:
+        verify_setting = False
+    elif ca_bundle:
+        verify_setting = ca_bundle
+    else:
+        verify_setting = True
+
+    # Make the request - use requests_pkcs12 if p12 file is provided, otherwise use regular requests
+    if client_p12:
+        # Use requests_pkcs12 for PKCS#12 files
+        response = pkcs12_post(
+            "https://{}/api/hunt/validate".format(remote_host),
+            json=json_data,
+            headers={"x-ace-auth": api_key},
+            verify=verify_setting,
+            pkcs12_filename=client_p12,
+            pkcs12_password=client_p12_password,
+        )
+    else:
+        # Use regular requests for PEM certificates
+        cert_setting = None
+        if client_cert:
+            if client_key:
+                cert_setting = (client_cert, client_key)
+            else:
+                cert_setting = client_cert
+
+        response = requests.post(
+            "https://{}/api/hunt/validate".format(remote_host),
+            json=json_data,
+            headers={"x-ace-auth": api_key},
+            verify=verify_setting,
+            cert=cert_setting,
+        )
+
+    try:
+        response.raise_for_status()
+    except requests.exceptions.RequestException:
+        if response.status_code == 400:
+            return response.json()
+
+        raise
+
+    return response.json()
+
+
+def _format_expression(expr: dict, lines: list, indent: int = 6):
+    """Recursively format an expression trace for display."""
+    prefix = " " * indent
+    etype = expr["expression_type"]
+    result = expr["result"]
+    result_color = "\033[92m" if result else "\033[91m"
+
+    if etype in ("and", "or", "not"):
+        lines.append(f"{prefix}{etype.upper()} -> {result_color}{result}\033[0m")
+        for sub in expr.get("sub_expressions") or []:
+            _format_expression(sub, lines, indent + 2)
+    elif etype == "jinja":
+        rendered = expr.get("rendered_value", "")
+        lines.append(f"{prefix}jinja -> {result_color}{result}\033[0m (rendered: {rendered})")
+    else:
+        # equals, glob, regex
+        prop_name = expr.get("property_name", "")
+        prop_value = expr.get("property_value", "")
+        compare_value = expr.get("compare_value", "")
+        lines.append(
+            f"{prefix}{etype}: {prop_name} = {prop_value} vs {compare_value} -> {result_color}{result}\033[0m"
+        )
+
+    if expr.get("error"):
+        lines.append(f"{prefix}\033[91merror: {expr['error']}\033[0m")
+
+
+def _format_step(step: dict, lines: list, indent: int = 4):
+    """Format a single step trace for display."""
+    prefix = " " * indent
+    desc = step.get("description", "")
+    desc_suffix = f"  # {desc}" if desc else ""
+    inner = step["step"]
+    trace_type = inner["trace_type"]
+
+    if trace_type == "condition":
+        result = inner["expression"]["result"]
+        result_color = "\033[92m" if result else "\033[91m"
+        branch = inner["branch_taken"]
+        lines.append(f"{prefix}WHEN ({result_color}{result}\033[0m) -> {branch}{desc_suffix}")
+        _format_expression(inner["expression"], lines, indent + 4)
+        for sub_step in inner.get("branch_steps", []):
+            _format_step(sub_step, lines, indent + 4)
+
+    elif trace_type == "transform":
+        method_info = f"{inner['transform_type']}.{inner['method']} ({inner['command_type']})"
+        lines.append(f"{prefix}TRANSFORM {method_info}{desc_suffix}")
+        if inner.get("rendered_command"):
+            lines.append(f"{prefix}  cmd: {inner['rendered_command']}")
+        if inner.get("property_name"):
+            lines.append(f"{prefix}  -> {inner['property_name']} = {inner.get('property_value', '')}")
+        if inner.get("result_count") is not None:
+            lines.append(f"{prefix}  results: {inner['result_count']}")
+        if inner.get("error"):
+            lines.append(f"{prefix}  \033[91merror: {inner['error']}\033[0m")
+        for sub_step in inner.get("on_error_steps") or []:
+            _format_step(sub_step, lines, indent + 4)
+
+    elif trace_type == "action":
+        interrupt = " [INTERRUPT]" if inner.get("is_interrupt") else ""
+        lines.append(f"{prefix}ACTION {inner['action_type']}{interrupt}{desc_suffix}")
+        if inner.get("rendered_log_message"):
+            lines.append(f"{prefix}  msg: {inner['rendered_log_message']}")
+
+
+def format_correlation_trace(trace_data: dict) -> str:
+    """Format a correlation trace dict for console display."""
+    lines = []
+
+    # Stream events
+    stream_events = trace_data.get("stream_events", [])
+    if stream_events:
+        lines.append("  Stream Events:")
+        for se in stream_events:
+            detail = f" - {se['detail']}" if se.get("detail") else ""
+            idx = f" (at event {se['at_event_index']})" if se.get("at_event_index") is not None else ""
+            lines.append(f"    [{se['event_type']}]{idx}{detail}")
+        lines.append("")
+
+    # Event traces
+    event_traces = trace_data.get("event_traces", [])
+    for et in event_traces:
+        outcome = et["outcome"]
+        outcome_color = "\033[92m" if outcome == "alert" else "\033[93m"
+        lines.append(f"  Event {et['event_index']}: {outcome_color}{outcome}\033[0m")
+        for step in et.get("steps", []):
+            _format_step(step, lines, indent=4)
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def main():
+    args = parse_args()
+    validate_args(args)
+
+    # Translate relative (-S/-M/-H/-D) into absolute times expected by the API ---
+    if (
+        (args.seconds and args.seconds > 0)
+        or (args.minutes and args.minutes > 0)
+        or (args.hours and args.hours > 0)
+        or (args.days and args.days > 0)
+    ):
+        tz = ZoneInfo(args.timezone) if args.timezone else timezone.utc
+        now = datetime.now(tz)
+        delta = timedelta(seconds=args.seconds or 0, minutes=args.minutes or 0, hours=args.hours or 0, days=args.days or 0)
+        if delta <= timedelta(0):
+            raise ValueError("Specify a positive relative window using --seconds, --minutes, --hours, and/or --days.")
+        date_fmt = "%m/%d/%Y:%H:%M:%S"
+        args.start_time = (now - delta).strftime(date_fmt)
+        args.end_time = now.strftime(date_fmt)
+
+    # resolve input files
+    file_paths = args.file_paths
+    if not file_paths:
+        file_paths = sorted(f for f in glob.glob("*.yaml") if os.path.basename(f) != "template.yaml")
+
+    if not file_paths:
+        print("\033[1;91mno YAML files found to validate\033[0m")
+        sys.exit(1)
+
+    multiple_files = len(file_paths) > 1
+    has_failures = False
+
+    for file_path in file_paths:
+        try:
+            result = validate_hunt(
+                file_path,
+                args.remote_host,
+                args.api_key,
+                args.disable_ssl_verification,
+                args.ca_bundle,
+                args.client_cert,
+                args.client_key,
+                args.client_p12,
+                args.client_p12_password,
+                args.start_time,
+                args.end_time,
+                args.timezone,
+                args.analyze_results,
+                args.alert,
+                args.queue,
+            )
+        except Exception:
+            has_failures = True
+            if multiple_files:
+                print(f"\033[1;91m{file_path}: ERROR\033[0m")
+                for line in traceback.format_exc().splitlines():
+                    print(f"  {line}")
+            else:
+                traceback.print_exc()
+            continue
+
+        if args.output_file:
+            with open(args.output_file, "w") as fp:
+                json.dump(result, fp, indent=4, sort_keys=True)
+
+        if not result["valid"]:
+            error_message = result.get("error", "Unknown error")
+            has_failures = True
+            if multiple_files:
+                print(f"\033[1;91m{file_path}: ERROR\033[0m")
+                for line in error_message.splitlines():
+                    print(f"  \033[1;91m{line}\033[0m")
+            else:
+                print()
+                print(f"\033[1;91m{error_message}\033[0m")
+                print()
+            continue
+
+        executing_hunt = args.start_time is not None and args.end_time is not None
+
+        # if we did not execute the hunt then we just checked validation
+        if not executing_hunt:
+            if multiple_files:
+                print(f"\033[92m{file_path}: OK\033[0m")
+            else:
+                print("\033[92mOK: hunt is valid\033[0m")
+            continue
+
+        # if we are executing the hunt then we need to print the results
+        for root in result["roots"]:
+            if args.alert:
+                print(
+                    f"{root['description']}: https://{args.ui_host}/ace/analysis?direct={root['uuid']}"
+                )
+            else:
+                print()
+                print(f"\033[1;94m{root['description']}\033[0m")
+                print()
+                for _, observable in root["observable_store"].items():
+                    output_type = observable["type"]
+                    if "display_type" in observable and observable["display_type"]:
+                        output_type = f"{observable['display_type']} ({observable['type']})"
+
+                    output_value = observable["value"]
+                    if "display_value" in observable and observable["display_value"]:
+                        output_value = observable["display_value"]
+
+                    output = f"  (*) {output_type} - {output_value}"
+                    if "time" in observable and observable["time"]:
+                        output += " - {}".format(observable["time"])
+                    if "tags" in observable:
+                        output += " tags [{}]".format(",".join(observable["tags"]))
+                    if "directives" in observable:
+                        output += " direc [{}]".format(",".join(observable["directives"]))
+
+                    print(f"\033[1m{output}\033[0m")
+
+                for tag in root["tags"]:
+                    print(f"\033[1;90m  (+) {tag}\033[0m")
+
+                for pivot_link in root.get("pivot_links", []):
+                    print(
+                        f"\033[1;90m  🔗 ({pivot_link['url']})[{pivot_link['text']}]\033[0m"
+                    )
+
+                print()
+
+                events = root["details"]["events"]
+                query = root["details"]["query"]
+                search_link = root["details"]["search_link"]
+                print(f"\033[92m{search_link}\033[0m")
+                print()
+                print(f"\033[95m{query}\033[0m")  # Print query in purple
+
+                if args.print_results:
+                    for event in events:
+                        print(json.dumps(event, indent=4, sort_keys=True))
+
+                    print()
+
+                if args.print_logs:
+                    for log in result["logs"]:
+                        print(log)
+
+                    print()
+
+                if args.print_trace:
+                    correlation_trace = root["details"].get("correlation_trace")
+                    if correlation_trace:
+                        print()
+                        print("\033[1;96mCorrelation Trace:\033[0m")
+                        print(format_correlation_trace(correlation_trace))
+                    else:
+                        print()
+                        print("\033[93mNo correlation trace data in results.\033[0m")
+
+                if not args.print_results and not args.print_logs:
+                    print()
+                    print(f"\033[92m{len(events)} events returned\033[0m")
+
+    sys.exit(1 if has_failures else 0)
+
+
+if __name__ == "__main__":
+    main()
