@@ -189,6 +189,8 @@ def _collect_executable_files(merged: dict[str, Any], root_dir: str) -> list[Emb
     for cmd in merged.get("commands", []):
         if cmd.get("type") == "executable" and cmd.get("path"):
             paths.add(cmd["path"])
+        for f in cmd.get("files") or []:
+            paths.add(f)
 
     # From correlation logic steps
     rule = merged.get("rule", {})
@@ -222,6 +224,8 @@ def _find_executable_paths_in_steps(steps: list[dict], paths: set[str]) -> None:
             cmd = transform.get("command", {}) if isinstance(transform, dict) else {}
             if cmd.get("type") == "executable" and cmd.get("path"):
                 paths.add(cmd["path"])
+            for f in cmd.get("files") or []:
+                paths.add(f)
         if "when" in step:
             _find_executable_paths_in_steps(step.get("execute", []), paths)
             _find_executable_paths_in_steps(step.get("else", []), paths)

@@ -56,6 +56,7 @@ class CommandConfig(BaseModel):
     stdin: Optional[bool] = Field(default=None, description="Whether to pass event via stdin")
     args: Optional[list[str]] = Field(default=None, description="Command arguments (jinja interpolated)")
     env: Optional[dict[str, str]] = Field(default=None, description="Environment variables for executable (values are jinja interpolated)")
+    files: Optional[list[str]] = Field(default=None, description="Additional supporting files to include with the executable")
 
     # defined-specific fields
     name: Optional[str] = Field(default=None, description="Name of predefined command")
@@ -195,6 +196,7 @@ class PredefinedCommandConfig(BaseModel):
     stdin: Optional[bool] = Field(default=None, description="Whether to pass event via stdin")
     args: Optional[list[str]] = Field(default=None, description="Command arguments")
     env: Optional[dict[str, str]] = Field(default=None, description="Environment variables for executable (values are jinja interpolated)")
+    files: Optional[list[str]] = Field(default=None, description="Additional supporting files to include with the executable")
 
     def to_command_config(self, overrides: Optional[dict] = None) -> CommandConfig:
         """Convert to a CommandConfig, applying optional overrides."""

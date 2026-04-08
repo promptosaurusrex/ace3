@@ -73,6 +73,70 @@ class TestCompileHuntWithExecutables:
         assert exe.permissions == 0o700
 
 
+class TestCompileHuntWithSupportingFiles:
+    def test_collects_supporting_files(self, hunt_with_supporting_files, hunt_dir):
+        compiled = compile_hunt(str(hunt_with_supporting_files), root_dir=str(hunt_dir))
+
+        exe_paths = {e.path for e in compiled.executable_files}
+        assert "hunts/scripts/ip_ranges.json" in exe_paths
+
+    def test_collects_executable_and_supporting_files(self, hunt_with_supporting_files, hunt_dir):
+        compiled = compile_hunt(str(hunt_with_supporting_files), root_dir=str(hunt_dir))
+
+        exe_paths = {e.path for e in compiled.executable_files}
+        assert "hunts/scripts/check_ip.py" in exe_paths
+        assert "hunts/scripts/ip_ranges.json" in exe_paths
+        assert len(compiled.executable_files) == 2
+
+    def test_inline_executable_with_files(self, hunt_dir):
+        """Supporting files on inline executable commands are collected."""
+        scripts_dir = hunt_dir / "hunts" / "scripts"
+        scripts_dir.mkdir(parents=True)
+
+        script = scripts_dir / "lookup.py"
+        script.write_text("#!/usr/bin/env python3\nprint('ok')\n")
+        script.chmod(0o755)
+
+        data_file = scripts_dir / "data.csv"
+        data_file.write_text("col1,col2\na,b\n")
+
+        hunt_file = hunt_dir / "hunts" / "test" / "inline_files.yaml"
+        hunt_file.parent.mkdir(parents=True, exist_ok=True)
+        hunt_file.write_text(
+            "rule:\n"
+            "  uuid: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n"
+            "  enabled: yes\n"
+            "  name: inline_files_test\n"
+            "  description: Inline exec with files\n"
+            "  type: splunk\n"
+            "  alert_type: test\n"
+            "  frequency: '00:01:00'\n"
+            "  time_range: '00:01:00'\n"
+            "  max_time_range: '01:00:00'\n"
+            "  full_coverage: yes\n"
+            "  use_index_time: yes\n"
+            "  query: 'index=main'\n"
+            "  correlate:\n"
+            "    logic:\n"
+            "      - transform:\n"
+            "          type: event\n"
+            "          method: property\n"
+            "          property_name: result\n"
+            "          property_type: str\n"
+            "          command:\n"
+            "            type: executable\n"
+            f"            path: {hunt_dir}/hunts/scripts/lookup.py\n"
+            "            files:\n"
+            f"              - {hunt_dir}/hunts/scripts/data.csv\n"
+        )
+
+        compiled = compile_hunt(str(hunt_file), root_dir=str(hunt_dir))
+
+        exe_paths = {e.path for e in compiled.executable_files}
+        assert "hunts/scripts/lookup.py" in exe_paths
+        assert "hunts/scripts/data.csv" in exe_paths
+
+
 class TestCompileHuntWithNestedConditions:
     def test_finds_executables_in_else_branch(self, hunt_dir):
         """Executables in else branches of conditions should be discovered."""

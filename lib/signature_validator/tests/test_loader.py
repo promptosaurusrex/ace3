@@ -102,6 +102,36 @@ class TestLoadCompiledHunt:
         assert new_abs_path in content
 
 
+class TestLoadSupportingFiles:
+    def test_writes_supporting_files(self, hunt_with_supporting_files, hunt_dir, tmp_path):
+        compiled = compile_hunt(str(hunt_with_supporting_files), root_dir=str(hunt_dir))
+        target_dir = tmp_path / "output"
+        target_dir.mkdir()
+
+        load_compiled_hunt(compiled, str(target_dir))
+
+        data_path = target_dir / "hunts" / "scripts" / "ip_ranges.json"
+        assert data_path.is_file()
+        assert "10.0.0.0/8" in data_path.read_text()
+
+    def test_supporting_file_accessible_from_script(self, hunt_with_supporting_files, hunt_dir, exec_tmp_path):
+        compiled = compile_hunt(str(hunt_with_supporting_files), root_dir=str(hunt_dir))
+        target_dir = os.path.join(exec_tmp_path, "output")
+        os.makedirs(target_dir)
+
+        load_compiled_hunt(compiled, target_dir)
+
+        script_path = os.path.join(target_dir, "hunts", "scripts", "check_ip.py")
+        result = subprocess.run(
+            [script_path],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        assert result.returncode == 0
+        assert "10.0.0.0/8" in result.stdout
+
+
 class TestLoadBinaryExecutable:
     def test_writes_binary_executable(self, hunt_with_binary_executable, hunt_dir, tmp_path):
         hunt_file, original_bytes = hunt_with_binary_executable
