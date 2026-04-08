@@ -137,6 +137,48 @@ class TestCompileHuntWithSupportingFiles:
         assert "hunts/scripts/data.csv" in exe_paths
 
 
+class TestCompileHuntWithRelativePaths:
+    def test_resolves_relative_predefined_command_path(self, hunt_with_relative_executable_paths, hunt_dir):
+        compiled = compile_hunt(str(hunt_with_relative_executable_paths), root_dir=str(hunt_dir))
+
+        assert len(compiled.executable_files) == 1
+        exe = compiled.executable_files[0]
+        assert exe.path == "hunts/scripts/check_user.py"
+        assert "#!/usr/bin/env python3" in exe.content
+        assert exe.permissions == 0o755
+
+    def test_resolves_relative_supporting_files(self, hunt_with_relative_supporting_files, hunt_dir):
+        compiled = compile_hunt(str(hunt_with_relative_supporting_files), root_dir=str(hunt_dir))
+
+        exe_paths = {e.path for e in compiled.executable_files}
+        assert "hunts/scripts/check_ip.py" in exe_paths
+        assert "hunts/scripts/ip_ranges.json" in exe_paths
+        assert len(compiled.executable_files) == 2
+
+    def test_resolves_relative_inline_executable(self, hunt_with_relative_inline_executable, hunt_dir):
+        compiled = compile_hunt(str(hunt_with_relative_inline_executable), root_dir=str(hunt_dir))
+
+        assert len(compiled.executable_files) == 1
+        exe = compiled.executable_files[0]
+        assert exe.path == "hunts/scripts/enrich.py"
+        assert exe.permissions == 0o700
+
+    def test_relative_paths_resolved_in_yaml_content(self, hunt_with_relative_executable_paths, hunt_dir):
+        """Stored YAML content should have absolute paths for the loader rewrite to work."""
+        compiled = compile_hunt(str(hunt_with_relative_executable_paths), root_dir=str(hunt_dir))
+
+        for yf in compiled.yaml_files:
+            assert "../scripts/" not in yf.content
+
+    def test_absolute_paths_still_work(self, hunt_with_executables, hunt_dir):
+        """Existing absolute path behavior should be unchanged."""
+        compiled = compile_hunt(str(hunt_with_executables), root_dir=str(hunt_dir))
+
+        assert len(compiled.executable_files) == 1
+        exe = compiled.executable_files[0]
+        assert exe.path == "hunts/scripts/check_user.py"
+
+
 class TestCompileHuntWithNestedConditions:
     def test_finds_executables_in_else_branch(self, hunt_dir):
         """Executables in else branches of conditions should be discovered."""

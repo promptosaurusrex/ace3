@@ -70,12 +70,21 @@ def _collect_yaml_files(
     with open(abs_path, "r") as fp:
         content = fp.read()
 
-    rel_path = os.path.relpath(abs_path, root_dir)
-    collected[rel_path] = content
-
     parsed = yaml.safe_load(content)
     if not isinstance(parsed, dict):
+        rel_path = os.path.relpath(abs_path, root_dir)
+        collected[rel_path] = content
         return
+
+    # Resolve relative file paths to absolute before storing content.
+    # This ensures the compiled hunt loader's string-based path rewriting works.
+    yaml_dir = os.path.dirname(abs_path)
+    path_pairs = _resolve_file_paths(parsed, yaml_dir)
+    for rel_value, abs_value in sorted(path_pairs, key=lambda p: len(p[0]), reverse=True):
+        content = content.replace(rel_value, abs_value)
+
+    rel_path = os.path.relpath(abs_path, root_dir)
+    collected[rel_path] = content
 
     for include_path in parsed.get(INCLUDE_DIRECTIVE, []):
         if not os.path.isabs(include_path):
@@ -243,6 +252,53 @@ def _read_file_content(abs_path: str) -> tuple[str, str]:
     except (UnicodeDecodeError, ValueError):
         with open(abs_path, "rb") as fp:
             return base64.b64encode(fp.read()).decode("ascii"), "base64"
+
+
+def _resolve_file_paths(parsed: dict, yaml_dir: str) -> list[tuple[str, str]]:
+    """Find relative file paths in a parsed YAML dict and return (relative, absolute) pairs.
+
+    Walks known path fields (command paths, supporting files) and resolves any
+    relative paths against yaml_dir (the directory of the YAML file that defines them).
+    """
+    pairs: list[tuple[str, str]] = []
+
+    # Predefined commands (top-level)
+    for cmd in parsed.get("commands", []):
+        if cmd.get("path") and not os.path.isabs(cmd["path"]):
+            abs_path = os.path.normpath(os.path.join(yaml_dir, cmd["path"]))
+            pairs.append((cmd["path"], abs_path))
+        for f in cmd.get("files") or []:
+            if not os.path.isabs(f):
+                abs_path = os.path.normpath(os.path.join(yaml_dir, f))
+                pairs.append((f, abs_path))
+
+    # Inline executable commands in correlate logic
+    rule = parsed.get("rule", {})
+    correlate = rule.get("correlate", {})
+    if correlate:
+        _resolve_command_paths_in_steps(correlate.get("logic", []), yaml_dir, pairs)
+
+    return pairs
+
+
+def _resolve_command_paths_in_steps(
+    steps: list[dict], yaml_dir: str, pairs: list[tuple[str, str]]
+) -> None:
+    """Recursively walk correlate logic steps to resolve relative command paths."""
+    for step in steps:
+        if "transform" in step:
+            transform = step["transform"]
+            cmd = transform.get("command", {}) if isinstance(transform, dict) else {}
+            if cmd.get("type") == "executable" and cmd.get("path") and not os.path.isabs(cmd["path"]):
+                abs_path = os.path.normpath(os.path.join(yaml_dir, cmd["path"]))
+                pairs.append((cmd["path"], abs_path))
+            for f in cmd.get("files") or []:
+                if not os.path.isabs(f):
+                    abs_path = os.path.normpath(os.path.join(yaml_dir, f))
+                    pairs.append((f, abs_path))
+        if "when" in step:
+            _resolve_command_paths_in_steps(step.get("execute", []), yaml_dir, pairs)
+            _resolve_command_paths_in_steps(step.get("else", []), yaml_dir, pairs)
 
 
 def _resolve_path(path: str, root_dir: str) -> str:

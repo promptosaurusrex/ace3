@@ -44,6 +44,43 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
 
     return result
 
+def _resolve_file_paths_in_dict(loaded_dict: dict[str, Any], yaml_dir: str) -> None:
+    """Resolve relative file paths in a loaded YAML dict to absolute paths.
+
+    Mutates the dict in-place. Resolves paths in command path fields relative
+    to yaml_dir (the directory of the YAML file that defines them).
+    """
+    # Predefined commands (top-level)
+    for cmd in loaded_dict.get("commands", []):
+        if cmd.get("path") and not os.path.isabs(cmd["path"]):
+            cmd["path"] = os.path.normpath(os.path.join(yaml_dir, cmd["path"]))
+        for i, f in enumerate(cmd.get("files") or []):
+            if not os.path.isabs(f):
+                cmd["files"][i] = os.path.normpath(os.path.join(yaml_dir, f))
+
+    # Inline executable commands in correlate logic
+    rule = loaded_dict.get("rule", {})
+    correlate = rule.get("correlate", {})
+    if correlate:
+        _resolve_command_paths_in_steps(correlate.get("logic", []), yaml_dir)
+
+
+def _resolve_command_paths_in_steps(steps: list, yaml_dir: str) -> None:
+    """Recursively walk correlate logic steps to resolve relative command paths."""
+    for step in steps:
+        if "transform" in step:
+            transform = step["transform"]
+            cmd = transform.get("command", {}) if isinstance(transform, dict) else {}
+            if cmd.get("type") == "executable" and cmd.get("path") and not os.path.isabs(cmd["path"]):
+                cmd["path"] = os.path.normpath(os.path.join(yaml_dir, cmd["path"]))
+            for i, f in enumerate(cmd.get("files") or []):
+                if not os.path.isabs(f):
+                    cmd["files"][i] = os.path.normpath(os.path.join(yaml_dir, f))
+        if "when" in step:
+            _resolve_command_paths_in_steps(step.get("execute", []), yaml_dir)
+            _resolve_command_paths_in_steps(step.get("else", []), yaml_dir)
+
+
 def _load_and_merge_yaml(path: str, resolved_history: set[str]) -> dict[str, Any]:
     """Recursively loads and merges a YAML file with its includes.
 
@@ -62,6 +99,11 @@ def _load_and_merge_yaml(path: str, resolved_history: set[str]) -> dict[str, Any
     except Exception as e:
         logging.error(f"unable to load file {path}: {e}")
         raise
+
+    # Resolve relative file paths before merging so paths are relative to
+    # the YAML file that defines them, not the root or including file.
+    yaml_dir = os.path.dirname(os.path.abspath(path))
+    _resolve_file_paths_in_dict(loaded_dict, yaml_dir)
 
     # start with empty result
     result: dict[str, Any] = {}

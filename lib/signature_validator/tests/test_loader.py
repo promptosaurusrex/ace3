@@ -202,6 +202,73 @@ class TestRoundTrip:
         assert file_mode == 0o755
 
 
+class TestLoadRelativePaths:
+    def test_rewrites_resolved_relative_predefined_paths(
+        self, hunt_with_relative_executable_paths, hunt_dir, tmp_path
+    ):
+        compiled = compile_hunt(str(hunt_with_relative_executable_paths), root_dir=str(hunt_dir))
+        target_dir = tmp_path / "output"
+        target_dir.mkdir()
+
+        load_compiled_hunt(compiled, str(target_dir))
+
+        # The commands include file should have rewritten paths pointing to temp dir
+        commands_path = target_dir / "hunts" / "commands" / "test_commands.include.yaml"
+        content = commands_path.read_text()
+
+        new_abs_path = str(target_dir / "hunts" / "scripts" / "check_user.py")
+        assert new_abs_path in content
+        assert "../scripts/" not in content
+
+    def test_rewrites_resolved_relative_supporting_files(
+        self, hunt_with_relative_supporting_files, hunt_dir, tmp_path
+    ):
+        compiled = compile_hunt(str(hunt_with_relative_supporting_files), root_dir=str(hunt_dir))
+        target_dir = tmp_path / "output"
+        target_dir.mkdir()
+
+        load_compiled_hunt(compiled, str(target_dir))
+
+        commands_path = target_dir / "hunts" / "commands" / "ip_commands.include.yaml"
+        content = commands_path.read_text()
+
+        assert str(target_dir / "hunts" / "scripts" / "check_ip.py") in content
+        assert str(target_dir / "hunts" / "scripts" / "ip_ranges.json") in content
+        assert "../scripts/" not in content
+
+    def test_rewrites_resolved_relative_inline_executable(
+        self, hunt_with_relative_inline_executable, hunt_dir, tmp_path
+    ):
+        compiled = compile_hunt(str(hunt_with_relative_inline_executable), root_dir=str(hunt_dir))
+        target_dir = tmp_path / "output"
+        target_dir.mkdir()
+
+        target_path = load_compiled_hunt(compiled, str(target_dir))
+
+        with open(target_path) as f:
+            yaml_content = f.read()
+
+        new_abs_path = str(target_dir / "hunts" / "scripts" / "enrich.py")
+        assert new_abs_path in yaml_content
+        assert "../scripts/" not in yaml_content
+
+    def test_round_trip_with_relative_paths(
+        self, hunt_with_relative_executable_paths, hunt_dir, tmp_path
+    ):
+        """Full round-trip: compile -> JSON -> deserialize -> load with relative paths."""
+        compiled = compile_hunt(str(hunt_with_relative_executable_paths), root_dir=str(hunt_dir))
+        json_str = compiled.model_dump_json()
+        restored = CompiledHunt.model_validate_json(json_str)
+
+        target_dir = tmp_path / "output"
+        target_dir.mkdir()
+        target_path = load_compiled_hunt(restored, str(target_dir))
+
+        assert os.path.isfile(target_path)
+        script_path = target_dir / "hunts" / "scripts" / "check_user.py"
+        assert script_path.is_file()
+
+
 class TestExecutableScripts:
     """Verify that loaded executable scripts can actually be executed, not just
     that their permission bits are set correctly.
