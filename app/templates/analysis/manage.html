@@ -110,12 +110,15 @@
                                 <span class="badge text-bg-warning" style="cursor:pointer" >remediating</span>
                             {% endif %}
                             {% if comments[alert.uuid]|length != 0 %}
-                                {% for comment in comments[alert.uuid] %}
-                                    <br />
-                                    <span style="font-size: x-small;">
-                                        ({{ comment.user.gui_display }}) <span class="comment-text">{{ comment.comment }}</span>
-                                    </span>
-                                {% endfor %}
+                                <div class="comments-collapsible">
+                                    {% for comment in comments[alert.uuid] %}
+                                        <br />
+                                        <span style="font-size: x-small;">
+                                            ({{ comment.user.gui_display }}) <span class="comment-text">{{ comment.comment }}</span>
+                                        </span>
+                                    {% endfor %}
+                                </div>
+                                <button type="button" class="btn btn-link btn-sm p-0 comments-toggle" style="display: none; font-size: x-small;">Show more</button>
                             {% endif %}
                         </td>
                         <td>
