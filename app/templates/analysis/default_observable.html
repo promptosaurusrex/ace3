@@ -27,7 +27,7 @@
 <script type="text/javascript">
     $('#copy_action_{{unique_reference}}').on('click', function() {
         // avoid escaping issues going from python to javascript by using base64
-        var observable_value = decodeURIComponent(atob('{{_observable.display_value | b64escape}}'));
+        var observable_value = decodeURIComponent(atob('{{_observable.value | b64escape}}'));
         // see app/static/js/ace.js
         copy_to_clipboard(observable_value);
         // let the user know it was copied by flashing it a bit
