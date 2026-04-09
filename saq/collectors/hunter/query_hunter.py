@@ -3,6 +3,7 @@
 # ACE Hunting System - query based hunting
 #
 
+import copy
 import datetime
 import logging
 import os
@@ -109,6 +110,10 @@ class QueryHunt(Hunt):
 
         # the query with all runtime tokens (e.g. TIMESPEC) resolved to actual values
         self.resolved_query: Optional[str] = None
+
+        # the unmutated event list captured before correlation runs
+        # (only populated when self.config.correlate is set)
+        self.original_query_results: Optional[list[dict]] = None
 
     @property
     def time_range(self) -> Optional[datetime.timedelta]:
@@ -614,6 +619,10 @@ class QueryHunt(Hunt):
         # Run correlation if configured
         event_action_overrides: dict[int, any] = {}
         if self.config.correlate is not None:
+            # snapshot the raw events before correlation mutates them in place,
+            # so hunt authors can later inspect what came back from the data source
+            self.original_query_results = copy.deepcopy(query_results)
+
             from saq.collectors.hunter.correlation.engine import CorrelationEngine
             engine = CorrelationEngine(
                 correlate_config=self.config.correlate,

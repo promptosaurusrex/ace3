@@ -633,6 +633,71 @@ def test_process_query_results(monkeypatch):
 
 
 @pytest.mark.unit
+def test_process_query_results_captures_original_events(monkeypatch):
+    """When correlation is configured, the hunter should snapshot the raw event list
+    before correlation mutates/filters it. When correlation is not configured, the
+    snapshot stays None to avoid an unnecessary deep copy."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    # case 1: no correlate -> original_query_results stays None
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="no_correlate",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+    assert hunt.original_query_results is None
+    hunt.process_query_results([{"src": "1.2.3.4"}, {"src": "5.6.7.8"}])
+    assert hunt.original_query_results is None
+
+    # case 2: correlate filters out one event -> snapshot keeps the full input
+    correlate = CorrelateConfig.model_validate({
+        "logic": [
+            {
+                "when": {"type": "equals", "value": "drop", "property": "tag"},
+                "execute": [{"action": "filter"}],
+            },
+        ],
+    })
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="with_correlate",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+
+    input_events = [
+        {"src": "1.2.3.4", "tag": "keep"},
+        {"src": "5.6.7.8", "tag": "drop"},
+        {"src": "9.9.9.9", "tag": "keep"},
+    ]
+    submissions = hunt.process_query_results(input_events)
+
+    # the filter action removed one event from the final stream
+    assert submissions is not None
+    assert len(submissions) == 2
+
+    # the snapshot has all three originals, in the original order
+    assert hunt.original_query_results is not None
+    assert len(hunt.original_query_results) == 3
+    assert [e["src"] for e in hunt.original_query_results] == ["1.2.3.4", "5.6.7.8", "9.9.9.9"]
+    assert [e["tag"] for e in hunt.original_query_results] == ["keep", "drop", "keep"]
+
+    # snapshot must be a deep copy: mutating the snapshot must not affect the input
+    # and mutating the input must not affect the snapshot
+    hunt.original_query_results[0]["tag"] = "mutated"
+    assert input_events[0]["tag"] == "keep"
+    input_events[2]["tag"] = "mutated_again"
+    assert hunt.original_query_results[2]["tag"] == "keep"
+
+
+@pytest.mark.unit
 def test_process_query_results_file_observable(monkeypatch, tmpdir):
     """test mapping fields to F_FILE type observables"""
     import saq.collectors.hunter.query_hunter
