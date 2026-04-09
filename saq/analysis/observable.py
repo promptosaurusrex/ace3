@@ -774,7 +774,14 @@ class Observable(BaseNode):
             return False
 
         if other.type == self.type:
-            return self.value < other.value
+            # Use the display_value *property* (not the _display_value field)
+            # so subclass overrides participate — notably
+            # FileObservable.display_value returns file_path instead of the
+            # sha256 value, giving a sensible sort order for file observables
+            # in the alert tree. For base Observable the property returns
+            # either the labelled "label (value)" form or the raw value, both
+            # of which produce intuitive ordering.
+            return str(self.display_value) < str(other.display_value)
 
         return self.type < other.type
 
