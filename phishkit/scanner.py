@@ -452,8 +452,10 @@ class Scanner:
     async def target_attached_handler(self, event: mycdp.target.AttachedToTarget):
         """Inject stealth overrides into newly attached Worker/ServiceWorker targets.
 
-        Target.setAutoAttach with waitForDebuggerOnStart=True pauses new targets
-        before they execute. We inject stealth code and then resume execution.
+        NOTE: As of 2026-04, nodriver does not dispatch AttachedToTarget events
+        to this handler (the events never arrive). This handler is kept in case
+        the issue is fixed upstream. The primary stealth injection path for Workers
+        is the Blob constructor patch in STEALTH_JS section 7.
         """
         info = event.target_info
         session = event.session_id
@@ -581,6 +583,41 @@ class Scanner:
 
         return False
 
+    def _wait_for_page_settle(self, sb: SB, timeout: int = 15):
+        """Wait for a newly navigated page to finish rendering.
+
+        Polls the page for network idle (no in-flight requests) and DOM
+        stability (body innerHTML length stops changing). This handles
+        pages that show a loading spinner or fade-in animation after
+        document.readyState is already 'complete'.
+        """
+        sb.wait_for_ready_state_complete(timeout=5)
+        poll = 0.5
+        waited = 0.0
+        last_len = -1
+        stable_count = 0
+        while waited < timeout:
+            time.sleep(poll)
+            waited += poll
+            try:
+                result = sb.execute_cdp_cmd("Runtime.evaluate", {
+                    "expression": "document.body ? document.body.innerHTML.length : 0",
+                    "returnByValue": True,
+                })
+                cur_len = result.get("result", {}).get("value", 0)
+            except Exception:
+                continue
+            if cur_len == last_len:
+                stable_count += 1
+            else:
+                stable_count = 0
+            last_len = cur_len
+            # Consider settled after DOM is unchanged for 2 consecutive polls
+            if stable_count >= 4:
+                print(f"page settled after {waited:.1f}s (DOM stable)")
+                return
+        print(f"page settle timeout after {timeout}s, proceeding anyway")
+
     def visual_checkbox_bypass(self, sb: SB, config: dict):
         # This one is always changing and requires special handling: https://github.com/seleniumbase/SeleniumBase/issues/2842
         print("visual checkbox bypass handler")
@@ -662,9 +699,9 @@ class Scanner:
             # Wait for the page to navigate after the click (some phishing
             # pages show a "verifying" animation for 10+ seconds before
             # redirecting to the credential-harvesting page).
-            max_wait = 30
-            poll_interval = 1
-            waited = 0
+            max_wait = 60
+            poll_interval = 0.5
+            waited = 0.0
             print(f"waiting up to {max_wait}s for navigation after click")
             while waited < max_wait:
                 time.sleep(poll_interval)
@@ -674,8 +711,8 @@ class Scanner:
                 except Exception:
                     continue
                 if url_now != url_before:
-                    print(f"navigation detected after {waited}s: {url_now}")
-                    sb.wait_for_ready_state_complete(timeout=5)
+                    print(f"navigation detected after {waited:.1f}s: {url_now}")
+                    self._wait_for_page_settle(sb)
                     break
             else:
                 print(f"no navigation after {max_wait}s")
@@ -739,11 +776,17 @@ class Scanner:
             sb.cdp.add_handler(mycdp.network.LoadingFailed, self.loading_failed_handler)
 
             # Auto-attach to Worker/ServiceWorker targets to inject stealth code.
-            # waitForDebuggerOnStart pauses new targets so we can inject before execution.
+            # NOTE: waitForDebuggerOnStart must be False. When True, Chrome pauses
+            # new Worker targets before execution, expecting the debugger to resume
+            # them via Runtime.runIfWaitingForDebugger. However, nodriver/SeleniumBase
+            # does not dispatch Target.AttachedToTarget events to our handler, so
+            # paused Workers are never resumed and hang indefinitely. With False,
+            # Workers start immediately; stealth overrides are still injected into
+            # non-blob Workers via the Blob constructor patch in STEALTH_JS section 7.
             sb.cdp.add_handler(mycdp.target.AttachedToTarget, self.target_attached_handler)
             sb.execute_cdp_cmd('Target.setAutoAttach', {
                 'autoAttach': True,
-                'waitForDebuggerOnStart': True,
+                'waitForDebuggerOnStart': False,
                 'flatten': True,
             })
 

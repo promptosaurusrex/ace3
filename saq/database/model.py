@@ -2604,6 +2604,48 @@ class WorkDistribution(Base):
         nullable=True)
 
 
+class SandboxSubmission(Base):
+    """Tracks files submitted to sandbox providers for deduplication and quota management."""
+
+    __tablename__ = 'sandbox_submissions'
+    __table_args__ = (
+        UniqueConstraint('sha256', 'sandbox_type', name='uq_sandbox_submissions_sha256_type'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    sha256: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        index=True)
+
+    sandbox_type: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        index=True)
+
+    external_id: Mapped[Optional[str]] = mapped_column(
+        String(256),
+        nullable=True)
+
+    verdict: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        nullable=True)
+
+    score: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True)
+
+    submitted_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP,
+        nullable=True)
+
+
 # NOTE there is no database relationship between these tables
 Alert.workload = relationship('Workload', foreign_keys=[Alert.uuid], primaryjoin='Workload.uuid == Alert.uuid')
 Alert.delayed_analysis = relationship('DelayedAnalysis', foreign_keys=[Alert.uuid], primaryjoin='DelayedAnalysis.uuid == Alert.uuid', overlaps="workload")
