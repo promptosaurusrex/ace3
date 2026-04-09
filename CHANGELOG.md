@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.28] - 2026-04-09
+
+- [Adds generic sandbox submissions table](https://github.com/ACE-Collective/ace3/pull/117)
+- [Copy observable value, not display_value](https://github.com/ACE-Collective/ace3/pull/118)
+- [Show more/less comments on manage alerts page](https://github.com/ACE-Collective/ace3/pull/119)
+- [Add uri_path observable if not valid url](https://github.com/ACE-Collective/ace3/pull/120)
+- [Uses display_type for observable sort order](https://github.com/ACE-Collective/ace3/pull/121)
+
 ## [3.0.27] - 2026-04-07
 
 - [Phishkit web workers fixes](https://github.com/ACE-Collective/ace3/pull/115)
