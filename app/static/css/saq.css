@@ -571,3 +571,12 @@ nav[data-toggle="toc"] {
 .obs-comment-text {
     white-space: pre-wrap;
 }
+
+.comments-collapsible {
+    max-height: 6em;
+    overflow: hidden;
+}
+
+.comments-collapsible.expanded {
+    max-height: none;
+}

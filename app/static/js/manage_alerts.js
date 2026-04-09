@@ -77,6 +77,17 @@ $(document).ready(function() {
         $("input[name^='detail_']").prop('checked', $("#master_checkbox").prop('checked'));
     });
 
+    $(".comments-collapsible").each(function() {
+        var $block = $(this);
+        if (this.scrollHeight > this.clientHeight + 1) {
+            var $btn = $block.next(".comments-toggle");
+            $btn.show().on("click", function() {
+                var expanded = $block.toggleClass("expanded").hasClass("expanded");
+                $btn.text(expanded ? "Show less" : "Show more");
+            });
+        }
+    });
+
     // Triggered when the modal is shown
     $('#disposition_modal').on('shown.bs.modal', function(e) {
         // Get all of the checked alerts dispositions and see if they are the same.
