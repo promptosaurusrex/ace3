@@ -1,7 +1,7 @@
 import pytest
 
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_HTML_JS_EXTRACTION, F_FILE, F_URL, R_EXTRACTED_FROM, AnalysisExecutionResult
+from saq.constants import ANALYSIS_MODULE_HTML_JS_EXTRACTION, F_FILE, F_URI_PATH, F_URL, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules.file_analysis.html_js_extraction import (
     HTMLJavaScriptExtractor,
     HTMLJavaScriptExtractionAnalysis,
@@ -95,18 +95,24 @@ def test_extract_external_urls(tmpdir, test_context):
     analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
     assert isinstance(analysis, HTMLJavaScriptExtractionAnalysis)
 
-    # Should have extracted 3 external URLs
-    assert len(analysis.extracted_urls) == 3
+    # Should have extracted 2 external URLs and 1 URI path
+    assert len(analysis.extracted_urls) == 2
+    assert len(analysis.extracted_uri_paths) == 1
     assert analysis.script_count == 3
     assert len(analysis.extracted_files) == 0
 
     # Verify URL observables were created
     url_observables = [o for o in analysis.observables if o.type == F_URL]
-    assert len(url_observables) == 3
+    assert len(url_observables) == 2
 
     # Check that URLs have R_EXTRACTED_FROM relationship
     for url_obs in url_observables:
         assert url_obs.has_relationship(R_EXTRACTED_FROM)
+
+    # Verify URI path observable was created for the relative src
+    uri_path_observables = [o for o in analysis.observables if o.type == F_URI_PATH]
+    assert len(uri_path_observables) == 1
+    assert uri_path_observables[0].has_relationship(R_EXTRACTED_FROM)
 
 
 @pytest.mark.unit

@@ -366,3 +366,92 @@ def test_display_properties_with_special_characters():
     assert observable.display_type == f"System Binary ({F_FILE_PATH})"
     assert observable.display_value == r"Command Prompt (Admin) (C:\Windows\System32\cmd.exe)"
     assert observable.value == r'C:\Windows\System32\cmd.exe'
+
+
+@pytest.mark.unit
+def test_observable_lt_sorts_by_display_value_when_set():
+    """Within a single type, observables with display_value set should sort by
+    display_value rather than by raw value — so e.g. file observables whose
+    values are sha256 hashes end up grouped by their meaningful filenames in
+    the alert tree."""
+    root = create_root_analysis()
+    # Deliberately scrambled paths so raw-value sort and display-value sort
+    # would yield different orders.
+    a = root.add_observable_by_spec(F_FILE_PATH, r"/tmp/zzz_raw_last.bin")
+    b = root.add_observable_by_spec(F_FILE_PATH, r"/tmp/aaa_raw_first.bin")
+    c = root.add_observable_by_spec(F_FILE_PATH, r"/tmp/mmm_raw_middle.bin")
+
+    a.display_value = "apple.bin"
+    b.display_value = "mango.bin"
+    c.display_value = "banana.bin"
+
+    # Raw-value sort would be: b (aaa), c (mmm), a (zzz)
+    # Display-value sort should be: a (apple), c (banana), b (mango)
+    ordered = sorted([a, b, c])
+    assert [o._display_value for o in ordered] == ["apple.bin", "banana.bin", "mango.bin"]
+
+
+@pytest.mark.unit
+def test_observable_lt_falls_back_to_value_without_display_value():
+    """When display_value is not set, comparison must fall back to the raw
+    value so existing sort behavior is preserved."""
+    root = create_root_analysis()
+    a = root.add_observable_by_spec(F_FILE_PATH, r"/tmp/c.bin")
+    b = root.add_observable_by_spec(F_FILE_PATH, r"/tmp/a.bin")
+    c = root.add_observable_by_spec(F_FILE_PATH, r"/tmp/b.bin")
+
+    ordered = sorted([a, b, c])
+    assert [o.value for o in ordered] == [r"/tmp/a.bin", r"/tmp/b.bin", r"/tmp/c.bin"]
+
+
+@pytest.mark.unit
+def test_observable_lt_mixed_display_value_is_consistent():
+    """Mixing observables with and without display_value should still yield a
+    stable total ordering (no TypeError on comparison)."""
+    root = create_root_analysis()
+    a = root.add_observable_by_spec(F_FILE_PATH, r"/tmp/zzz.bin")
+    b = root.add_observable_by_spec(F_FILE_PATH, r"/tmp/aaa.bin")
+    a.display_value = "marker.bin"  # only one has display_value
+
+    # Should not raise and should produce a deterministic order
+    ordered = sorted([a, b])
+    # "/tmp/aaa.bin" < "marker.bin" lexicographically, so b comes first
+    assert ordered == [b, a]
+
+
+@pytest.mark.unit
+def test_file_observable_lt_sorts_by_file_path():
+    """FileObservables should sort by their file_path (via the display_value
+    property override), not by the sha256 hash that is their raw value."""
+    root = create_root_analysis()
+
+    # Create three files whose contents hash to different, unpredictable sha256s
+    # but whose file_paths have a known alphabetical order.
+    paths = ["zzz_last.bin", "aaa_first.bin", "mmm_middle.bin"]
+    observables = []
+    for name, contents in zip(paths, (b"third", b"first", b"second")):
+        fp = root.create_file_path(name)
+        with open(fp, "wb") as f:
+            f.write(contents)
+        observables.append(root.add_file_observable(fp))
+
+    ordered = sorted(observables)
+    assert [o.file_path for o in ordered] == [
+        "aaa_first.bin",
+        "mmm_middle.bin",
+        "zzz_last.bin",
+    ]
+
+
+@pytest.mark.unit
+def test_observable_lt_different_types_sort_by_type():
+    """Cross-type comparison is unchanged — it still sorts by type first."""
+    root = create_root_analysis()
+    f = root.add_observable_by_spec(F_FILE_PATH, r"/tmp/foo.bin")
+    u = root.add_observable_by_spec(F_URL, "http://example.com/")
+    f.display_value = "zzz_label"  # would otherwise force f to sort last
+
+    ordered = sorted([f, u])
+    # F_FILE_PATH < F_URL alphabetically, so file comes first regardless
+    assert ordered[0].type == F_FILE_PATH
+    assert ordered[1].type == F_URL
