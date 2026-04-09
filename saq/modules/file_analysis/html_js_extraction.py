@@ -5,8 +5,9 @@ import os
 import re
 from typing import Type, override
 from pydantic import Field
+from urlfinderlib.url import URL
 from saq.analysis.analysis import Analysis
-from saq.constants import DIRECTIVE_CRAWL, DIRECTIVE_CRAWL_EXTRACTED_URLS, F_FILE, F_URL, R_EXTRACTED_FROM, AnalysisExecutionResult
+from saq.constants import DIRECTIVE_CRAWL, DIRECTIVE_CRAWL_EXTRACTED_URLS, F_FILE, F_URI_PATH, F_URL, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.observables.file import FileObservable
@@ -27,6 +28,7 @@ class HTMLJavaScriptExtractionAnalysis(Analysis):
 
     KEY_EXTRACTED_FILES = "extracted_files"
     KEY_EXTRACTED_URLS = "extracted_urls"
+    KEY_EXTRACTED_URI_PATHS = "extracted_uri_paths"
     KEY_INLINE_HANDLERS = "inline_handlers"
     KEY_SCRIPT_COUNT = "script_count"
     KEY_DUPLICATE_COUNT = "duplicate_count"
@@ -36,6 +38,7 @@ class HTMLJavaScriptExtractionAnalysis(Analysis):
         self.details = {
             self.KEY_EXTRACTED_FILES: [],
             self.KEY_EXTRACTED_URLS: [],
+            self.KEY_EXTRACTED_URI_PATHS: [],
             self.KEY_INLINE_HANDLERS: [],
             self.KEY_SCRIPT_COUNT: 0,
             self.KEY_DUPLICATE_COUNT: 0,
@@ -53,6 +56,10 @@ class HTMLJavaScriptExtractionAnalysis(Analysis):
     @property
     def extracted_urls(self):
         return self.details[self.KEY_EXTRACTED_URLS]
+
+    @property
+    def extracted_uri_paths(self):
+        return self.details[self.KEY_EXTRACTED_URI_PATHS]
 
     @property
     def inline_handlers(self):
@@ -83,6 +90,8 @@ class HTMLJavaScriptExtractionAnalysis(Analysis):
             parts.append(f"{len(self.extracted_files)} inline script(s)")
         if self.extracted_urls:
             parts.append(f"{len(self.extracted_urls)} external URL(s)")
+        if self.extracted_uri_paths:
+            parts.append(f"{len(self.extracted_uri_paths)} URI path(s)")
         if self.inline_handlers:
             parts.append(f"{len(self.inline_handlers)} event handler(s)")
 
@@ -386,15 +395,21 @@ class HTMLJavaScriptExtractor(AnalysisModule):
 
             analysis.script_count += 1
 
-            # Create URL observable
-            url_observable = analysis.add_observable_by_spec(F_URL, src_url)
-            if url_observable:
-                if _file.has_directive(DIRECTIVE_CRAWL_EXTRACTED_URLS):
-                    url_observable.add_directive(DIRECTIVE_CRAWL)
+            # Create URL/path observable
+            u = URL(src_url)
+            obs_type = F_URL if u.is_url else F_URI_PATH
 
-                url_observable.add_relationship(R_EXTRACTED_FROM, _file)
-                analysis.extracted_urls.append(src_url)
-                logging.info(f"extracted external script URL {src_url} from {_file.file_name}")
+            obs = analysis.add_observable_by_spec(obs_type, src_url)
+            if obs:
+                if _file.has_directive(DIRECTIVE_CRAWL_EXTRACTED_URLS) and obs_type == F_URL:
+                    obs.add_directive(DIRECTIVE_CRAWL)
+
+                obs.add_relationship(R_EXTRACTED_FROM, _file)
+                if obs_type == F_URL:
+                    analysis.extracted_urls.append(src_url)
+                else:
+                    analysis.extracted_uri_paths.append(src_url)
+                logging.info(f"extracted external script {obs_type} {src_url} from {_file.file_name}")
 
     def _extract_event_handlers(
         self,
