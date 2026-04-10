@@ -1046,3 +1046,163 @@ def test_validate_hunt_execution_logs_collected(test_client, auth_headers):
         assert "logs" in data
         log_messages = " ".join(data["logs"])
         assert "Test log message from hunt execution" in log_messages
+
+
+# =============================================================================
+# Integration Tests for /hunt/validate Endpoint - Original (pre-correlation) Events
+# =============================================================================
+
+@pytest.mark.integration
+def test_validate_hunt_response_includes_original_events(test_client, auth_headers):
+    """When the executed hunt captured original_query_results (i.e. correlate ran),
+    the validate response should expose them at the top level."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+    from saq.analysis.root import Submission, RootAnalysis
+
+    captured = [{"src": "1.2.3.4", "tag": "keep"}, {"src": "5.6.7.8", "tag": "drop"}]
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_hunt = Mock(spec=QueryHunt)
+
+        mock_root = Mock(spec=RootAnalysis)
+        mock_root.json = {"uuid": "test-uuid-123", "description": "Test Hunt"}
+        mock_root.details = {"query": "q", "events": [], "original_events": captured}
+        mock_submission = Mock(spec=Submission)
+        mock_submission.root = mock_root
+
+        mock_hunt.execute.return_value = [mock_submission]
+        mock_hunt.original_query_results = captured
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        payload = _make_compiled_payload(VALID_HUNT_YAML)
+        payload["execution_arguments"] = {
+            "start_time": "01/15/2025:10:00:00",
+            "end_time": "01/15/2025:12:00:00",
+        }
+
+        result = test_client.post(HUNT_VALIDATE_URL, json=payload, headers=auth_headers)
+
+        assert result.status_code == 200
+        data = result.get_json()
+        assert data["valid"] is True
+        assert data["original_events"] == captured
+        # the per-root details also carry the originals (set by process_query_results)
+        assert data["roots"][0]["details"]["original_events"] == captured
+
+
+@pytest.mark.integration
+def test_validate_hunt_response_original_events_none_when_no_correlate(test_client, auth_headers):
+    """When the hunt did not capture original_query_results (no correlate block),
+    original_events on the response should be None — not an empty list, not missing."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+    from saq.analysis.root import Submission, RootAnalysis
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_hunt = Mock(spec=QueryHunt)
+
+        mock_root = Mock(spec=RootAnalysis)
+        mock_root.json = {"uuid": "test-uuid-123"}
+        mock_root.details = {"query": "q", "events": []}
+        mock_submission = Mock(spec=Submission)
+        mock_submission.root = mock_root
+
+        mock_hunt.execute.return_value = [mock_submission]
+        mock_hunt.original_query_results = None
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        payload = _make_compiled_payload(VALID_HUNT_YAML)
+        payload["execution_arguments"] = {
+            "start_time": "01/15/2025:10:00:00",
+            "end_time": "01/15/2025:12:00:00",
+        }
+
+        result = test_client.post(HUNT_VALIDATE_URL, json=payload, headers=auth_headers)
+
+        assert result.status_code == 200
+        data = result.get_json()
+        assert data["valid"] is True
+        assert "original_events" in data
+        assert data["original_events"] is None
+
+
+# =============================================================================
+# Integration Tests for /hunt/validate Endpoint - query_results override
+# =============================================================================
+
+@pytest.mark.integration
+def test_validate_hunt_query_results_override(test_client, auth_headers):
+    """When execution_arguments.query_results is set, the API should call
+    hunt.process_query_results directly with those events and skip hunt.execute."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+    from saq.analysis.root import Submission, RootAnalysis
+
+    override_events = [{"src": "1.2.3.4"}, {"src": "5.6.7.8"}]
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_hunt = Mock(spec=QueryHunt)
+
+        mock_root = Mock(spec=RootAnalysis)
+        mock_root.json = {"uuid": "test-uuid-123"}
+        mock_root.details = {"query": None, "events": override_events, "original_events": override_events}
+        mock_submission = Mock(spec=Submission)
+        mock_submission.root = mock_root
+
+        mock_hunt.process_query_results.return_value = [mock_submission]
+        mock_hunt.original_query_results = override_events
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        payload = _make_compiled_payload(VALID_HUNT_YAML)
+        payload["execution_arguments"] = {"query_results": override_events}
+
+        result = test_client.post(HUNT_VALIDATE_URL, json=payload, headers=auth_headers)
+
+        assert result.status_code == 200
+        data = result.get_json()
+        assert data["valid"] is True
+        # The override path must call process_query_results directly with the events,
+        # not hunt.execute() which would re-run the data-source query.
+        mock_hunt.process_query_results.assert_called_once_with(override_events)
+        mock_hunt.execute.assert_not_called()
+        assert data["original_events"] == override_events
+        assert data["roots"][0]["details"]["events"] == override_events
+
+
+@pytest.mark.integration
+def test_validate_hunt_query_results_override_without_times(test_client, auth_headers):
+    """The override path should NOT require start_time/end_time — those are only
+    needed when actually querying the data source."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_hunt = Mock(spec=QueryHunt)
+        mock_hunt.process_query_results.return_value = []
+        mock_hunt.original_query_results = []
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        payload = _make_compiled_payload(VALID_HUNT_YAML)
+        # No start_time or end_time at all
+        payload["execution_arguments"] = {"query_results": [{"src": "1.1.1.1"}]}
+
+        result = test_client.post(HUNT_VALIDATE_URL, json=payload, headers=auth_headers)
+
+        # Without the override this would 400 with "start_time is required"
+        assert result.status_code == 200
+        data = result.get_json()
+        assert data["valid"] is True
+        mock_hunt.process_query_results.assert_called_once()

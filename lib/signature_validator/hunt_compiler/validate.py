@@ -139,6 +139,25 @@ def parse_args():
         help="Print the correlation trace data when present in results.",
     )
     parser.add_argument(
+        "--print-original-results",
+        action="store_true",
+        help="Print the original (pre-correlation) query results returned in the response.",
+    )
+    parser.add_argument(
+        "--save-original-results",
+        type=str,
+        metavar="FILE",
+        help="Save the original (pre-correlation) query results from the response to the given JSON file.",
+    )
+    parser.add_argument(
+        "--query-results-file",
+        type=str,
+        metavar="FILE",
+        help="Path to a JSON file containing a list of event dicts. When set, the API skips "
+             "the data-source query and feeds these events directly into the hunt's correlation logic. "
+             "Use this to iterate on correlate: YAML against a previously captured event list.",
+    )
+    parser.add_argument(
         "-o", "--output-file", help="Save the raw JSON to the given file."
     )
     rel_group = parser.add_argument_group(
@@ -192,6 +211,21 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError(
             "requests-pkcs12 library is not installed. Install it with: pip install requests-pkcs12"
         )
+
+    # When using --query-results-file the API skips the data-source query, so time
+    # arguments are not needed (and relative-time flags would be misleading).
+    if args.query_results_file:
+        if not os.path.isfile(args.query_results_file):
+            raise ValueError(f"--query-results-file path does not exist: {args.query_results_file}")
+        try:
+            with open(args.query_results_file, "r") as fp:
+                loaded = json.load(fp)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"--query-results-file is not valid JSON: {e}") from e
+        if not isinstance(loaded, list):
+            raise ValueError(
+                f"--query-results-file must contain a JSON list of event objects, got {type(loaded).__name__}"
+            )
 
     # Disallow partial absolute
     if (args.start_time and not args.end_time) or (args.end_time and not args.start_time):
@@ -261,6 +295,7 @@ def validate_hunt(
     analyze_results: bool = False,
     create_alerts: bool = False,
     queue: Optional[str] = None,
+    query_results: Optional[list] = None,
 ) -> bool:
     compiled = compile_hunt(file_path, root_dir=os.path.dirname(file_path))
 
@@ -268,15 +303,19 @@ def validate_hunt(
         "compiled_hunt": compiled.model_dump(),
     }
 
-    if start_time is not None and end_time is not None:
-        json_data["execution_arguments"] = {
-            "start_time": start_time,
-            "end_time": end_time,
-            "timezone": timezone,
+    if (start_time is not None and end_time is not None) or query_results is not None:
+        execution_arguments = {
             "analyze_results": analyze_results,
             "create_alerts": create_alerts,
             "queue": queue,
         }
+        if start_time is not None and end_time is not None:
+            execution_arguments["start_time"] = start_time
+            execution_arguments["end_time"] = end_time
+            execution_arguments["timezone"] = timezone
+        if query_results is not None:
+            execution_arguments["query_results"] = query_results
+        json_data["execution_arguments"] = execution_arguments
 
     # Configure SSL verification
     if disable_ssl_verification:
@@ -449,6 +488,12 @@ def main():
     multiple_files = len(file_paths) > 1
     has_failures = False
 
+    # Load query results override once (validate_args has already verified it parses).
+    query_results_override = None
+    if args.query_results_file:
+        with open(args.query_results_file, "r") as fp:
+            query_results_override = json.load(fp)
+
     for file_path in file_paths:
         try:
             result = validate_hunt(
@@ -467,6 +512,7 @@ def main():
                 args.analyze_results,
                 args.alert,
                 args.queue,
+                query_results_override,
             )
         except Exception:
             has_failures = True
@@ -495,7 +541,10 @@ def main():
                 print()
             continue
 
-        executing_hunt = args.start_time is not None and args.end_time is not None
+        executing_hunt = (
+            (args.start_time is not None and args.end_time is not None)
+            or query_results_override is not None
+        )
 
         # if we did not execute the hunt then we just checked validation
         if not executing_hunt:
@@ -504,6 +553,31 @@ def main():
             else:
                 print("\033[92mOK: hunt is valid\033[0m")
             continue
+
+        # Original (pre-correlation) results live at the top level of the response and
+        # should be displayed/saved even when no alerts/roots are produced (e.g. when
+        # correlation filters out every event).
+        if args.save_original_results:
+            original = result.get("original_events")
+            if original is None:
+                print("\033[93mNo original_events in response (hunt may not have a correlate block)\033[0m")
+            else:
+                with open(args.save_original_results, "w") as fp:
+                    json.dump(original, fp, indent=4, sort_keys=True)
+                print(
+                    f"\033[92msaved {len(original)} original events to {args.save_original_results}\033[0m"
+                )
+
+        if args.print_original_results:
+            original = result.get("original_events")
+            if original is None:
+                print("\033[93mNo original_events in response (hunt may not have a correlate block)\033[0m")
+            else:
+                print()
+                print("\033[1;96mOriginal Query Results:\033[0m")
+                for event in original:
+                    print(json.dumps(event, indent=4, sort_keys=True))
+                print()
 
         # if we are executing the hunt then we need to print the results
         for root in result["roots"]:

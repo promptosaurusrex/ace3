@@ -50,6 +50,7 @@ QUERY_DETAILS_SEARCH_LINK = "search_link"
 QUERY_DETAILS_QUERY = "query"
 QUERY_DETAILS_EVENTS = "events"
 QUERY_DETAILS_CORRELATION_TRACE = "correlation_trace"
+QUERY_DETAILS_ORIGINAL_EVENTS = "original_events"
 
 T = TypeVar("T")
 
@@ -813,5 +814,11 @@ class QueryHunt(Hunt):
             trace_data = self.correlation_trace.model_dump()
             for submission in submissions:
                 submission.root.details[QUERY_DETAILS_CORRELATION_TRACE] = trace_data
+
+        # Attach the original (pre-correlation) events to each submission's details
+        # so hunt authors can later inspect what came back from the data source
+        if self.original_query_results is not None:
+            for submission in submissions:
+                submission.root.details[QUERY_DETAILS_ORIGINAL_EVENTS] = self.original_query_results
 
         return submissions

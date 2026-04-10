@@ -689,12 +689,35 @@ def test_process_query_results_captures_original_events(monkeypatch):
     assert [e["src"] for e in hunt.original_query_results] == ["1.2.3.4", "5.6.7.8", "9.9.9.9"]
     assert [e["tag"] for e in hunt.original_query_results] == ["keep", "drop", "keep"]
 
+    # every produced submission carries the originals on its root.details so they
+    # persist with the alert (mirrors how correlation_trace is attached)
+    for submission in submissions:
+        assert "original_events" in submission.root.details
+        assert submission.root.details["original_events"] is hunt.original_query_results
+        assert [e["src"] for e in submission.root.details["original_events"]] == [
+            "1.2.3.4", "5.6.7.8", "9.9.9.9",
+        ]
+
     # snapshot must be a deep copy: mutating the snapshot must not affect the input
     # and mutating the input must not affect the snapshot
     hunt.original_query_results[0]["tag"] = "mutated"
     assert input_events[0]["tag"] == "keep"
     input_events[2]["tag"] = "mutated_again"
     assert hunt.original_query_results[2]["tag"] == "keep"
+
+    # the no-correlate hunt produced submissions earlier; verify their details do
+    # NOT contain original_events (the key is only attached when correlate ran)
+    no_correlate_hunt = default_hunt(
+        manager=MockManager(),
+        name="no_correlate_check",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+    no_correlate_subs = no_correlate_hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert no_correlate_subs
+    for submission in no_correlate_subs:
+        assert "original_events" not in submission.root.details
 
 
 @pytest.mark.unit

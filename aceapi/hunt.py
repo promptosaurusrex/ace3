@@ -57,6 +57,11 @@ class ExecutionArguments(BaseModel):
     analyze_results: bool = False
     create_alerts: bool = False
     queue: str = QUEUE_DEFAULT
+    # Optional override: when set, the hunt's data-source query is skipped and these
+    # events are fed directly into process_query_results. Useful for iterating on
+    # correlation logic against a previously captured event list. When provided,
+    # start_time/end_time are not required.
+    query_results: Optional[list[dict]] = None
 
 
 def _validate_and_execute(target_file_path: str, request_json: dict):
@@ -99,8 +104,9 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
         return jsonify({"valid": False, "error": f"invalid execution_arguments: {e}"}), 400
 
     exec_kwargs = {}
+    use_query_results_override = execution_arguments.query_results is not None
 
-    if isinstance(hunt, QueryHunt):
+    if isinstance(hunt, QueryHunt) and not use_query_results_override:
         if execution_arguments.start_time is None:
             return jsonify({"valid": False, "error": "start_time is required for query hunts"}), 400
 
@@ -141,7 +147,13 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
         try:
             # Don't persist execution state; validation runs must not affect scheduled automation
             hunt.manual_hunt = True
-            submissions = hunt.execute(**exec_kwargs)
+            if use_query_results_override:
+                # Skip the data-source query and feed the supplied events directly
+                # into process_query_results so correlation logic can be exercised
+                # against a previously captured event list.
+                submissions = hunt.process_query_results(execution_arguments.query_results)
+            else:
+                submissions = hunt.execute(**exec_kwargs)
         except RemoteApiError as e:
             return jsonify({"valid": False, "error": e.message, "remote_status_code": e.status_code}), 400
         except Exception as e:
@@ -190,11 +202,16 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
         if hasattr(hunt, "correlation_trace") and hunt.correlation_trace is not None:
             correlation_trace = hunt.correlation_trace.model_dump()
 
+        original_events = None
+        if getattr(hunt, "original_query_results", None) is not None:
+            original_events = hunt.original_query_results
+
         return jsonify({
             "valid": True,
             "roots": root_json_results,
             "logs": formatted_logs,
             "correlation_trace": correlation_trace,
+            "original_events": original_events,
         }), 200
     finally:
         root_logger.removeHandler(log_handler)
