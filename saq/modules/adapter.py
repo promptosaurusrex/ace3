@@ -90,6 +90,11 @@ class AnalysisModuleAdapter(AnalysisModuleInterface):
     def semaphore_name(self) -> Optional[str]:
         """Get the semaphore name for this module."""
         return self._module.semaphore_name
+
+    @property
+    def version(self) -> int:
+        """Get the module version for cache validation."""
+        return self._module.version
     
     # Analysis execution methods
     def analyze(self, obj, final_analysis=False, delayed_analysis=False) -> AnalysisExecutionResult:

@@ -991,6 +991,9 @@ analysis_module_mailbox_email_analyzer:
   python_module: saq.modules.email.mailbox
   python_class: MailboxEmailAnalyzer
   enabled: true
+  # wide_diff: adds DIRECTIVE_TRACKED to MESSAGE_ID observables that are
+  # children of the email analysis, not the file observable being analyzed
+  wide_diff: true
 
 analysis_module_email_analyzer:
   name: email_analyzer
@@ -1590,6 +1593,9 @@ analysis_module_observable_modifier:
   python_module: saq.modules.util.observable_modifier
   python_class: ObservableModifierAnalyzer
   enabled: true
+  # wide_diff: the ignore action removes observables from parent analyses'
+  # _observables lists and sets .ignored on other observables
+  wide_diff: true
   rules_config_path: etc/observable_modifier_rules.yaml
 
 analysis_module_x509_analyzer:
