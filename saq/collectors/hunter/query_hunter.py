@@ -633,6 +633,23 @@ class QueryHunt(Hunt):
             )
             result = engine.execute(query_results)
             self.correlation_trace = result.trace
+
+            # emit one INFO log line per trace entry so detection engineers can monitor
+            # filtering and performance of correlated hunts in real time
+            if self.correlation_trace is not None:
+                for event_trace in self.correlation_trace.event_traces:
+                    logging.info(
+                        f"correlation trace hunt={self.name} type={self.type} uuid={self.uuid} "
+                        f"event_index={event_trace.event_index} outcome={event_trace.outcome} "
+                        f"steps={len(event_trace.steps)}"
+                    )
+                for stream_event in self.correlation_trace.stream_events:
+                    logging.info(
+                        f"correlation stream event hunt={self.name} type={self.type} uuid={self.uuid} "
+                        f"event_type={stream_event.event_type} at_event_index={stream_event.at_event_index} "
+                        f"detail={stream_event.detail}"
+                    )
+
             if result.discarded:
                 return []
             query_results = result.events
