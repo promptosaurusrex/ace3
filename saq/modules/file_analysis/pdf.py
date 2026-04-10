@@ -1,5 +1,7 @@
+import base64
 import logging
 import os
+import re
 from subprocess import PIPE, Popen, TimeoutExpired
 from typing import Type, override
 import pikepdf
@@ -133,37 +135,113 @@ class PDFAnalyzer(AnalysisModule):
                 file_observable.exclude_analysis(self)
                 file_observable.add_yara_meta("type", "document.pdf.rendered")
 
-        # extract URIs from PDF annotations using pikepdf
-        # this handles AES-encrypted PDFs that ghostscript may not fully decrypt
-        uris_output_file = f"{local_file_path}.annotation_uris.txt"
+        # use pikepdf to extract annotations, form field payloads, and JavaScript
         try:
             pdf = pikepdf.open(local_file_path)
-            uris = []
-            for page in pdf.pages:
-                annots = page.get('/Annots')
-                if not annots:
-                    continue
-                for annot in annots:
-                    action = annot.get('/A')
-                    if action:
-                        uri = action.get('/URI')
-                        if uri:
-                            uris.append(str(uri))
+
+            # extract URIs from PDF annotations
+            # this handles AES-encrypted PDFs that ghostscript may not fully decrypt
+            uris_output_file = f"{local_file_path}.annotation_uris.txt"
+            try:
+                uris = []
+                for page in pdf.pages:
+                    annots = page.get('/Annots')
+                    if not annots:
+                        continue
+                    for annot in annots:
+                        action = annot.get('/A')
+                        if action:
+                            uri = action.get('/URI')
+                            if uri:
+                                uris.append(str(uri))
+
+                if uris:
+                    with open(uris_output_file, 'w') as fp:
+                        fp.write('\n'.join(uris))
+
+                    file_observable = analysis.add_file_observable(uris_output_file, volatile=True)
+                    if file_observable:
+                        file_observable.redirection = _file
+                        file_observable.add_relationship(R_EXTRACTED_FROM, _file)
+                        file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
+                        file_observable.exclude_analysis(self)
+                        file_observable.add_yara_meta("type", "document.pdf.annotation_uris")
+            except Exception as e:
+                logging.warning(f"pikepdf annotation extraction failed for {local_file_path}: {e}")
+
+            # extract base64-encoded form field values from AcroForm
+            try:
+                acroform = pdf.Root.get('/AcroForm')
+                if acroform:
+                    fields = acroform.get('/Fields', [])
+                    for field in fields:
+                        field_name_raw = str(field.get('/T', 'unknown'))
+                        field_name = re.sub(r'[^A-Za-z0-9_-]', '_', field_name_raw)
+                        value = field.get('/V')
+                        if value is None:
+                            continue
+                        if not isinstance(value, pikepdf.Name):
+                            continue
+                        candidate = str(value).lstrip('/')
+                        if len(candidate) < 64:
+                            continue
+                        if not re.fullmatch(r'[A-Za-z0-9+/=]+', candidate):
+                            continue
+                        try:
+                            decoded = base64.b64decode(candidate)
+                        except Exception:
+                            continue
+                        if len(decoded) < 32:
+                            continue
+                        field_output_file = f"{local_file_path}.field_{field_name}_decoded.bin"
+                        with open(field_output_file, 'wb') as fp:
+                            fp.write(decoded)
+                        file_observable = analysis.add_file_observable(field_output_file, volatile=True)
+                        if file_observable:
+                            file_observable.redirection = _file
+                            file_observable.add_relationship(R_EXTRACTED_FROM, _file)
+                            file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
+                            file_observable.exclude_analysis(self)
+                            file_observable.add_yara_meta("type", "document.pdf.form_field")
+            except Exception as e:
+                logging.warning(f"pikepdf form field extraction failed for {local_file_path}: {e}")
+
+            # extract JavaScript from /Names /JavaScript tree
+            try:
+                names = pdf.Root.get('/Names')
+                if names:
+                    js_names_tree = names.get('/JavaScript')
+                    if js_names_tree:
+                        names_array = js_names_tree.get('/Names', [])
+                        for i in range(0, len(names_array) - 1, 2):
+                            js_name_raw = str(names_array[i])
+                            js_name = re.sub(r'[^A-Za-z0-9_-]', '_', js_name_raw)
+                            action = names_array[i + 1]
+                            js_value = action.get('/JS')
+                            if js_value is None:
+                                continue
+                            if isinstance(js_value, pikepdf.Stream):
+                                js_content = js_value.read_bytes().decode('utf-8', errors='replace')
+                            else:
+                                js_content = str(js_value)
+                            if not js_content.strip():
+                                continue
+                            js_output_file = f"{local_file_path}.js_{js_name}.js"
+                            with open(js_output_file, 'w', encoding='utf-8') as fp:
+                                fp.write(js_content)
+                            file_observable = analysis.add_file_observable(js_output_file, volatile=True)
+                            if file_observable:
+                                file_observable.redirection = _file
+                                file_observable.add_relationship(R_EXTRACTED_FROM, _file)
+                                file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
+                                file_observable.exclude_analysis(self)
+                                file_observable.add_yara_meta("type", "script.javascript")
+            except Exception as e:
+                logging.warning(f"pikepdf JavaScript extraction failed for {local_file_path}: {e}")
+
             pdf.close()
-
-            if uris:
-                with open(uris_output_file, 'w') as fp:
-                    fp.write('\n'.join(uris))
-
-                file_observable = analysis.add_file_observable(uris_output_file, volatile=True)
-                if file_observable:
-                    file_observable.redirection = _file
-                    file_observable.add_relationship(R_EXTRACTED_FROM, _file)
-                    file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
-                    file_observable.exclude_analysis(self)
-                    file_observable.add_yara_meta("type", "document.pdf.annotation_uris")
         except Exception as e:
-            logging.warning(f"pikepdf annotation extraction failed for {local_file_path}: {e}")
+            logging.warning(f"pikepdf failed to open {local_file_path}: {e}")
 
         return AnalysisExecutionResult.COMPLETED
 
