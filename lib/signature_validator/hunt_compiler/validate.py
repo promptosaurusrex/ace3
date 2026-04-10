@@ -579,6 +579,18 @@ def main():
                     print(json.dumps(event, indent=4, sort_keys=True))
                 print()
 
+        # The correlation trace is returned at the top level of the response so it is
+        # available even when every event was filtered out (i.e. roots is empty).
+        if args.print_trace:
+            correlation_trace = result.get("correlation_trace")
+            if correlation_trace:
+                print()
+                print("\033[1;96mCorrelation Trace:\033[0m")
+                print(format_correlation_trace(correlation_trace))
+            else:
+                print()
+                print("\033[93mNo correlation trace data in results (hunt may not have a correlate block).\033[0m")
+
         # if we are executing the hunt then we need to print the results
         for root in result["roots"]:
             if args.alert:
@@ -636,16 +648,6 @@ def main():
                         print(log)
 
                     print()
-
-                if args.print_trace:
-                    correlation_trace = root["details"].get("correlation_trace")
-                    if correlation_trace:
-                        print()
-                        print("\033[1;96mCorrelation Trace:\033[0m")
-                        print(format_correlation_trace(correlation_trace))
-                    else:
-                        print()
-                        print("\033[93mNo correlation trace data in results.\033[0m")
 
                 if not args.print_results and not args.print_logs:
                     print()
