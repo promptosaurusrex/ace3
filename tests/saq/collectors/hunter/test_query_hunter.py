@@ -118,7 +118,7 @@ def manager_kwargs(rules_dir):
 @pytest.fixture
 def rules_dir(tmpdir, datadir) -> str:
     temp_rules_dir = datadir / "test_rules"
-    shutil.copytree("hunts/test/generic", temp_rules_dir)
+    shutil.copytree("tests/data/hunts/test/generic", temp_rules_dir)
     return str(temp_rules_dir)
 
 @pytest.fixture(autouse=True, scope="function")

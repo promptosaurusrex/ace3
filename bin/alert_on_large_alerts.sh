@@ -10,4 +10,4 @@
 cd /opt/ace
 source load_environment
 
-find data/$(ace config -v global.node) -maxdepth 2 -mindepth 2 -type d -print0 | du -cs --files0-from=- | sort -nr | sed -e 1d | awk '{ if ($1 > 2000000) { print $0 } }' | grep -v -F -f data/external/analyst-data/large_alert_exclusion > data/var/large_alerts.txt
+find data/$(ace config -v global.node) -maxdepth 2 -mindepth 2 -type d -print0 | du -cs --files0-from=- | sort -nr | sed -e 1d | awk '{ if ($1 > 2000000) { print $0 } }' | grep -v -F -f signatures/analyst_data/large_alert_exclusion > data/var/large_alerts.txt

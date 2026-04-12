@@ -74,14 +74,11 @@ x-common-volumes: &common-volumes
   - ace-data:/opt/ace/data
   - ace-sql:/docker-entrypoint-initdb.d
   - ace-sql-readonly:/ace-sql-readonly
-  - ace-yara:/opt/ace/etc/yara
-  - ./hunts:/opt/ace/hunts
-  - ./etc/yara:/opt/ace/etc/yara
   - ace-auth:/auth
   - ace-user-home:/home/ace
   - ./ssl:/opt/ace/ssl
-  - ./data/external:/opt/ace/data/external
   - ace-phishkit:/phishkit
+  - ace-signatures:/opt/ace/signatures
   - type: tmpfs
     target: /tmp
 
@@ -108,8 +105,8 @@ services:
       - ace-sql-readonly:/ace-sql-readonly
       - ./ssl:/opt/ace/ssl
       - ace-auth:/auth
-      - ./data/external:/opt/ace/data/external
       - ace-phishkit:/phishkit
+      - ace-signatures:/opt/ace/signatures
     cap_add:
       - SYS_PTRACE
     networks:
@@ -693,15 +690,15 @@ services:
       - ace-phishkit:/phishkit
       # this volume contains authentication information
       - ace-auth:/auth
-      # bind-mount so phishkit manager can read config files from the repo and analyst-data
       - ./etc:/opt/ace/etc:ro
-      - ./data/external:/opt/ace/data/external:ro
     networks:
       - ace
 
 volumes:
   ace-data:
     name: ace-data
+  ace-signatures:
+    name: ace-signatures
   ace-db:
     name: ace-db
   ace-db-readonly:
@@ -710,10 +707,6 @@ volumes:
     name: ace-sql
   ace-sql-readonly:
     name: ace-sql-readonly
-  ace-yara:
-    name: ace-yara
-  ace-hunt:
-    name: ace-hunt
   ace-phishkit:
     name: ace-phishkit
   ace-auth:

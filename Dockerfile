@@ -157,9 +157,10 @@ RUN chmod a+x /usr/local/bin/unautoit && \
 RUN sed -i '/en_US.UTF-8 UTF-8/ s/^# //' /etc/locale.gen && \
     locale-gen en_US en_US.UTF-8 && \
     dpkg-reconfigure locales && \
-    update-locale LANG=en_US.utf8 && \
-    rmdir /opt/signatures && \
-    ln -s /opt/ace/etc/yara /opt/signatures
+    update-locale LANG=en_US.utf8
+
+# support yara_scanner_v2 command line defaults
+RUN ln -s /opt/ace/signatures /opt/signatures
 
 # install nodejs, deobfuscator, and esprima
 RUN curl -fsSLk https://deb.nodesource.com/setup_20.x | bash - && \
@@ -215,13 +216,11 @@ RUN cd /opt/tools && \
 # so we patch it so that it doesn't do that
 #RUN sed -i -e '/# TODO: here it works only/,+1d' /venv/lib/python3.9/site-packages/oletools/olevba.py
 
-RUN mkdir -p /opt/ace/data/logs /opt/ace/data/error_reports /opt/ace/data/external /opt/ace/data/var && \
-    rm -rf /opt/ace/etc/yara && \
-    mkdir -p /opt/ace/etc/yara && \
-    touch /opt/ace/etc/yara/.empty && \
-    rm -rf /opt/ace/hunts/site && \
-    mkdir -p /opt/ace/hunts/site && \
-    touch /opt/ace/hunts/site/.empty && \
+# XXX shouldn't this all be done as part of the system startup script?
+RUN mkdir -p /opt/ace/data/logs /opt/ace/data/error_reports /opt/ace/data/var && \
+    rm -rf /opt/ace/signatures && \
+    mkdir -p /opt/ace/signatures && \
+    touch /opt/ace/signatures/.empty && \
     rm -rf /opt/ace/etc/collection/tuning && \
     mkdir -p /opt/ace/etc/collection/tuning && \
     touch /opt/ace/etc/collection/tuning/.empty && \
@@ -239,7 +238,7 @@ RUN rm -f /etc/apt/apt.conf.d/proxy.conf
 RUN sed -i -e 's/MinProtocol = TLSv1.2/MinProtocol = TLSv1.0/' /etc/ssl/openssl.cnf
 
 # XXX is this line needed?
-RUN mkdir -p /opt/ace/data/logs /opt/ace/data/error_reports /opt/ace/data/external /opt/ace/data/var
+RUN mkdir -p /opt/ace/data/logs /opt/ace/data/error_reports /opt/ace/data/var
 
 # 03/18/2026 - the base image isn't always completely patched
 # and corporate VM processes aren't completely reasonable
@@ -295,8 +294,7 @@ COPY --chown=ace:ace saq /opt/ace/saq
 COPY --chown=ace:ace sql /opt/ace/sql
 COPY --chown=ace:ace tests /opt/ace/tests
 COPY --chown=ace:ace etc /opt/ace/etc
-COPY --chown=ace:ace hunts /opt/ace/hunts
 
 USER ace
 WORKDIR /opt/ace
-VOLUME [ "/opt/ace/data", "/opt/ace/etc/yara", "/opt/ace/hunts", "/opt/ace/etc/collection" ]
+VOLUME [ "/opt/ace/data", "/opt/ace/signatures", "/opt/ace/etc/collection" ]

@@ -24,7 +24,7 @@ SPLUNK_ALT_PORT = 8091
 @pytest.fixture
 def rules_dir(datadir) -> str:
     temp_rules_dir = datadir / "test_rules"
-    shutil.copytree("hunts/test/splunk", temp_rules_dir)
+    shutil.copytree("tests/data/hunts/test/splunk", temp_rules_dir)
     return str(temp_rules_dir)
 
 class TestSplunkHunter(HunterCollector):
@@ -64,7 +64,7 @@ def manager_kwargs_alt(rules_dir):
 
 @pytest.fixture(autouse=True, scope="function")
 def setup(rules_dir):
-    #ips_txt = 'hunts/test/splunk/ips.txt'
+    #ips_txt = 'tests/data/hunts/test/splunk/ips.txt'
     #with open(ips_txt, 'w') as fp:
         #fp.write('1.1.1.1\n')
 
@@ -255,7 +255,7 @@ def test_splunk_hunt_types(manager_kwargs):
 @pytest.fixture
 def alt_setup(rules_dir):
         shutil.rmtree(rules_dir)
-        shutil.copytree('hunts/test/splunk', rules_dir)
+        shutil.copytree('tests/data/hunts/test/splunk', rules_dir)
 
         get_config().clear_splunk_configs()
 
