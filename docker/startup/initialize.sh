@@ -107,8 +107,7 @@ for dir in \
     data/archive/ole \
     data/work \
     data/etc \
-    data/ssh \
-    data/external/analyst-data
+    data/ssh
 do
     if [ ! -d $dir ]
     then
