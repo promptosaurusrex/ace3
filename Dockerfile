@@ -140,8 +140,8 @@ RUN apt-get update && \
 RUN dotnet tool install --tool-path /opt/dotnet ilspycmd --version 9.1.0.7988
 
 # create necessary directories
-RUN mkdir -p /opt/signatures /opt/ace /venv /opt/tools && \
-    chown -R ace:ace /opt/signatures /opt/ace /venv /opt/tools
+RUN mkdir -p /opt/ace /venv /opt/tools && \
+    chown -R ace:ace /opt/ace /venv /opt/tools
 
 # configure Python and install base packages
 RUN python3 -m pip config set global.cert /etc/ssl/certs/ca-certificates.crt && \
@@ -160,7 +160,7 @@ RUN sed -i '/en_US.UTF-8 UTF-8/ s/^# //' /etc/locale.gen && \
     update-locale LANG=en_US.utf8
 
 # support yara_scanner_v2 command line defaults
-RUN ln -s /opt/ace/signatures /opt/signatures
+RUN ln -s /opt/ace/signatures/yara /opt/signatures
 
 # install nodejs, deobfuscator, and esprima
 RUN curl -fsSLk https://deb.nodesource.com/setup_20.x | bash - && \
@@ -218,9 +218,6 @@ RUN cd /opt/tools && \
 
 # XXX shouldn't this all be done as part of the system startup script?
 RUN mkdir -p /opt/ace/data/logs /opt/ace/data/error_reports /opt/ace/data/var && \
-    rm -rf /opt/ace/signatures && \
-    mkdir -p /opt/ace/signatures && \
-    touch /opt/ace/signatures/.empty && \
     rm -rf /opt/ace/etc/collection/tuning && \
     mkdir -p /opt/ace/etc/collection/tuning && \
     touch /opt/ace/etc/collection/tuning/.empty && \
