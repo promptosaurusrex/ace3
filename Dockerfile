@@ -267,7 +267,7 @@ USER root
 
 # ACE_VERSION is set late in the Dockerfile so that version bumps don't
 # invalidate the expensive apt-get, pip, and John the Ripper build layers
-ARG ACE_VERSION=3.0.29
+ARG ACE_VERSION=3.0.30
 LABEL version="${ACE_VERSION}"
 ENV ACE_VERSION=${ACE_VERSION}
 
