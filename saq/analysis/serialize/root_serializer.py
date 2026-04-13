@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import dateutil.parser
 
 from saq.analysis.io_tracking import _track_reads, _track_writes
+from saq.analysis.module_execution_delta import ModuleExecutionDelta
 from saq.json_encoding import _JSONEncoder
 from saq.util import parse_event_time
 
@@ -34,6 +35,7 @@ KEY_QUEUE = 'queue'
 KEY_INSTRUCTIONS = 'instructions'
 KEY_ANALYSIS_FAILURES = 'analysis_failures'
 KEY_EXTENSIONS = 'extensions'
+KEY_MODULE_EXECUTIONS = 'module_executions'
 
 if TYPE_CHECKING:
     from saq.analysis.root import RootAnalysis
@@ -78,6 +80,9 @@ class RootAnalysisSerializer:
             KEY_EXTENSIONS: root_analysis.extensions,
             KEY_ANALYSIS_FAILURES: root_analysis.analysis_failures,
         })
+
+        if root_analysis._module_executions:
+            result[KEY_MODULE_EXECUTIONS] = [d.to_dict() for d in root_analysis._module_executions]
 
         return result
     
@@ -141,7 +146,11 @@ class RootAnalysisSerializer:
             root_analysis._extensions = value[KEY_EXTENSIONS]
         if KEY_ANALYSIS_FAILURES in value:
             root_analysis._analysis_failures = value[KEY_ANALYSIS_FAILURES]
-        
+        if KEY_MODULE_EXECUTIONS in value:
+            root_analysis._module_executions = [
+                ModuleExecutionDelta.from_dict(d) for d in value[KEY_MODULE_EXECUTIONS]
+            ]
+
         # Set the JSON size for computation in the total_bytes property
         #root_analysis.json_size = sys.getsizeof(value)
     
