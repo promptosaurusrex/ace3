@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import subprocess
 from typing import Optional, List, Type, override
 
@@ -292,6 +293,22 @@ class PhishkitAnalyzer(AnalysisModule):
 
 
                 # TODO follow the logic of the existing crawlphish module here
+
+        # extract URL observables from MARKER URL entries in dom.html
+        dom_path = os.path.join(analysis.output_dir, "dom.html")
+        if os.path.exists(dom_path):
+            try:
+                with open(dom_path, "r", errors="ignore") as fp:
+                    for line in fp:
+                        match = re.match(r"MARKER URL: (.+)$", line.strip())
+                        if match:
+                            url = match.group(1).strip()
+                            if url:
+                                obs = analysis.add_observable_by_spec(F_URL, url)
+                                if obs:
+                                    obs.display_type = "Request URL"
+            except Exception as e:
+                logging.error(f"failed to extract MARKER URLs from dom.html for {observable}: {e}")
 
         return AnalysisExecutionResult.COMPLETED
 
