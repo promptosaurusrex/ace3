@@ -691,6 +691,8 @@ services:
       # this volume contains authentication information
       - ace-auth:/auth
       - ./etc:/opt/ace/etc:ro
+      # signatures volume so phishkit manager can read analyst-data config files
+      - ace-signatures:/opt/ace/signatures:ro
     networks:
       - ace
 
