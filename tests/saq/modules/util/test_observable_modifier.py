@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import uuid as uuid_lib
 
 import pytest
 import yaml
@@ -13,6 +14,7 @@ from saq.constants import (
     DIRECTIVE_YARA_META_PREFIX,
     F_EMAIL_ADDRESS,
     F_FQDN,
+    F_SIGNATURE_ID,
     F_URL,
     AnalysisExecutionResult,
 )
@@ -31,8 +33,19 @@ from tests.saq.helpers import create_root_analysis
 from tests.saq.test_util import create_test_context
 
 
-def _create_analyzer_with_rules(root, rules_data):
-    """Helper to create an analyzer with specific rules written to a temp YAML file."""
+def _create_analyzer_with_rules(root, rules_data, auto_uuid=True):
+    """Helper to create an analyzer with specific rules written to a temp YAML file.
+
+    By default, any rule dict without a `uuid` key gets a deterministic test uuid
+    injected so existing tests don't need to be rewritten when the uuid field
+    became required. Pass auto_uuid=False for tests that need to verify the
+    loader's behavior when a uuid is missing.
+    """
+    if auto_uuid:
+        rules_data = [
+            {**rule, "uuid": rule.get("uuid") or str(uuid_lib.uuid4())}
+            for rule in rules_data
+        ]
     yaml_path = os.path.join(root.storage_dir, "test_rules.yaml")
     with open(yaml_path, "w") as f:
         yaml.dump({"rules": rules_data}, f)
@@ -2912,3 +2925,120 @@ def test_ignore_global_without_parent_scope():
 
     # No parent-scoped tree conditions, so should be globally ignored
     assert target.ignored is True
+
+
+# ============================================================
+# uuid / signature_id observable tests
+# ============================================================
+
+
+@pytest.mark.unit
+def test_rule_uuid_round_trips_through_parser():
+    """A uuid declared in YAML should be loaded onto Rule.uuid."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    rule_uuid = "3a1ddc4e-def5-439b-b3d3-d51352786d94"
+    rules = [{
+        "name": "uuid round-trip rule",
+        "uuid": rule_uuid,
+        "conditions": {"observable_types": ["url"]},
+        "actions": {"add_directives": ["extract_iocs"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+    # Trigger lazy initialization
+    adapter.execute_analysis(root.add_observable_by_spec(F_URL, "https://example.com"))
+
+    loaded_rules = adapter._module._rules
+    assert len(loaded_rules) == 1
+    assert loaded_rules[0].uuid == rule_uuid
+
+
+@pytest.mark.unit
+def test_rule_without_uuid_is_rejected_at_load(caplog):
+    """A rule missing the required uuid field should be dropped with an error."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    rules = [{
+        "name": "missing uuid rule",
+        "conditions": {"observable_types": ["url"]},
+        "actions": {"add_directives": ["extract_iocs"]},
+    }]
+    with caplog.at_level(logging.ERROR):
+        adapter = _create_analyzer_with_rules(root, rules, auto_uuid=False)
+        # Trigger lazy load
+        adapter.execute_analysis(root.add_observable_by_spec(F_URL, "https://example.com"))
+
+    assert adapter._module._rules == []
+    assert any(
+        "missing required 'uuid'" in rec.message for rec in caplog.records
+    )
+
+
+@pytest.mark.unit
+def test_matching_rule_emits_signature_id_observable():
+    """When a rule matches, a signature_id observable with the rule's uuid is emitted."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com/page.html")
+    rule_uuid = "48d96a47-b7a2-415b-bb6c-661675d2a87c"
+    rules = [{
+        "name": "sig test rule",
+        "uuid": rule_uuid,
+        "conditions": {
+            "observable_types": ["url"],
+            "value_pattern": r".*\.html$",
+        },
+        "actions": {"add_directives": ["extract_iocs"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(observable)
+    result = adapter.analyze(observable, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
+    assert analysis is not None
+    # matched_rules record carries the uuid
+    assert analysis.details["matched_rules"][0]["uuid"] == rule_uuid
+    # signature_id observable attached as a child of the analysis
+    sig_observables = [o for o in analysis.observables if o.type == F_SIGNATURE_ID]
+    assert len(sig_observables) == 1
+    assert sig_observables[0].value == rule_uuid
+
+
+@pytest.mark.unit
+def test_multiple_matching_rules_emit_distinct_signature_ids():
+    """Two distinct matching rules should each yield their own signature_id observable."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com/page.html")
+    uuid_a = "67efec83-6146-49b7-839a-02de5af92a20"
+    uuid_b = "7fcbc3ef-cb8a-4433-8dbf-0753da7b4ac7"
+    rules = [
+        {
+            "name": "rule a",
+            "uuid": uuid_a,
+            "conditions": {"observable_types": ["url"]},
+            "actions": {"add_directives": ["extract_iocs"]},
+        },
+        {
+            "name": "rule b",
+            "uuid": uuid_b,
+            "conditions": {"observable_types": ["url"]},
+            "actions": {"add_tags": ["tagged"]},
+        },
+    ]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(observable)
+    result = adapter.analyze(observable, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
+    assert analysis is not None
+    emitted = {o.value for o in analysis.observables if o.type == F_SIGNATURE_ID}
+    assert emitted == {uuid_a, uuid_b}
