@@ -7,7 +7,14 @@ import pytest
 
 @pytest.fixture
 def hunt_dir(tmp_path):
-    """Create a minimal hunt directory structure for testing."""
+    """Create a minimal hunt directory structure for testing.
+
+    Drops a .hunt-root marker at tmp_path so that ``compile_hunt`` called
+    without an explicit ``package_root`` finds this directory via its marker
+    walk-up. Tests that need to exercise discovery or missing-marker failure
+    modes should use a separate tmp dir.
+    """
+    (tmp_path / ".hunt-root").write_text("")
     return tmp_path
 
 
@@ -45,7 +52,7 @@ def simple_hunt(hunt_dir):
         "  max_time_range: '01:00:00'\n"
         "  full_coverage: yes\n"
         "  use_index_time: yes\n"
-        "  search: hunts/test/test.query\n"
+        "  search: test.query\n"
     )
     return hunt_file
 
@@ -117,7 +124,7 @@ def hunt_with_query_includes(hunt_dir):
         "  max_time_range: '01:00:00'\n"
         "  full_coverage: yes\n"
         "  use_index_time: yes\n"
-        "  search: hunts/test/test_qi.query\n"
+        "  search: test_qi.query\n"
     )
     return hunt_file
 
@@ -478,6 +485,70 @@ def hunt_with_relative_inline_executable(hunt_dir):
         "          command:\n"
         "            type: executable\n"
         "            path: ../scripts/enrich.py\n"
+    )
+    return hunt_file
+
+
+@pytest.fixture
+def hunt_with_cross_tree_references(hunt_dir):
+    """A monorepo-shape hunt that reaches into sibling directories: hunt lives
+    in hunts/splunk/, includes a command file from hunts/commands/, which in
+    turn references a script in hunts/scripts/.
+    """
+    scripts_dir = hunt_dir / "hunts" / "scripts"
+    scripts_dir.mkdir(parents=True)
+
+    script_file = scripts_dir / "is_service_account.py"
+    script_file.write_text(
+        "#!/usr/bin/env python3\n"
+        "print('false')\n"
+    )
+    script_file.chmod(0o755)
+
+    commands_dir = hunt_dir / "hunts" / "commands"
+    commands_dir.mkdir(parents=True)
+
+    commands_file = commands_dir / "azure_commands.include.yaml"
+    commands_file.write_text(
+        "commands:\n"
+        "  - name: is_service_account\n"
+        "    type: executable\n"
+        "    path: ../scripts/is_service_account.py\n"
+        "    cache: 30d\n"
+        '    args: ["--user", "{{{{ _event[\'user\'] }}}}"]\n'
+    )
+
+    splunk_dir = hunt_dir / "hunts" / "splunk"
+    splunk_dir.mkdir(parents=True)
+
+    hunt_file = splunk_dir / "azure_single_factor_authentication.yaml"
+    hunt_file.write_text(
+        "include:\n"
+        "  - ../commands/azure_commands.include.yaml\n"
+        "\n"
+        "rule:\n"
+        "  uuid: 3c7d3853-f019-4a2e-8213-634b4b60c20a\n"
+        "  enabled: yes\n"
+        "  name: cross_tree_test\n"
+        "  description: Monorepo cross-tree references\n"
+        "  type: splunk\n"
+        "  alert_type: test\n"
+        "  frequency: '00:01:00'\n"
+        "  time_range: '00:01:00'\n"
+        "  max_time_range: '01:00:00'\n"
+        "  full_coverage: yes\n"
+        "  use_index_time: yes\n"
+        "  query: 'index=main'\n"
+        "  correlate:\n"
+        "    logic:\n"
+        "      - transform:\n"
+        "          type: event\n"
+        "          method: property\n"
+        "          property_name: is_service_account\n"
+        "          property_type: bool\n"
+        "          command:\n"
+        "            type: defined\n"
+        "            name: is_service_account\n"
     )
     return hunt_file
 

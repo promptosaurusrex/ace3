@@ -160,6 +160,13 @@ def parse_args():
     parser.add_argument(
         "-o", "--output-file", help="Save the raw JSON to the given file."
     )
+    parser.add_argument(
+        "--package-root",
+        type=str,
+        help="The directory that anchors all embedded hunt file paths. When omitted, "
+             "the compiler walks upward from the hunt file looking for a .hunt-root marker.",
+        default=os.environ.get("ACE_HUNT_PACKAGE_ROOT", None),
+    )
     rel_group = parser.add_argument_group(
         "Relative time window (mutually exclusive with -s/-e)"
     )
@@ -296,8 +303,9 @@ def validate_hunt(
     create_alerts: bool = False,
     queue: Optional[str] = None,
     query_results: Optional[list] = None,
+    package_root: Optional[str] = None,
 ) -> bool:
-    compiled = compile_hunt(file_path, root_dir=os.path.dirname(file_path))
+    compiled = compile_hunt(file_path, package_root=package_root)
 
     json_data = {
         "compiled_hunt": compiled.model_dump(),
@@ -513,6 +521,7 @@ def main():
                 args.alert,
                 args.queue,
                 query_results_override,
+                args.package_root,
             )
         except Exception:
             has_failures = True
