@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.32] - 2026-04-13
+
+- [Allow hunts to override included observable_mapping entries](https://github.com/ACE-Collective/ace3/pull/130)
+- [Adds phishkit's MARKER URL values as url observables](https://github.com/ACE-Collective/ace3/pull/131)
+
 ## [3.0.31] - 2026-04-13
 
 - [Implements phase 1 of analysis caching](https://github.com/ACE-Collective/ace3/pull/125)
