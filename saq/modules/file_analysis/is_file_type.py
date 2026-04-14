@@ -176,7 +176,12 @@ def is_javascript_file(path):
     if p.returncode != 0:
         return False
 
-    p = Popen(['grep', '-Eq', r'\b(function|var|let|const|class|async|await|return|if|for|while|try|catch|import|export)\b|=>|\.\s*then\(', path], stdout=PIPE, stderr=PIPE)
+    # match common JS keywords, arrow functions, Promise chains, or any bare
+    # identifier-followed-by-open-paren (i.e. a function call). The last
+    # alternative is important for heavily obfuscated PDF/Acrobat JavaScript
+    # that uses only bracket-notation call expressions like
+    # `app["s"+...]("sTtimeOut", util["str..."](...))` with no whole-word keywords.
+    p = Popen(['grep', '-Eq', r'\b(function|var|let|const|class|async|await|return|if|for|while|try|catch|import|export)\b|=>|\.\s*then\(|\w\(', path], stdout=PIPE, stderr=PIPE)
     stdout, stderr = p.communicate()
     return p.returncode == 0
 

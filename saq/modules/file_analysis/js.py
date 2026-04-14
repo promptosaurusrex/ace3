@@ -241,7 +241,14 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
             logging.debug(f"js deobfuscator produced no output file for {local_file_path}")
             return AnalysisExecutionResult.COMPLETED
 
-        if os.path.getsize(deobfuscated_src) == 0 or analysis.event_count == 0:
+        # skip emission only when the harness finished cleanly with nothing to
+        # show. if the sandbox crashed partway through we still want the
+        # observable (and its analysis.error) so the analyst can see what
+        # happened and any partial captures get URL-extracted.
+        if os.path.getsize(deobfuscated_src) == 0:
+            logging.debug(f"js deobfuscator produced empty output for {local_file_path}")
+            return AnalysisExecutionResult.COMPLETED
+        if analysis.event_count == 0 and not analysis.error:
             logging.debug(f"js deobfuscator produced no events for {local_file_path}")
             return AnalysisExecutionResult.COMPLETED
 

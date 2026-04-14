@@ -100,11 +100,23 @@ const sandbox = {
 // Browser globals — each one is its own recorder so events are labeled
 // clearly (e.g. "document.createElement.src = ...").
 for (const name of [
+  // DOM / BOM
   'window', 'document', 'location', 'navigator', 'top', 'self', 'parent',
   'frames', 'frameElement', 'screen', 'history', 'localStorage',
   'sessionStorage', 'fetch', 'XMLHttpRequest', 'WebSocket', 'crypto',
   'indexedDB', 'performance', 'Image', 'Audio', 'HTMLElement', 'Element',
   'Node', 'MutationObserver', 'alert', 'prompt', 'confirm',
+  // Adobe Acrobat / PDF JavaScript — top-level objects plus commonly used
+  // "this.*" methods that PDF scripts dereference as unqualified names after
+  // obfuscation (e.g. `this[a0_0x471eff(0x128)]()` resolving to `getField`)
+  'app', 'util', 'SOAP', 'color', 'event', 'global', 'xfa',
+  'Collab', 'Doc', 'Field', 'Net', 'identity', 'security', 'spell', 'media',
+  'getField', 'getTemplate', 'info', 'numPages', 'pageNum', 'path', 'URL',
+  'submitForm', 'mailForm', 'mailDoc', 'closeDoc', 'exportDataObject',
+  'resetForm', 'addScript', 'syncAnnotScan', 'importDataObject',
+  'calculateNow', 'addAnnot', 'getAnnot', 'getAnnots', 'getOCGs',
+  'getPageBox', 'getPageNthWord', 'getPageNthWordQuads', 'getPageNumWords',
+  'getURL', 'print', 'setAction',
 ]) {
   sandbox[name] = recorder(name);
 }

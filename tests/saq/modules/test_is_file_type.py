@@ -195,6 +195,10 @@ def test_is_javascript_file(datadir, file_name, expected_result):
     ('import { Component } from "react";', True),
     ('export default MyModule;', True),
     ('const message = "hello"; console.log(message);', True),
+    # Heavily obfuscated Acrobat PDF JavaScript that uses only bracket-notation
+    # function calls — no whole-word JS keywords at all. node --check passes
+    # and the \w\( grep alternative catches the getField( substring.
+    ('app.t = app["s"+({}+[])[[+!+[]]+[+!+[]]]+"tTim"]("foo", getField("btn1").value, 500);', True),
     ('{}', False),
     ('{"name": "test", "value": 123}', False),
     ('this is not valid javascript syntax at all!!!', False),

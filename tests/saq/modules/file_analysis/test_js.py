@@ -172,6 +172,102 @@ def test_plain_js_emits_url_to_extracted_file(datadir, monkeypatch, patched_deob
 
 
 @pytest.mark.unit
+def test_acrobat_pdf_bracket_notation_js(datadir, monkeypatch, patched_deobfuscate):
+    """A PDF-extracted sample that uses only bracket-notation calls on
+    Acrobat globals (app, util, SOAP, getField) — the failure mode from
+    alert 12c40141. This file has NO whole-word JS keywords, so it only
+    passes is_javascript_file() because of the \\w\\( regex alternative,
+    and it only deobfuscates because the harness pre-populates Acrobat
+    globals as recorders."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(datadir / "acrobat_pdf.js")
+
+    analyzer = _build_analyzer(root, monkeypatch=monkeypatch)
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    assert analysis.exit_code == 0
+    assert analysis.event_count > 0
+
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    emitted_obs = file_observables[0]
+    with open(emitted_obs.full_path, "r", encoding="utf-8") as fp:
+        body = fp.read()
+    # The harness should have captured the bracket-notation calls through the
+    # recorder chain. We don't care about exact formatting — just that the
+    # Acrobat global names surface in clear text.
+    assert "getField" in body
+    assert "SOAP" in body or "streamDecode" in body
+
+
+@pytest.mark.unit
+def test_harness_crash_still_emits_observable(tmpdir, monkeypatch):
+    """When the sandbox harness crashes partway through (e.g. the obfuscated
+    sample calls a name we didn't pre-populate), the analyzer should still
+    emit the deobfuscated-<name> observable carrying analysis.error so the
+    analyst can see what happened and any events captured before the crash
+    still get URL-extracted."""
+    import json as _json
+
+    def _crashing_shim(file_path, output_dir, is_async=False, timeout=60, scanner_timeout=30):
+        os.makedirs(output_dir, exist_ok=True)
+        out_js = os.path.join(output_dir, "deobfuscated.js")
+        with open(out_js, "w") as fp:
+            fp.write(
+                "// ACE3 javascript deobfuscator — reconstructed from sandbox trace\n"
+                "// partial capture before crash\n"
+                "// run error: TypeError: this[<obfuscated>] is not a function\n"
+            )
+        with open(os.path.join(output_dir, "std.out"), "w") as fp:
+            fp.write("")
+        with open(os.path.join(output_dir, "std.err"), "w") as fp:
+            fp.write("")
+        with open(os.path.join(output_dir, "exit.code"), "w") as fp:
+            fp.write("0")
+        with open(os.path.join(output_dir, "report.json"), "w") as fp:
+            _json.dump({
+                "status": "error_during_run",
+                "event_count": 0,
+                "secondary_script_count": 0,
+                "error": "TypeError: this[<obfuscated>] is not a function at evalmachine.<anonymous>:1:639",
+            }, fp)
+        return [
+            os.path.join(output_dir, name)
+            for name in ("deobfuscated.js", "std.out", "std.err", "exit.code", "report.json")
+        ]
+
+    monkeypatch.setattr(
+        "saq.modules.file_analysis.js.deobfuscate_file",
+        _crashing_shim,
+    )
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    # use a dedicated fixture name so we don't collide with other tests'
+    # deobfuscated-plain.js in the shared test storage dir
+    crash_src = tmpdir / "harness_crash_sample.js"
+    crash_src.write('var x = 1; app.unknown_method();')
+    observable = root.add_file_observable(str(crash_src))
+
+    analyzer = _build_analyzer(root, monkeypatch=monkeypatch)
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    assert analysis.error and "not a function" in analysis.error
+    # observable should still be emitted with the error context
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    emitted_obs = file_observables[0]
+    assert emitted_obs.has_directive(DIRECTIVE_EXTRACT_URLS)
+
+
+@pytest.mark.unit
 def test_deobfuscator_error_does_not_crash(datadir, monkeypatch):
     """If the celery client raises, the analyzer should record the error
     and return COMPLETED without a derived file observable."""
