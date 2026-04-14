@@ -67,7 +67,16 @@
             {% else %}
                 <span class="badge text-bg-secondary"><i class="bi bi-dash-circle"></i> none</span>
             {% endif %}
+            {% if cond.error %}
+                <span class="badge text-bg-danger ms-auto"><i class="bi bi-exclamation-triangle-fill"></i> error</span>
+            {% endif %}
         </div>
+        {% if cond.error %}
+            <div class="alert alert-danger ct-error py-1 px-2 mb-1 mt-1">
+                <i class="bi bi-exclamation-triangle-fill"></i>
+                <code>{{ cond.error }}</code>
+            </div>
+        {% endif %}
         {% if cond.branch_steps %}
             <div class="ct-nested ct-rail-primary">
                 {% for child in cond.branch_steps %}
@@ -78,7 +87,7 @@
     </div>
 {% endmacro %}
 
-{#-- Transform step: sets a property via a command, may have errors and on_error handlers. --#}
+{#-- Transform step: sets a property via a command. On error the event short-circuits to alert. --#}
 {% macro render_transform_step(trans, depth, uid) %}
     <div class="ct-step ct-step-transform">
         <div class="ct-step-header">
@@ -121,14 +130,6 @@
                 <code>{{ trans.error }}</code>
             </div>
         {% endif %}
-        {% if trans.on_error_steps %}
-            <div class="ct-nested ct-rail-danger">
-                <div class="ct-nested-label text-danger small"><i class="bi bi-arrow-return-right"></i> on_error</div>
-                {% for child in trans.on_error_steps %}
-                    {{ render_step(child, depth + 1) }}
-                {% endfor %}
-            </div>
-        {% endif %}
     </div>
 {% endmacro %}
 
@@ -152,10 +153,18 @@
             {% if action.rendered_log_message %}
                 <span class="ct-log-message">{{ action.rendered_log_message }}</span>
             {% endif %}
-            {% if action.is_interrupt %}
+            {% if action.error %}
+                <span class="badge text-bg-danger ms-auto"><i class="bi bi-exclamation-triangle-fill"></i> error</span>
+            {% elif action.is_interrupt %}
                 <span class="badge text-bg-light text-muted ms-auto" title="this action interrupted event processing"><i class="bi bi-sign-stop"></i> interrupt</span>
             {% endif %}
         </div>
+        {% if action.error %}
+            <div class="alert alert-danger ct-error py-1 px-2 mb-1 mt-1">
+                <i class="bi bi-exclamation-triangle-fill"></i>
+                <code>{{ action.error }}</code>
+            </div>
+        {% endif %}
     </div>
 {% endmacro %}
 
@@ -186,31 +195,32 @@
     {% set stream_events = ct.get('stream_events', []) or [] %}
 
     {# Outcome counters #}
-    {% set counts = namespace(alert=0, filter=0, stop=0, discard=0, timeout=0, other=0) %}
+    {% set counts = namespace(alert=0, filter=0, stop=0, discard=0, timeout=0, error=0, other=0) %}
     {% for et in event_traces %}
         {% if et.outcome == 'alert' %}{% set counts.alert = counts.alert + 1 %}
         {% elif et.outcome == 'filter' %}{% set counts.filter = counts.filter + 1 %}
         {% elif et.outcome == 'stop' %}{% set counts.stop = counts.stop + 1 %}
         {% elif et.outcome == 'discard' %}{% set counts.discard = counts.discard + 1 %}
         {% elif et.outcome == 'timeout' %}{% set counts.timeout = counts.timeout + 1 %}
+        {% elif et.outcome == 'error' %}{% set counts.error = counts.error + 1 %}
         {% else %}{% set counts.other = counts.other + 1 %}
         {% endif %}
     {% endfor %}
 
-    {# Compute display subset: alerts first, then fill up to 100 with the earliest remaining events. #}
+    {# Compute display subset: alerts and errors first, then fill up to 100 with the earliest remaining events. #}
     {% set _cap = 100 %}
     {% set _total = event_traces | length %}
-    {% set _alert_events = event_traces | selectattr('outcome', 'equalto', 'alert') | list %}
-    {% set _non_alert_events = event_traces | rejectattr('outcome', 'equalto', 'alert') | list %}
+    {% set _priority_events = event_traces | selectattr('outcome', 'in', ['alert', 'error']) | list %}
+    {% set _other_events = event_traces | rejectattr('outcome', 'in', ['alert', 'error']) | list %}
     {% if _total <= _cap %}
         {% set _display_events = event_traces %}
     {% else %}
-        {% set _alerts_kept = _alert_events[:_cap] %}
-        {% set _slots_left = _cap - (_alerts_kept | length) %}
+        {% set _priority_kept = _priority_events[:_cap] %}
+        {% set _slots_left = _cap - (_priority_kept | length) %}
         {% if _slots_left > 0 %}
-            {% set _display_events = (_alerts_kept + _non_alert_events[:_slots_left]) | sort(attribute='event_index') %}
+            {% set _display_events = (_priority_kept + _other_events[:_slots_left]) | sort(attribute='event_index') %}
         {% else %}
-            {% set _display_events = _alerts_kept | sort(attribute='event_index') %}
+            {% set _display_events = _priority_kept | sort(attribute='event_index') %}
         {% endif %}
     {% endif %}
 
@@ -252,6 +262,9 @@
                         {% endif %}
                         {% if counts.timeout > 0 %}
                             <span class="badge text-bg-warning"><i class="bi bi-hourglass-split"></i> {{ counts.timeout }} timeout</span>
+                        {% endif %}
+                        {% if counts.error > 0 %}
+                            <span class="badge text-bg-danger"><i class="bi bi-exclamation-triangle-fill"></i> {{ counts.error }} error</span>
                         {% endif %}
                         {% if counts.other > 0 %}
                             <span class="badge text-bg-light text-dark">{{ counts.other }} other</span>
@@ -295,6 +308,8 @@
                                             <span class="badge text-bg-dark"><i class="bi bi-trash-fill"></i> discard</span>
                                         {% elif et.outcome == 'timeout' %}
                                             <span class="badge text-bg-warning"><i class="bi bi-hourglass-split"></i> timeout</span>
+                                        {% elif et.outcome == 'error' %}
+                                            <span class="badge text-bg-danger"><i class="bi bi-exclamation-triangle-fill"></i> error</span>
                                         {% else %}
                                             <span class="badge text-bg-light text-dark">{{ et.outcome }}</span>
                                         {% endif %}
@@ -320,7 +335,7 @@
                     {% if _total > (_display_events | length) %}
                         <div class="text-muted small mt-2">
                             Showing {{ _display_events | length }} of {{ _total }} event traces
-                            (outcome <code>alert</code> events prioritized).
+                            (<code>alert</code> and <code>error</code> events prioritized).
                             <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_correlation_trace_raw" aria-expanded="false">Show raw JSON</a>
                         </div>
                         <div class="collapse mt-2" id="collapse_correlation_trace_raw">

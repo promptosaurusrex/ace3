@@ -47,6 +47,7 @@ class ConditionTrace(BaseModel):
     expression: ExpressionTrace
     branch_taken: Literal["execute", "else", "none"]
     branch_steps: list["StepTrace"] = Field(default_factory=list)
+    error: Optional[str] = Field(default=None, description="Error message if condition evaluation failed")
 
 
 class TransformTrace(BaseModel):
@@ -60,7 +61,6 @@ class TransformTrace(BaseModel):
     property_value: Optional[str] = Field(default=None, description="For property transforms: truncated repr of value set")
     result_count: Optional[int] = Field(default=None, description="Number of result rows from command output")
     error: Optional[str] = Field(default=None, description="Error message if command failed")
-    on_error_steps: Optional[list["StepTrace"]] = Field(default=None, description="Traces from on_error actions")
 
 
 class ActionTrace(BaseModel):
@@ -69,6 +69,7 @@ class ActionTrace(BaseModel):
     action_type: str = Field(..., description="filter, stop, discard, alert, or log")
     rendered_log_message: Optional[str] = Field(default=None, description="Rendered log message (secrets stripped)")
     is_interrupt: bool = Field(default=False, description="Whether this action interrupted event processing")
+    error: Optional[str] = Field(default=None, description="Error message if action execution failed")
 
 
 class StepTrace(BaseModel):
@@ -81,7 +82,7 @@ class EventTrace(BaseModel):
     """Complete trace for one event's path through correlation logic."""
     event_index: int = Field(..., description="Index of the event in the stream")
     steps: list[StepTrace] = Field(default_factory=list, description="Traces of each step executed for this event")
-    outcome: str = Field(default="alert", description="Final outcome: alert, filter, stop, discard, timeout")
+    outcome: str = Field(default="alert", description="Final outcome: alert, filter, stop, discard, timeout, error")
 
 
 class StreamEvent(BaseModel):

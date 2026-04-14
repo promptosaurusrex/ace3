@@ -55,6 +55,16 @@ class _StreamReset(Exception):
         self.resume_step_index = resume_step_index
 
 
+class _StepError(Exception):
+    """Internal signal that a step failed. The affected event short-circuits
+    further step processing and is routed to alert. The caller is responsible
+    for appending step_trace to the parent trace list before the exception
+    propagates, so the failing step is visible in the event trace."""
+    def __init__(self, message: str, step_trace: "StepTrace"):
+        super().__init__(message)
+        self.step_trace = step_trace
+
+
 @dataclass
 class CorrelationResult:
     """Result of running correlation on an event stream."""
@@ -149,6 +159,16 @@ class CorrelationEngine:
                 # Clear prior event traces since the stream changed
                 trace.event_traces = []
                 continue
+            except _StepError:
+                # A step raised an error. Short-circuit further step processing
+                # for this event and route it to alert. The failing step's trace
+                # has already been appended to event_trace.steps by the caller.
+                event_trace.outcome = "error"
+                alert_events.append((event_index, event))
+                result.event_actions[event_index] = ActionResult(action_type="alert")
+                trace.event_traces.append(event_trace)
+                event_index += 1
+                continue
 
             if action_result is None:
                 action_result = ActionResult(action_type="alert")
@@ -185,6 +205,20 @@ class CorrelationEngine:
         result.trace = trace
         return result
 
+    @staticmethod
+    def _append_step_trace_on_error(se: "_StepError", trace_steps: Optional[list[StepTrace]]) -> None:
+        """Append a failing step's trace to the parent trace list exactly once.
+
+        A _StepError may propagate through several levels of _process_event_steps
+        (e.g. when a transform inside a condition's branch fails). The innermost
+        catcher appends the step trace and clears se.step_trace so outer catchers
+        don't add duplicates. Outer levels may reassign se.step_trace to a wrapping
+        step (e.g. the enclosing condition) before re-raising.
+        """
+        if trace_steps is not None and se.step_trace is not None:
+            trace_steps.append(se.step_trace)
+        se.step_trace = None
+
     def _process_event_steps(
         self,
         steps: list[StepConfig],
@@ -199,6 +233,8 @@ class CorrelationEngine:
 
         Returns an ActionResult if an interrupt occurred, None otherwise.
         Raises _StreamReset if a stream transform replaces the event stream.
+        Raises _StepError if any step fails; the affected event short-circuits
+        to alert at the top-level execute() loop.
         """
         for step_idx in range(start_step_index, len(steps)):
             step = steps[step_idx]
@@ -211,19 +247,27 @@ class CorrelationEngine:
                 self._render_debug(step.debug, event, events)
 
             if isinstance(step.step, ConditionConfig):
-                action_result, step_trace = self._execute_condition(
-                    step.step, event, events, event_index, start_time, step.description,
-                )
+                try:
+                    action_result, step_trace = self._execute_condition(
+                        step.step, event, events, event_index, start_time, step.description,
+                    )
+                except _StepError as se:
+                    self._append_step_trace_on_error(se, trace_steps)
+                    raise
                 if trace_steps is not None:
                     trace_steps.append(step_trace)
                 if action_result is not None and action_result.is_interrupt:
                     return action_result
 
             elif isinstance(step.step, TransformConfig):
-                action_result, step_trace = self._execute_transform(
-                    step.step, event, events, event_index, step_idx, step.description,
-                    trace_steps,
-                )
+                try:
+                    action_result, step_trace = self._execute_transform(
+                        step.step, event, events, event_index, step_idx, step.description,
+                        trace_steps,
+                    )
+                except _StepError as se:
+                    self._append_step_trace_on_error(se, trace_steps)
+                    raise
                 if trace_steps is not None and step_trace is not None:
                     trace_steps.append(step_trace)
                 if action_result is not None and action_result.is_interrupt:
@@ -231,7 +275,19 @@ class CorrelationEngine:
                 # Note: if _StreamReset is raised, it propagates up
 
             elif isinstance(step.step, ActionConfig):
-                action_result = execute_action(step.step, event, events, self._secrets, self._config)
+                try:
+                    action_result = execute_action(step.step, event, events, self._secrets, self._config)
+                except Exception as e:
+                    logging.error("error executing action: %s", e, exc_info=True)
+                    action_trace = ActionTrace(
+                        action_type=step.step.type,
+                        is_interrupt=False,
+                        error=str(e),
+                    )
+                    step_trace = StepTrace(description=step.description, step=action_trace)
+                    if trace_steps is not None:
+                        trace_steps.append(step_trace)
+                    raise _StepError(str(e), None) from e
                 if trace_steps is not None:
                     trace_steps.append(self._trace_action(step.step, action_result, event, events, step.description))
                 if action_result.is_interrupt:
@@ -248,7 +304,10 @@ class CorrelationEngine:
         start_time: datetime.datetime,
         description: Optional[str] = None,
     ) -> tuple[Optional[ActionResult], StepTrace]:
-        """Execute a condition step. Returns (action_result, step_trace)."""
+        """Execute a condition step. Returns (action_result, step_trace).
+
+        Raises _StepError if expression evaluation fails.
+        """
         expr_result, expr_trace = evaluate_expression_traced(
             condition.when, event, events, self._secrets, self._config,
         )
@@ -259,19 +318,35 @@ class CorrelationEngine:
         condition_trace = ConditionTrace(expression=expr_trace, branch_taken="none")
         step_trace = StepTrace(description=description, step=condition_trace)
 
+        if expr_trace.error is not None:
+            logging.error("error evaluating condition expression: %s", expr_trace.error)
+            condition_trace.error = expr_trace.error
+            raise _StepError(expr_trace.error, step_trace)
+
         if expr_result:
             condition_trace.branch_taken = "execute"
-            action_result = self._process_event_steps(
-                condition.execute, event, events, event_index, start_time,
-                trace_steps=condition_trace.branch_steps,
-            )
+            try:
+                action_result = self._process_event_steps(
+                    condition.execute, event, events, event_index, start_time,
+                    trace_steps=condition_trace.branch_steps,
+                )
+            except _StepError as se:
+                # Inner step failed and its trace was already attached to branch_steps.
+                # Reassign the step_trace carrier to our condition so the outer caller
+                # appends the condition (with the nested failure visible) to its trace.
+                se.step_trace = step_trace
+                raise
             return action_result, step_trace
         elif condition.else_:
             condition_trace.branch_taken = "else"
-            action_result = self._process_event_steps(
-                condition.else_, event, events, event_index, start_time,
-                trace_steps=condition_trace.branch_steps,
-            )
+            try:
+                action_result = self._process_event_steps(
+                    condition.else_, event, events, event_index, start_time,
+                    trace_steps=condition_trace.branch_steps,
+                )
+            except _StepError as se:
+                se.step_trace = step_trace
+                raise
             return action_result, step_trace
 
         return None, step_trace
@@ -288,9 +363,11 @@ class CorrelationEngine:
     ) -> tuple[Optional[ActionResult], Optional[StepTrace]]:
         """Execute a transform step.
 
-        Returns (action_result, step_trace). action_result is set if on_error produced an interrupt.
+        Returns (action_result, step_trace). action_result is always None on
+        the normal return path — transforms do not produce interrupts.
         step_trace is None when _StreamReset is raised (it was already appended to parent_trace_steps).
         Raises _StreamReset if a stream transform succeeded.
+        Raises _StepError if the command fails.
         """
         transform_trace = TransformTrace(
             transform_type=transform.type,
@@ -347,17 +424,7 @@ class CorrelationEngine:
         except Exception as e:
             logging.error("error executing transform command: %s", e, exc_info=True)
             transform_trace.error = str(e)
-
-            if transform.command.on_error:
-                on_error_steps: list[StepTrace] = []
-                transform_trace.on_error_steps = on_error_steps
-                for action_data in transform.command.on_error:
-                    action = ActionConfig.model_validate(action_data)
-                    action_result = execute_action(action, event, events, self._secrets, self._config)
-                    on_error_steps.append(self._trace_action(action, action_result, event, events))
-                    if action_result.is_interrupt:
-                        return action_result, step_trace
-            return None, step_trace
+            raise _StepError(str(e), step_trace) from e
 
     def _trace_action(
         self,

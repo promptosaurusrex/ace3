@@ -1,4 +1,4 @@
-from typing import Any, Literal, Optional, Union
+from typing import Any, Optional, Union
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -42,7 +42,6 @@ class TimeRangeConfig(BaseModel):
 class CommandConfig(BaseModel):
     """Configuration for a transformation command."""
     type: str = Field(..., description="Command type: query, executable, defined")
-    on_error: Optional[list] = Field(default=None, description="Actions to execute on error")
     timeout: str = Field(default="30s", description="Command timeout as timespec")
     cache: Optional[str] = Field(default=None, description="Cache duration as timespec")
 
@@ -182,7 +181,6 @@ class PredefinedCommandConfig(BaseModel):
     name: str = Field(..., description="Name of the command")
     description: Optional[str] = Field(default=None, description="Description of the command")
     type: str = Field(..., description="Command type: query, executable")
-    on_error: Optional[list] = Field(default=None, description="Actions to execute on error")
     timeout: str = Field(default="30s", description="Command timeout as timespec")
     cache: Optional[str] = Field(default=None, description="Cache duration as timespec")
 

@@ -148,13 +148,16 @@ Every `command` as the following properties available:
 ```yaml
 command:
     type: TYPE # required (see below)
-    on_error: [ action ] # optional (see below)
     timeout: 30s # optional (default 30s)
 ```
 
 The optional `timeout` setting controls how long to wait for the command to complete. If the command does not complete in the time specified, it is canceled (or killed) and treated as an error condition.
 
-The optional `on_error` setting controls what happens when the command fails. If this is defined then all actions listed are executed in order. If it is not defined, then the error condition is logged and processing falls through (to alert.)
+### Error handling
+
+If any step fails for any reason — a command exits non-zero, a query source is unreachable, a command times out, an expression raises, an action raises — step processing for the affected event stops immediately and the event is alerted. The event's trace outcome is recorded as `error` and the error message is attached to the failing step's trace so it can be reviewed in the alert UI or CLI trace output.
+
+This is a fail-safe: the correlation pipeline can never silently drop an event as a result of an error. If you want different behavior for an expected failure mode, express it explicitly using `when` conditions rather than relying on errors.
 
 The `type` field specifies the type of the command. The following types are supported.
 
@@ -401,4 +404,4 @@ Some predefined interpretations of timestamps are made available.
 - The executed format of all query commands is JSONL. No exceptions.
 - The group_by logic applies after correlate has been processed.
 - Hunts already have a way to specify a maximun result set size, so this is used to limit per-event query executions.
-- When a command errors during a property event transformation and no on_error is defined, the property is not set.
+- When a command errors during a property event transformation, step processing for the affected event stops immediately and the event defaults to alert.
