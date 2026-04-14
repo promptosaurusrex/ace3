@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 from typing import Optional, List, Type, override
+from urlfinderlib.url import URL
 
 from fluent import sender
 from pydantic import Field
@@ -302,9 +303,9 @@ class PhishkitAnalyzer(AnalysisModule):
                     for line in fp:
                         match = re.match(r"MARKER URL: (.+)$", line.strip())
                         if match:
-                            url = match.group(1).strip()
-                            if url:
-                                obs = analysis.add_observable_by_spec(F_URL, url)
+                            url = URL(match.group(1).strip())
+                            if url.value:
+                                obs = analysis.add_observable_by_spec(F_URL, url.value)
                                 if obs:
                                     obs.display_type = "Request URL"
             except Exception as e:
