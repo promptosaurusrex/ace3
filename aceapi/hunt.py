@@ -235,6 +235,12 @@ def validate_hunt():
 
     try:
         try:
+            logging.debug(
+                "loading compiled hunt version=%s package_root=%s assets=%s",
+                compiled.version,
+                compiled.package_root,
+                len(compiled.assets),
+            )
             target_file_path = load_compiled_hunt(compiled, temp_dir)
         except Exception as e:
             return jsonify({"valid": False, "error": f"error loading compiled hunt: {e}"}), 400

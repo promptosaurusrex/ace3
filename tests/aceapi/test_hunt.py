@@ -28,8 +28,8 @@ def _make_compiled_payload(yaml_content, target="test.yaml", **kwargs):
     """Build a compiled_hunt request payload from raw YAML content."""
     compiled = CompiledHunt(
         target=target,
-        root_dir="/tmp/test",
-        yaml_files=[EmbeddedFile(path=target, content=yaml_content)],
+        package_root="/tmp/test",
+        assets=[EmbeddedFile(kind="yaml", path=target, content=yaml_content)],
         **kwargs,
     )
     return {"compiled_hunt": compiled.model_dump()}
@@ -339,10 +339,10 @@ rule:
         payload = {
             "compiled_hunt": CompiledHunt(
                 target="main.yaml",
-                root_dir="/tmp/test",
-                yaml_files=[
-                    EmbeddedFile(path="includes/base.yaml", content=base_yaml),
-                    EmbeddedFile(path="main.yaml", content=main_yaml),
+                package_root="/tmp/test",
+                assets=[
+                    EmbeddedFile(kind="yaml", path="includes/base.yaml", content=base_yaml),
+                    EmbeddedFile(kind="yaml", path="main.yaml", content=main_yaml),
                 ],
             ).model_dump()
         }
