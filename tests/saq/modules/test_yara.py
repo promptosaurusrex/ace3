@@ -7,10 +7,11 @@ from saq.configuration.config import get_analysis_module_config
 from saq.constants import (
     ANALYSIS_MODULE_YARA_SCANNER_V3_4,
     DIRECTIVE_NO_SCAN,
+    F_SIGNATURE_ID,
     AnalysisExecutionResult,
 )
 from saq.modules.adapter import AnalysisModuleAdapter
-from saq.modules.file_analysis.yara import YaraScanner_v3_4
+from saq.modules.file_analysis.yara import YaraScanResults_v3_4, YaraScanner_v3_4
 from tests.saq.test_util import create_test_context
 
 
@@ -197,3 +198,143 @@ class TestYaraScannerMetaTagsIntegration:
         scanner.scan(target, meta_tags=["content_type=email_body"])
         names = self._rule_names(scanner)
         assert "meta_tagged_no_match_content" not in names
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — verify signature_id observable is emitted from rule.meta.uuid
+# ---------------------------------------------------------------------------
+class TestYaraSignatureIdEmission:
+    """When a yara rule matches and has a `uuid` meta field, a signature_id observable
+    should be attached to the resulting YaraScanResults_v3_4 analysis."""
+
+    def _create_module(self, root):
+        module = YaraScanner_v3_4(
+            context=create_test_context(root=root),
+            config=get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4),
+        )
+        return AnalysisModuleAdapter(module)
+
+    def _match(self, rule_name, rule_uuid=None, modifiers=None):
+        meta = {}
+        if rule_uuid is not None:
+            meta["uuid"] = rule_uuid
+        if modifiers is not None:
+            meta["modifiers"] = modifiers
+        return {
+            "rule": rule_name,
+            "meta": meta,
+            "tags": [],
+            "strings": [],
+        }
+
+    @pytest.mark.unit
+    def test_rule_with_uuid_emits_signature_id(self, monkeypatch, root_analysis):
+        """A matching rule carrying a uuid meta field emits a signature_id observable."""
+        file_path = root_analysis.create_file_path("test.txt")
+        with open(file_path, "wb") as fp:
+            fp.write(b"Hello, world!\n")
+
+        observable = root_analysis.add_file_observable(file_path)
+
+        rule_uuid = "da44c9b8-24f5-472f-acab-1907f4ce4ad9"
+        matches = [self._match("test_rule_with_uuid", rule_uuid=rule_uuid)]
+
+        def mock_scan_file(path, base_dir=None, socket_dir=None, meta_tags=None):
+            return matches
+
+        monkeypatch.setattr(yara_scanner, "scan_file", mock_scan_file)
+
+        adapter = self._create_module(root_analysis)
+        result = adapter.execute_analysis(observable)
+        assert result == AnalysisExecutionResult.COMPLETED
+
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        assert analysis is not None
+        sig_observables = [o for o in analysis.observables if o.type == F_SIGNATURE_ID]
+        assert len(sig_observables) == 1
+        assert sig_observables[0].value == rule_uuid
+
+    @pytest.mark.unit
+    def test_rule_without_uuid_does_not_emit(self, monkeypatch, root_analysis):
+        """A matching rule whose meta lacks a uuid must NOT emit a signature_id."""
+        file_path = root_analysis.create_file_path("test.txt")
+        with open(file_path, "wb") as fp:
+            fp.write(b"Hello, world!\n")
+
+        observable = root_analysis.add_file_observable(file_path)
+
+        matches = [self._match("test_rule_no_uuid")]
+
+        def mock_scan_file(path, base_dir=None, socket_dir=None, meta_tags=None):
+            return matches
+
+        monkeypatch.setattr(yara_scanner, "scan_file", mock_scan_file)
+
+        adapter = self._create_module(root_analysis)
+        result = adapter.execute_analysis(observable)
+        assert result == AnalysisExecutionResult.COMPLETED
+
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        assert analysis is not None
+        sig_observables = [o for o in analysis.observables if o.type == F_SIGNATURE_ID]
+        assert sig_observables == []
+
+    @pytest.mark.unit
+    def test_multiple_rules_emit_distinct_signature_ids(self, monkeypatch, root_analysis):
+        """Two matching rules with different uuids emit two signature_id observables."""
+        file_path = root_analysis.create_file_path("test.txt")
+        with open(file_path, "wb") as fp:
+            fp.write(b"Hello, world!\n")
+
+        observable = root_analysis.add_file_observable(file_path)
+
+        uuid_a = "da44c9b8-24f5-472f-acab-1907f4ce4ad9"
+        uuid_b = "3a1ddc4e-def5-439b-b3d3-d51352786d94"
+        matches = [
+            self._match("rule_a", rule_uuid=uuid_a),
+            self._match("rule_b", rule_uuid=uuid_b),
+        ]
+
+        def mock_scan_file(path, base_dir=None, socket_dir=None, meta_tags=None):
+            return matches
+
+        monkeypatch.setattr(yara_scanner, "scan_file", mock_scan_file)
+
+        adapter = self._create_module(root_analysis)
+        result = adapter.execute_analysis(observable)
+        assert result == AnalysisExecutionResult.COMPLETED
+
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        assert analysis is not None
+        emitted = {o.value for o in analysis.observables if o.type == F_SIGNATURE_ID}
+        assert emitted == {uuid_a, uuid_b}
+
+    @pytest.mark.unit
+    def test_duplicate_uuid_across_matches_dedups(self, monkeypatch, root_analysis):
+        """If two rule matches share the same uuid, only one signature_id observable is emitted."""
+        file_path = root_analysis.create_file_path("test.txt")
+        with open(file_path, "wb") as fp:
+            fp.write(b"Hello, world!\n")
+
+        observable = root_analysis.add_file_observable(file_path)
+
+        rule_uuid = "da44c9b8-24f5-472f-acab-1907f4ce4ad9"
+        matches = [
+            self._match("rule_a", rule_uuid=rule_uuid),
+            self._match("rule_b", rule_uuid=rule_uuid),
+        ]
+
+        def mock_scan_file(path, base_dir=None, socket_dir=None, meta_tags=None):
+            return matches
+
+        monkeypatch.setattr(yara_scanner, "scan_file", mock_scan_file)
+
+        adapter = self._create_module(root_analysis)
+        result = adapter.execute_analysis(observable)
+        assert result == AnalysisExecutionResult.COMPLETED
+
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        assert analysis is not None
+        sig_observables = [o for o in analysis.observables if o.type == F_SIGNATURE_ID]
+        assert len(sig_observables) == 1
+        assert sig_observables[0].value == rule_uuid
