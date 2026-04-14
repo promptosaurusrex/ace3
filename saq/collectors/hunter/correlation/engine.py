@@ -1,0 +1,420 @@
+import datetime
+import logging
+import tempfile
+from dataclasses import dataclass, field
+from typing import Optional
+
+from jinja2.sandbox import SandboxedEnvironment
+
+from saq.collectors.hunter.correlation.actions import ActionResult, execute_action
+from saq.collectors.hunter.correlation.commands import execute_command
+from saq.configuration.config import get_config
+from saq.configuration.encryption import export_encrypted_passwords
+from saq.collectors.hunter.correlation.expressions import build_jinja_context, evaluate_expression, evaluate_expression_traced
+from saq.collectors.hunter.correlation.schema import (
+    ActionConfig,
+    CommandConfig,
+    ConditionConfig,
+    CorrelateConfig,
+    PredefinedCommandConfig,
+    StepConfig,
+    TransformConfig,
+)
+from saq.collectors.hunter.correlation.sources import register_default_sources
+from saq.collectors.hunter.correlation.timespec import parse_timespec
+from saq.collectors.hunter.correlation.trace import (
+    ActionTrace,
+    ConditionTrace,
+    CorrelationTrace,
+    EventTrace,
+    StepTrace,
+    StreamEvent,
+    TransformTrace,
+    sanitize_value,
+)
+from saq.collectors.hunter.correlation.transforms import apply_transform
+
+_jinja_env = SandboxedEnvironment()
+_sources_registered = False
+
+_MAX_REPR_LENGTH = 200
+
+
+def _truncate_repr(value) -> str:
+    """Return a truncated string representation of a value for tracing."""
+    s = repr(value)
+    if len(s) > _MAX_REPR_LENGTH:
+        return s[:_MAX_REPR_LENGTH] + "..."
+    return s
+
+
+class _StreamReset(Exception):
+    """Internal signal that a stream transform occurred."""
+    def __init__(self, new_stream: list[dict], resume_step_index: int):
+        self.new_stream = new_stream
+        self.resume_step_index = resume_step_index
+
+
+@dataclass
+class CorrelationResult:
+    """Result of running correlation on an event stream."""
+    events: list[dict] = field(default_factory=list)
+    event_actions: dict[int, ActionResult] = field(default_factory=dict)
+    discarded: bool = False
+    trace: Optional[CorrelationTrace] = None
+
+
+class CorrelationEngine:
+    """Main correlation engine that orchestrates expressions, transforms, and actions."""
+
+    def __init__(
+        self,
+        correlate_config: CorrelateConfig,
+        predefined_commands: list[PredefinedCommandConfig],
+        hunt_time: datetime.datetime,
+        max_result_count: Optional[int] = None,
+    ):
+        global _sources_registered
+        if not _sources_registered:
+            register_default_sources()
+            _sources_registered = True
+
+        self.config = correlate_config
+        self.predefined_commands = predefined_commands or []
+        self.hunt_time = hunt_time
+        self.max_result_count = max_result_count
+        self.timeout = parse_timespec(correlate_config.timeout)
+        self.stream_query_cache: dict[str, str] = {}
+
+    def execute(self, events: list[dict]) -> CorrelationResult:
+        """Execute correlation logic on the event stream."""
+        # Fetch secrets and config once per execution
+        try:
+            self._secrets = export_encrypted_passwords()
+        except Exception:
+            logging.error("unable to load secrets for correlation context", exc_info=True)
+            self._secrets = {}
+
+        try:
+            self._config = get_config().raw._data
+        except Exception:
+            logging.error("unable to load config for correlation context", exc_info=True)
+            self._config = {}
+
+        result = CorrelationResult()
+        trace = CorrelationTrace()
+        start_time = datetime.datetime.now(datetime.timezone.utc)
+        alert_events = []
+        event_index = 0
+        # When a stream transform resets the stream, we skip steps before this index
+        start_step_index = 0
+
+        while event_index < len(events):
+            elapsed = datetime.datetime.now(datetime.timezone.utc) - start_time
+            if elapsed >= self.timeout:
+                logging.warning("correlation timeout reached after %s, remaining events will fall through to alert", elapsed)
+                trace.stream_events.append(StreamEvent(
+                    event_type="timeout",
+                    at_event_index=event_index,
+                    detail=f"timeout after {elapsed}",
+                ))
+                for i in range(event_index, len(events)):
+                    alert_events.append((i, events[i]))
+                    result.event_actions[i] = ActionResult(action_type="alert")
+                    trace.event_traces.append(EventTrace(event_index=i, outcome="timeout"))
+                break
+
+            event = events[event_index]
+            event_trace = EventTrace(event_index=event_index)
+
+            try:
+                action_result = self._process_event_steps(
+                    self.config.logic, event, events, event_index, start_time,
+                    start_step_index, event_trace.steps,
+                )
+            except _StreamReset as sr:
+                trace.stream_events.append(StreamEvent(
+                    event_type="stream_reset",
+                    at_event_index=event_index,
+                    detail=f"stream reset to {len(sr.new_stream)} events, resuming at step {sr.resume_step_index}",
+                ))
+                # Keep the partial event trace that led to the reset
+                trace.event_traces.append(event_trace)
+                events = sr.new_stream
+                event_index = 0
+                start_step_index = sr.resume_step_index
+                # Clear accumulated alerts since stream changed
+                alert_events = []
+                result.event_actions = {}
+                # Clear prior event traces since the stream changed
+                trace.event_traces = []
+                continue
+
+            if action_result is None:
+                action_result = ActionResult(action_type="alert")
+
+            if action_result.action_type == "alert":
+                alert_events.append((event_index, event))
+                result.event_actions[event_index] = action_result
+                event_trace.outcome = "alert"
+            elif action_result.action_type == "filter":
+                event_trace.outcome = "filter"
+            elif action_result.action_type == "stop":
+                event_trace.outcome = "stop"
+                trace.event_traces.append(event_trace)
+                break
+            elif action_result.action_type == "discard":
+                event_trace.outcome = "discard"
+                trace.event_traces.append(event_trace)
+                trace.stream_events.append(StreamEvent(
+                    event_type="discard",
+                    at_event_index=event_index,
+                ))
+                result.discarded = True
+                result.trace = trace
+                return result
+            elif action_result.action_type == "log":
+                alert_events.append((event_index, event))
+                result.event_actions[event_index] = ActionResult(action_type="alert")
+                event_trace.outcome = "alert"
+
+            trace.event_traces.append(event_trace)
+            event_index += 1
+
+        result.events = [event for _, event in alert_events]
+        result.trace = trace
+        return result
+
+    def _process_event_steps(
+        self,
+        steps: list[StepConfig],
+        event: dict,
+        events: list[dict],
+        event_index: int,
+        start_time: datetime.datetime,
+        start_step_index: int = 0,
+        trace_steps: Optional[list[StepTrace]] = None,
+    ) -> Optional[ActionResult]:
+        """Process an event through a list of steps.
+
+        Returns an ActionResult if an interrupt occurred, None otherwise.
+        Raises _StreamReset if a stream transform replaces the event stream.
+        """
+        for step_idx in range(start_step_index, len(steps)):
+            step = steps[step_idx]
+
+            elapsed = datetime.datetime.now(datetime.timezone.utc) - start_time
+            if elapsed >= self.timeout:
+                return None
+
+            if step.debug:
+                self._render_debug(step.debug, event, events)
+
+            if isinstance(step.step, ConditionConfig):
+                action_result, step_trace = self._execute_condition(
+                    step.step, event, events, event_index, start_time, step.description,
+                )
+                if trace_steps is not None:
+                    trace_steps.append(step_trace)
+                if action_result is not None and action_result.is_interrupt:
+                    return action_result
+
+            elif isinstance(step.step, TransformConfig):
+                action_result, step_trace = self._execute_transform(
+                    step.step, event, events, event_index, step_idx, step.description,
+                    trace_steps,
+                )
+                if trace_steps is not None and step_trace is not None:
+                    trace_steps.append(step_trace)
+                if action_result is not None and action_result.is_interrupt:
+                    return action_result
+                # Note: if _StreamReset is raised, it propagates up
+
+            elif isinstance(step.step, ActionConfig):
+                action_result = execute_action(step.step, event, events, self._secrets, self._config)
+                if trace_steps is not None:
+                    trace_steps.append(self._trace_action(step.step, action_result, event, events, step.description))
+                if action_result.is_interrupt:
+                    return action_result
+
+        return None
+
+    def _execute_condition(
+        self,
+        condition: ConditionConfig,
+        event: dict,
+        events: list[dict],
+        event_index: int,
+        start_time: datetime.datetime,
+        description: Optional[str] = None,
+    ) -> tuple[Optional[ActionResult], StepTrace]:
+        """Execute a condition step. Returns (action_result, step_trace)."""
+        expr_result, expr_trace = evaluate_expression_traced(
+            condition.when, event, events, self._secrets, self._config,
+        )
+        # Sanitize any rendered values that may contain secrets
+        if expr_trace.rendered_value is not None:
+            expr_trace.rendered_value = sanitize_value(expr_trace.rendered_value, self._secrets)
+
+        condition_trace = ConditionTrace(expression=expr_trace, branch_taken="none")
+        step_trace = StepTrace(description=description, step=condition_trace)
+
+        if expr_result:
+            condition_trace.branch_taken = "execute"
+            action_result = self._process_event_steps(
+                condition.execute, event, events, event_index, start_time,
+                trace_steps=condition_trace.branch_steps,
+            )
+            return action_result, step_trace
+        elif condition.else_:
+            condition_trace.branch_taken = "else"
+            action_result = self._process_event_steps(
+                condition.else_, event, events, event_index, start_time,
+                trace_steps=condition_trace.branch_steps,
+            )
+            return action_result, step_trace
+
+        return None, step_trace
+
+    def _execute_transform(
+        self,
+        transform: TransformConfig,
+        event: dict,
+        events: list[dict],
+        event_index: int,
+        current_step_index: int,
+        description: Optional[str] = None,
+        parent_trace_steps: Optional[list[StepTrace]] = None,
+    ) -> tuple[Optional[ActionResult], Optional[StepTrace]]:
+        """Execute a transform step.
+
+        Returns (action_result, step_trace). action_result is set if on_error produced an interrupt.
+        step_trace is None when _StreamReset is raised (it was already appended to parent_trace_steps).
+        Raises _StreamReset if a stream transform succeeded.
+        """
+        transform_trace = TransformTrace(
+            transform_type=transform.type,
+            method=transform.method,
+            command_type=transform.command.type,
+        )
+        step_trace = StepTrace(description=description, step=transform_trace)
+
+        # Build a summary of the rendered command for the trace
+        transform_trace.rendered_command = sanitize_value(
+            self._render_command_summary(transform.command, event, events),
+            self._secrets,
+        )
+
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                output = execute_command(
+                    transform.command,
+                    event,
+                    events,
+                    transform.type,
+                    self.predefined_commands,
+                    self.hunt_time,
+                    temp_dir,
+                    self.stream_query_cache,
+                    self._secrets,
+                    self._config,
+                )
+
+            # Count result rows from command output
+            output_lines = [line for line in output.strip().splitlines() if line.strip()] if output else []
+            transform_trace.result_count = len(output_lines)
+
+            updated_event, new_stream = apply_transform(transform, output, event, events)
+
+            if new_stream is not None:
+                # Append trace before raising since the exception skips the caller's append
+                if parent_trace_steps is not None:
+                    parent_trace_steps.append(step_trace)
+                # Stream transform - signal reset, resume at next step
+                raise _StreamReset(new_stream, current_step_index + 1)
+            elif updated_event is not None:
+                events[event_index] = updated_event
+                # Record property details for event/property transforms
+                if transform.method == "property" and transform.property_name:
+                    transform_trace.property_name = transform.property_name
+                    prop_val = updated_event.get(transform.property_name)
+                    transform_trace.property_value = _truncate_repr(prop_val)
+
+            return None, step_trace
+
+        except _StreamReset:
+            raise  # Re-raise stream reset signals (step_trace already appended above)
+        except Exception as e:
+            logging.error("error executing transform command: %s", e, exc_info=True)
+            transform_trace.error = str(e)
+
+            if transform.command.on_error:
+                on_error_steps: list[StepTrace] = []
+                transform_trace.on_error_steps = on_error_steps
+                for action_data in transform.command.on_error:
+                    action = ActionConfig.model_validate(action_data)
+                    action_result = execute_action(action, event, events, self._secrets, self._config)
+                    on_error_steps.append(self._trace_action(action, action_result, event, events))
+                    if action_result.is_interrupt:
+                        return action_result, step_trace
+            return None, step_trace
+
+    def _trace_action(
+        self,
+        action: ActionConfig,
+        action_result: ActionResult,
+        event: dict,
+        events: list[dict],
+        description: Optional[str] = None,
+    ) -> StepTrace:
+        """Build a StepTrace for an action execution."""
+        rendered_log_message = None
+        if action.log_message:
+            try:
+                context = build_jinja_context(event, events, self._secrets, self._config)
+                rendered_log_message = sanitize_value(
+                    _jinja_env.from_string(action.log_message).render(**context),
+                    self._secrets,
+                )
+            except Exception:
+                pass
+        return StepTrace(
+            description=description,
+            step=ActionTrace(
+                action_type=action_result.action_type,
+                rendered_log_message=rendered_log_message,
+                is_interrupt=action_result.is_interrupt,
+            ),
+        )
+
+    def _render_command_summary(
+        self,
+        command: CommandConfig,
+        event: dict,
+        events: list[dict],
+    ) -> Optional[str]:
+        """Render a human-readable summary of the command for tracing."""
+        context = build_jinja_context(event, events, self._secrets, self._config)
+        try:
+            if command.type == "query" and command.query:
+                return _jinja_env.from_string(command.query).render(**context)
+            elif command.type == "executable" and command.path:
+                rendered_args = []
+                if command.args:
+                    for arg in command.args:
+                        rendered_args.append(_jinja_env.from_string(arg).render(**context))
+                return f"{command.path} {' '.join(rendered_args)}".strip()
+            elif command.type == "defined" and command.name:
+                return f"defined:{command.name}"
+        except Exception:
+            pass
+        return None
+
+    def _render_debug(self, template: str, event: dict, events: list[dict]):
+        """Render and log a debug message."""
+        try:
+            context = build_jinja_context(event, events, self._secrets, self._config)
+            message = _jinja_env.from_string(template).render(**context)
+            logging.debug("correlation debug: %s", message)
+        except Exception:
+            logging.debug("failed to render debug template: %s", template, exc_info=True)

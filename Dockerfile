@@ -192,6 +192,11 @@ RUN python3 -m virtualenv --python=python3 /venv && \
     pip install --no-cache-dir git+https://github.com/unixfreak0037/officeparser3.git && \
     pip install sentence-transformers --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu
 
+COPY --chown=ace:ace lib /opt/ace/lib
+RUN python3 -m virtualenv --python=python3 /venv && \
+    . /venv/bin/activate && \
+    pip install -e /opt/ace/lib/signature_validator
+
 # configure bash environment
 RUN echo 'source /venv/bin/activate' >> /home/ace/.bashrc && \
     echo 'export PATH="$PATH:/opt/ace/bin:/opt/ace:/usr/local/share/npm-global/bin"' >> /home/ace/.bashrc && \

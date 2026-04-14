@@ -116,8 +116,8 @@ def execute_hunt(args):
             
         if args.events:
             print("BEGIN EVENTS")
-            for event in submission.root.details:
-                print(event)
+            for event in submission.root.details["events"]:
+                print(json.dumps(event, indent=True, sort_keys=True))
             print("END EVENTS")
 
         if args.json_dir is not None:

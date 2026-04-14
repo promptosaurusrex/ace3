@@ -1,7 +1,14 @@
+import os
+
 import pytest
 from pydantic import BaseModel, Field
 
-from saq.collectors.hunter.loader import load_from_yaml, deep_merge, _get_observable_mapping_identity
+from saq.collectors.hunter.loader import (
+    load_from_yaml,
+    deep_merge,
+    _load_and_merge_yaml,
+    _get_observable_mapping_identity,
+)
 
 
 class SimpleConfig(BaseModel):
@@ -901,6 +908,117 @@ rule:
 
         assert config.name == "test_rule"
         assert config.value == "test_value"
+
+
+@pytest.mark.unit
+class TestYAMLLoaderRelativePaths:
+    """Tests for resolving relative file paths in commands."""
+
+    def test_resolves_relative_command_paths_in_includes(self, tmpdir):
+        """should resolve relative command paths relative to the include file"""
+        scripts_dir = tmpdir.mkdir("scripts")
+        script_file = scripts_dir / "check.py"
+        script_file.write("#!/usr/bin/env python3\nprint('ok')\n")
+
+        commands_dir = tmpdir.mkdir("commands")
+        commands_file = commands_dir / "cmds.include.yaml"
+        commands_file.write(
+            "commands:\n"
+            "  - name: check\n"
+            "    type: executable\n"
+            "    path: ../scripts/check.py\n"
+        )
+
+        main_file = tmpdir / "main.yaml"
+        main_file.write(
+            "include:\n"
+            "  - commands/cmds.include.yaml\n"
+            "rule:\n"
+            "  name: test\n"
+            "  value: test\n"
+        )
+
+        result = _load_and_merge_yaml(str(main_file), {str(main_file)})
+
+        expected_path = os.path.normpath(str(scripts_dir / "check.py"))
+        assert result["commands"][0]["path"] == expected_path
+
+    def test_resolves_relative_supporting_files_in_includes(self, tmpdir):
+        """should resolve relative supporting files relative to the include file"""
+        scripts_dir = tmpdir.mkdir("scripts")
+        script_file = scripts_dir / "check.py"
+        script_file.write("#!/usr/bin/env python3\nprint('ok')\n")
+        data_file = scripts_dir / "data.json"
+        data_file.write('{"key": "value"}\n')
+
+        commands_dir = tmpdir.mkdir("commands")
+        commands_file = commands_dir / "cmds.include.yaml"
+        commands_file.write(
+            "commands:\n"
+            "  - name: check\n"
+            "    type: executable\n"
+            "    path: ../scripts/check.py\n"
+            "    files:\n"
+            "      - ../scripts/data.json\n"
+        )
+
+        main_file = tmpdir / "main.yaml"
+        main_file.write(
+            "include:\n"
+            "  - commands/cmds.include.yaml\n"
+            "rule:\n"
+            "  name: test\n"
+            "  value: test\n"
+        )
+
+        result = _load_and_merge_yaml(str(main_file), {str(main_file)})
+
+        expected_script = os.path.normpath(str(scripts_dir / "check.py"))
+        expected_data = os.path.normpath(str(scripts_dir / "data.json"))
+        assert result["commands"][0]["path"] == expected_script
+        assert result["commands"][0]["files"][0] == expected_data
+
+    def test_absolute_paths_unchanged(self, tmpdir):
+        """should leave absolute paths unchanged"""
+        main_file = tmpdir / "main.yaml"
+        main_file.write(
+            "commands:\n"
+            "  - name: check\n"
+            "    type: executable\n"
+            "    path: /opt/ace/scripts/check.py\n"
+            "rule:\n"
+            "  name: test\n"
+            "  value: test\n"
+        )
+
+        result = _load_and_merge_yaml(str(main_file), {str(main_file)})
+
+        assert result["commands"][0]["path"] == "/opt/ace/scripts/check.py"
+
+    def test_resolves_relative_inline_executable_paths(self, tmpdir):
+        """should resolve relative paths in inline correlate logic commands"""
+        scripts_dir = tmpdir.mkdir("scripts")
+        script_file = scripts_dir / "enrich.py"
+        script_file.write("#!/usr/bin/env python3\nprint('ok')\n")
+
+        hunts_dir = tmpdir.mkdir("hunts")
+        hunt_file = hunts_dir / "test.yaml"
+        hunt_file.write(
+            "rule:\n"
+            "  name: test\n"
+            "  value: test\n"
+            "  correlate:\n"
+            "    logic:\n"
+            "      - transform:\n"
+            "          command:\n"
+            "            type: executable\n"
+            "            path: ../scripts/enrich.py\n"
+        )
+
+        result = _load_and_merge_yaml(str(hunt_file), {str(hunt_file)})
+
+        expected_path = os.path.normpath(str(scripts_dir / "enrich.py"))
+        assert result["rule"]["correlate"]["logic"][0]["transform"]["command"]["path"] == expected_path
 
 
 @pytest.mark.unit

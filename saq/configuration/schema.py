@@ -17,6 +17,7 @@ class GlobalConfig(BaseModel):
     data_dir: str = Field(..., description="global data directory that has all the things (relative to SAQ_HOME)")
     analyst_data_dir: str = Field(..., description="analyst data directory that has files that analysts can control through an external git repository")
     tmp_dir: Optional[str] = Field(default=None, description="if you need to override the default temp directory, set this to the path; if the path is relative, it is relative to the SAQ_HOME directory")
+    compiled_hunt_dir: str = Field(default="var/compiled_hunts", description="directory for compiled hunt temp files (relative to DATA_DIR); must be on a filesystem that allows execution")
     error_reporting_dir: str = Field(..., description="directory that contains any stack traces for review (relative to DATA_DIR)")
     error_reporting_email: str = Field(..., description="list of email addresses (comma separated) that get these reports sent to them automatically")
     condition_reporting_delay: int = Field(..., description="the amount of time (in minutes) in between reporting of the same condition; set to 0 to disable condition reporting")

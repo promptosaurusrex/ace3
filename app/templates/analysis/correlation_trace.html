@@ -1,0 +1,366 @@
+{# Correlation Trace panel — shown for any hunt alert whose details include a
+   correlation_trace (see saq/collectors/hunter/correlation/trace.py). Included
+   from analysis/alert.html outside any overridable block so every hunt type
+   and custom template inherits it automatically. #}
+
+{#-- Expression formatter: returns a compact one-liner for a single expression. --#}
+{% macro render_expression(expr) %}
+    {%- if expr.error -%}
+        <span class="ct-expr ct-expr-error">
+            <i class="bi bi-exclamation-triangle-fill text-warning" title="{{ expr.error }}"></i>
+            <span class="text-muted">{{ expr.expression_type }}</span>
+            <span class="text-danger">error</span>
+        </span>
+    {%- elif expr.expression_type in ["equals", "glob", "regex"] -%}
+        <span class="ct-expr">
+            <code class="ct-prop">{{ expr.property_name or "?" }}</code>
+            <span class="ct-op text-muted">
+                {%- if expr.expression_type == "equals" -%}==
+                {%- elif expr.expression_type == "glob" -%}~
+                {%- elif expr.expression_type == "regex" -%}=~
+                {%- endif -%}
+            </span>
+            <code class="ct-val">{{ expr.compare_value | default("", true) | truncate(120, true) }}</code>
+            {%- if expr.property_value is not none and (expr.property_value | string) != (expr.compare_value | string) %}
+                <span class="text-muted ct-actual" title="actual: {{ expr.property_value }}">(was <code>{{ expr.property_value | truncate(60, true) }}</code>)</span>
+            {%- endif %}
+            {% if expr.result %}<i class="bi bi-check-circle-fill text-success"></i>{% else %}<i class="bi bi-x-circle-fill text-danger"></i>{% endif %}
+        </span>
+    {%- elif expr.expression_type == "jinja" -%}
+        <span class="ct-expr">
+            <span class="text-muted">jinja</span>
+            <code class="ct-val" title="{{ expr.rendered_value | default('', true) }}">{{ expr.rendered_value | default("", true) | truncate(120, true) }}</code>
+            {% if expr.result %}<i class="bi bi-check-circle-fill text-success"></i>{% else %}<i class="bi bi-x-circle-fill text-danger"></i>{% endif %}
+        </span>
+    {%- elif expr.expression_type in ["and", "or"] -%}
+        <span class="ct-expr">
+            (
+            {%- for sub in expr.sub_expressions or [] -%}
+                {{ render_expression(sub) }}
+                {%- if not loop.last %} <span class="text-muted fw-bold">{{ expr.expression_type }}</span> {% endif -%}
+            {%- endfor -%}
+            )
+            {% if expr.result %}<i class="bi bi-check-circle-fill text-success"></i>{% else %}<i class="bi bi-x-circle-fill text-danger"></i>{% endif %}
+        </span>
+    {%- elif expr.expression_type == "not" -%}
+        <span class="ct-expr">
+            <span class="text-muted fw-bold">¬</span>
+            {%- for sub in expr.sub_expressions or [] -%}{{ render_expression(sub) }}{%- endfor -%}
+            {% if expr.result %}<i class="bi bi-check-circle-fill text-success"></i>{% else %}<i class="bi bi-x-circle-fill text-danger"></i>{% endif %}
+        </span>
+    {%- else -%}
+        <span class="ct-expr text-muted">{{ expr.expression_type }} {% if expr.result %}<i class="bi bi-check-circle-fill text-success"></i>{% else %}<i class="bi bi-x-circle-fill text-danger"></i>{% endif %}</span>
+    {%- endif -%}
+{% endmacro %}
+
+{#-- Condition step: when/expression → execute|else branch, with nested steps. --#}
+{% macro render_condition_step(cond, depth) %}
+    <div class="ct-step ct-step-condition">
+        <div class="ct-step-header">
+            <span class="badge text-bg-primary ct-type-badge"><i class="bi bi-diagram-3-fill"></i> when</span>
+            {{ render_expression(cond.expression) }}
+            <i class="bi bi-arrow-right text-muted mx-1"></i>
+            {% if cond.branch_taken == "execute" %}
+                <span class="badge text-bg-success"><i class="bi bi-check2"></i> execute</span>
+            {% elif cond.branch_taken == "else" %}
+                <span class="badge text-bg-info"><i class="bi bi-arrow-return-right"></i> else</span>
+            {% else %}
+                <span class="badge text-bg-secondary"><i class="bi bi-dash-circle"></i> none</span>
+            {% endif %}
+        </div>
+        {% if cond.branch_steps %}
+            <div class="ct-nested ct-rail-primary">
+                {% for child in cond.branch_steps %}
+                    {{ render_step(child, depth + 1) }}
+                {% endfor %}
+            </div>
+        {% endif %}
+    </div>
+{% endmacro %}
+
+{#-- Transform step: sets a property via a command, may have errors and on_error handlers. --#}
+{% macro render_transform_step(trans, depth, uid) %}
+    <div class="ct-step ct-step-transform">
+        <div class="ct-step-header">
+            <span class="badge text-bg-info ct-type-badge"><i class="bi bi-arrow-repeat"></i> transform</span>
+            <span class="badge text-bg-light text-dark">{{ trans.transform_type }}</span>
+            <span class="badge text-bg-light text-dark">{{ trans.method }}</span>
+            <span class="badge text-bg-light text-dark">{{ trans.command_type }}</span>
+            {% if trans.property_name %}
+                <span class="ct-assign">
+                    <code class="ct-prop">{{ trans.property_name }}</code>
+                    <span class="text-muted">=</span>
+                    <code class="ct-val" title="{{ trans.property_value | default('', true) }}">{{ trans.property_value | default("∅", true) | truncate(80, true) }}</code>
+                </span>
+            {% endif %}
+            <span class="ms-auto d-inline-flex align-items-center gap-1">
+                {% if trans.error %}
+                    <span class="badge text-bg-danger"><i class="bi bi-exclamation-triangle-fill"></i> error</span>
+                {% elif trans.result_count is not none %}
+                    {% if trans.result_count > 0 %}
+                        <span class="badge text-bg-info" title="result rows"><i class="bi bi-database-fill-check"></i> {{ trans.result_count }}</span>
+                    {% else %}
+                        <span class="badge text-bg-secondary" title="result rows"><i class="bi bi-database"></i> 0</span>
+                    {% endif %}
+                {% endif %}
+                {% if trans.rendered_command %}
+                    <a role="button" class="btn btn-outline-secondary btn-xs ct-cmd-toggle" data-bs-toggle="collapse" data-bs-target="#ct_cmd_{{ uid }}" aria-expanded="false">
+                        <i class="bi bi-code-slash"></i> command
+                    </a>
+                {% endif %}
+            </span>
+        </div>
+        {% if trans.rendered_command %}
+            <div class="collapse" id="ct_cmd_{{ uid }}">
+                <pre class="ct-cmd">{{ trans.rendered_command }}</pre>
+            </div>
+        {% endif %}
+        {% if trans.error %}
+            <div class="alert alert-danger ct-error py-1 px-2 mb-1 mt-1">
+                <i class="bi bi-exclamation-triangle-fill"></i>
+                <code>{{ trans.error }}</code>
+            </div>
+        {% endif %}
+        {% if trans.on_error_steps %}
+            <div class="ct-nested ct-rail-danger">
+                <div class="ct-nested-label text-danger small"><i class="bi bi-arrow-return-right"></i> on_error</div>
+                {% for child in trans.on_error_steps %}
+                    {{ render_step(child, depth + 1) }}
+                {% endfor %}
+            </div>
+        {% endif %}
+    </div>
+{% endmacro %}
+
+{#-- Action step: terminal (filter/stop/discard/alert/log). --#}
+{% macro render_action_step(action) %}
+    <div class="ct-step ct-step-action">
+        <div class="ct-step-header">
+            {% if action.action_type == "filter" %}
+                <span class="badge text-bg-secondary ct-type-badge"><i class="bi bi-funnel"></i> filter</span>
+            {% elif action.action_type == "stop" %}
+                <span class="badge text-bg-warning ct-type-badge"><i class="bi bi-stop-circle"></i> stop</span>
+            {% elif action.action_type == "discard" %}
+                <span class="badge text-bg-dark ct-type-badge"><i class="bi bi-trash"></i> discard</span>
+            {% elif action.action_type == "alert" %}
+                <span class="badge text-bg-danger ct-type-badge"><i class="bi bi-exclamation-octagon"></i> alert</span>
+            {% elif action.action_type == "log" %}
+                <span class="badge text-bg-info ct-type-badge"><i class="bi bi-journal-text"></i> log</span>
+            {% else %}
+                <span class="badge text-bg-secondary ct-type-badge">{{ action.action_type }}</span>
+            {% endif %}
+            {% if action.rendered_log_message %}
+                <span class="ct-log-message">{{ action.rendered_log_message }}</span>
+            {% endif %}
+            {% if action.is_interrupt %}
+                <span class="badge text-bg-light text-muted ms-auto" title="this action interrupted event processing"><i class="bi bi-sign-stop"></i> interrupt</span>
+            {% endif %}
+        </div>
+    </div>
+{% endmacro %}
+
+{#-- Dispatch macro: description caption + trace_type routing. --#}
+{% macro render_step(step_wrapper, depth) %}
+    {% set step = step_wrapper.step %}
+    <div class="ct-step-wrapper" style="{% if depth > 0 %}margin-left: 0;{% endif %}">
+        {% if step_wrapper.description %}
+            <div class="text-muted small fst-italic ct-description">{{ step_wrapper.description }}</div>
+        {% endif %}
+        {% if step.trace_type == "condition" %}
+            {{ render_condition_step(step, depth) }}
+        {% elif step.trace_type == "transform" %}
+            {{ render_transform_step(step, depth, range(1, 1000000000) | random) }}
+        {% elif step.trace_type == "action" %}
+            {{ render_action_step(step) }}
+        {% endif %}
+    </div>
+{% endmacro %}
+
+
+{#-- =========================================================================
+     Outer panel: only render if this alert has a correlation_trace
+     ========================================================================= --#}
+{% if analysis.details and analysis.details.get('correlation_trace') %}
+    {% set ct = analysis.details.get('correlation_trace') %}
+    {% set event_traces = ct.get('event_traces', []) or [] %}
+    {% set stream_events = ct.get('stream_events', []) or [] %}
+
+    {# Outcome counters #}
+    {% set counts = namespace(alert=0, filter=0, stop=0, discard=0, timeout=0, other=0) %}
+    {% for et in event_traces %}
+        {% if et.outcome == 'alert' %}{% set counts.alert = counts.alert + 1 %}
+        {% elif et.outcome == 'filter' %}{% set counts.filter = counts.filter + 1 %}
+        {% elif et.outcome == 'stop' %}{% set counts.stop = counts.stop + 1 %}
+        {% elif et.outcome == 'discard' %}{% set counts.discard = counts.discard + 1 %}
+        {% elif et.outcome == 'timeout' %}{% set counts.timeout = counts.timeout + 1 %}
+        {% else %}{% set counts.other = counts.other + 1 %}
+        {% endif %}
+    {% endfor %}
+
+    {# Compute display subset: alerts first, then fill up to 100 with the earliest remaining events. #}
+    {% set _cap = 100 %}
+    {% set _total = event_traces | length %}
+    {% set _alert_events = event_traces | selectattr('outcome', 'equalto', 'alert') | list %}
+    {% set _non_alert_events = event_traces | rejectattr('outcome', 'equalto', 'alert') | list %}
+    {% if _total <= _cap %}
+        {% set _display_events = event_traces %}
+    {% else %}
+        {% set _alerts_kept = _alert_events[:_cap] %}
+        {% set _slots_left = _cap - (_alerts_kept | length) %}
+        {% if _slots_left > 0 %}
+            {% set _display_events = (_alerts_kept + _non_alert_events[:_slots_left]) | sort(attribute='event_index') %}
+        {% else %}
+            {% set _display_events = _alerts_kept | sort(attribute='event_index') %}
+        {% endif %}
+    {% endif %}
+
+    {# Stream events severity: danger if any timeout, otherwise warning. #}
+    {% set _stream_severity = "warning" %}
+    {% for se in stream_events %}
+        {% if se.event_type == "timeout" %}{% set _stream_severity = "danger" %}{% endif %}
+    {% endfor %}
+
+<div class="row">
+    <div class="col">
+        <div class="card mb-3">
+            <div class="card-header">
+                <h5>
+                    <i class="bi bi-diagram-3-fill"></i>
+                    Correlation Trace
+                    <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_correlation_trace" aria-expanded="true" aria-controls="collapse_correlation_trace">(hide/show)</a>
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="card-text" id="collapse_correlation_trace">
+
+                    {#-- Summary strip --#}
+                    <div class="ct-summary d-flex flex-wrap gap-2 align-items-center mb-3">
+                        <span class="badge text-bg-secondary">
+                            <i class="bi bi-list-ol"></i> {{ _total }} event{{ "" if _total == 1 else "s" }}
+                        </span>
+                        {% if counts.alert > 0 %}
+                            <span class="badge text-bg-danger"><i class="bi bi-exclamation-octagon-fill"></i> {{ counts.alert }} alert</span>
+                        {% endif %}
+                        {% if counts.filter > 0 %}
+                            <span class="badge text-bg-secondary"><i class="bi bi-funnel-fill"></i> {{ counts.filter }} filtered</span>
+                        {% endif %}
+                        {% if counts.stop > 0 %}
+                            <span class="badge text-bg-warning"><i class="bi bi-stop-circle-fill"></i> {{ counts.stop }} stopped</span>
+                        {% endif %}
+                        {% if counts.discard > 0 %}
+                            <span class="badge text-bg-dark"><i class="bi bi-trash-fill"></i> {{ counts.discard }} discarded</span>
+                        {% endif %}
+                        {% if counts.timeout > 0 %}
+                            <span class="badge text-bg-warning"><i class="bi bi-hourglass-split"></i> {{ counts.timeout }} timeout</span>
+                        {% endif %}
+                        {% if counts.other > 0 %}
+                            <span class="badge text-bg-light text-dark">{{ counts.other }} other</span>
+                        {% endif %}
+                    </div>
+
+                    {#-- Stream events --#}
+                    {% if stream_events %}
+                        <div class="alert alert-{{ _stream_severity }} py-2 ct-stream-events">
+                            <div class="fw-bold mb-1"><i class="bi bi-broadcast"></i> Stream events</div>
+                            <ul class="mb-0 ps-3">
+                                {% for se in stream_events %}
+                                    <li>
+                                        <span class="badge text-bg-light text-dark">{{ se.event_type }}</span>
+                                        {% if se.at_event_index is not none %}
+                                            at index <code>{{ se.at_event_index }}</code>
+                                        {% endif %}
+                                        {% if se.detail %}— {{ se.detail }}{% endif %}
+                                    </li>
+                                {% endfor %}
+                            </ul>
+                        </div>
+                    {% endif %}
+
+                    {#-- Per-event list --#}
+                    {% if _display_events %}
+                        <ul class="list-group ct-event-list">
+                            {% for et in _display_events %}
+                                {% set et_id = "ct_event_" ~ et.event_index %}
+                                <li class="list-group-item ct-event-item">
+                                    <div class="ct-event-header d-flex align-items-center gap-2" role="button" data-bs-toggle="collapse" data-bs-target="#{{ et_id }}" aria-expanded="false">
+                                        <i class="bi bi-chevron-right ct-event-chevron"></i>
+                                        <span class="badge text-bg-light text-dark">event #{{ et.event_index }}</span>
+                                        {% if et.outcome == 'alert' %}
+                                            <span class="badge text-bg-danger"><i class="bi bi-exclamation-octagon-fill"></i> alert</span>
+                                        {% elif et.outcome == 'filter' %}
+                                            <span class="badge text-bg-secondary"><i class="bi bi-funnel-fill"></i> filter</span>
+                                        {% elif et.outcome == 'stop' %}
+                                            <span class="badge text-bg-warning"><i class="bi bi-stop-circle-fill"></i> stop</span>
+                                        {% elif et.outcome == 'discard' %}
+                                            <span class="badge text-bg-dark"><i class="bi bi-trash-fill"></i> discard</span>
+                                        {% elif et.outcome == 'timeout' %}
+                                            <span class="badge text-bg-warning"><i class="bi bi-hourglass-split"></i> timeout</span>
+                                        {% else %}
+                                            <span class="badge text-bg-light text-dark">{{ et.outcome }}</span>
+                                        {% endif %}
+                                        <span class="text-muted small ms-auto">{{ et.steps | length }} step{{ "" if (et.steps | length) == 1 else "s" }}</span>
+                                    </div>
+                                    <div class="collapse ct-event-body" id="{{ et_id }}">
+                                        {% if et.steps %}
+                                            {% for step in et.steps %}
+                                                {{ render_step(step, 0) }}
+                                            {% endfor %}
+                                        {% else %}
+                                            <div class="text-muted small fst-italic">no steps recorded</div>
+                                        {% endif %}
+                                    </div>
+                                </li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <div class="text-muted fst-italic">No event traces recorded.</div>
+                    {% endif %}
+
+                    {#-- Cap notice + raw JSON fallback --#}
+                    {% if _total > (_display_events | length) %}
+                        <div class="text-muted small mt-2">
+                            Showing {{ _display_events | length }} of {{ _total }} event traces
+                            (outcome <code>alert</code> events prioritized).
+                            <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_correlation_trace_raw" aria-expanded="false">Show raw JSON</a>
+                        </div>
+                        <div class="collapse mt-2" id="collapse_correlation_trace_raw">
+                            <pre class="ct-raw-json">{{ ct | tojson(indent=2) }}</pre>
+                        </div>
+                    {% endif %}
+
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.ct-summary .badge { font-size: 0.85rem; }
+.ct-event-list { max-width: 100%; }
+.ct-event-item { padding: 0.5rem 0.75rem; }
+.ct-event-header { cursor: pointer; user-select: none; }
+.ct-event-header[aria-expanded="true"] .ct-event-chevron { transform: rotate(90deg); }
+.ct-event-chevron { transition: transform 0.15s ease; }
+.ct-event-body { padding-top: 0.5rem; padding-left: 1.5rem; }
+.ct-step-wrapper { margin: 0.25rem 0; }
+.ct-step { padding: 0.25rem 0; }
+.ct-step-header { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
+.ct-type-badge { min-width: 5.5rem; }
+.ct-expr { display: inline-flex; align-items: center; gap: 0.25rem; flex-wrap: wrap; }
+.ct-expr code, .ct-prop, .ct-val { font-size: 0.85rem; padding: 0.1rem 0.3rem; border-radius: 0.2rem; background: rgba(0,0,0,0.05); color: #212529; }
+.ct-op { font-weight: bold; }
+.ct-actual { font-size: 0.8rem; }
+.ct-assign { display: inline-flex; align-items: center; gap: 0.25rem; }
+.ct-nested { padding-left: 0.75rem; margin-top: 0.25rem; margin-bottom: 0.25rem; }
+.ct-rail-primary { border-left: 3px solid var(--bs-primary); }
+.ct-rail-danger { border-left: 3px solid var(--bs-danger); }
+.ct-nested-label { margin: 0.15rem 0; }
+.ct-cmd { background: #f6f8fa; border: 1px solid #dee2e6; border-radius: 0.25rem; padding: 0.5rem; margin: 0.25rem 0; white-space: pre-wrap; word-break: break-all; font-size: 0.8rem; max-height: 20rem; overflow: auto; }
+.ct-raw-json { background: #f6f8fa; border: 1px solid #dee2e6; border-radius: 0.25rem; padding: 0.5rem; max-height: 30rem; overflow: auto; font-size: 0.75rem; }
+.ct-log-message { font-family: var(--bs-font-monospace); font-size: 0.85rem; color: #495057; }
+.ct-description { margin-bottom: 0.15rem; }
+.ct-error code { background: transparent; color: inherit; }
+.ct-cmd-toggle { font-size: 0.75rem; padding: 0.1rem 0.4rem; }
+</style>
+
+{% endif %}

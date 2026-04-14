@@ -40,6 +40,9 @@ VALID_INSTANCE_TYPES = [INSTANCE_TYPE_PRODUCTION, INSTANCE_TYPE_QA, INSTANCE_TYP
 # hunt time range token names
 TIMESPEC_TOKEN = "TIMESPEC"
 
+# redis database for hunt correlation cache
+REDIS_DB_HUNT_CACHE = 8
+
 #
 # required fields for every alert
 #
