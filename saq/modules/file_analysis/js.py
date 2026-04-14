@@ -259,7 +259,7 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
         if o_file:
             o_file.add_relationship(R_EXTRACTED_FROM, _file)
             o_file.exclude_analysis(self)
-            o_file.add_yara_meta("type", "script.javascript.deobfuscated")
+            o_file.add_yara_meta("type", "script.javascript")
             o_file.add_directive(DIRECTIVE_EXTRACT_URLS)
             o_file.add_directive(DIRECTIVE_CRAWL_EXTRACTED_URLS)
             analysis.extracted_files.append(o_file.file_path)
