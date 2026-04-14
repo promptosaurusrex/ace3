@@ -35,7 +35,7 @@ global:
   data_dir: data
   # analyst data directory that has files that analysts can control through an external git repository. these files can
   # then be used by analysis modules or collectors instead of needing to edit ACE config.
-  analyst_data_dir: data/external/analyst-data
+  analyst_data_dir: signatures/analyst_data
   # if you need to override the default temp directory, set this to the path
   # if the path is relative, it is relative to the SAQ_HOME directory
   #tmp_dir: /tmp/ace
@@ -867,7 +867,7 @@ service_yara:
   socket_dir: var/yss/sockets
   # global configuration of yara rules (relative to SAQ_HOME or absolute path)
   # each subdirectory in this directory has any yara rules loaded in the scanner
-  signature_dir: etc/yara
+  signature_dir: signatures/yara
   # how often to check the yara rules for changes (in seconds)
   update_frequency: 60
   # parameter to the socket.listen() function (how many connections to backlog)
@@ -994,6 +994,9 @@ analysis_module_mailbox_email_analyzer:
   python_module: saq.modules.email.mailbox
   python_class: MailboxEmailAnalyzer
   enabled: true
+  # wide_diff: adds DIRECTIVE_TRACKED to MESSAGE_ID observables that are
+  # children of the email analysis, not the file observable being analyzed
+  wide_diff: true
 
 analysis_module_email_analyzer:
   name: email_analyzer
@@ -1593,6 +1596,9 @@ analysis_module_observable_modifier:
   python_module: saq.modules.util.observable_modifier
   python_class: ObservableModifierAnalyzer
   enabled: true
+  # wide_diff: the ignore action removes observables from parent analyses'
+  # _observables lists and sets .ignored on other observables
+  wide_diff: true
   rules_config_path: etc/observable_modifier_rules.yaml
 
 analysis_module_x509_analyzer:

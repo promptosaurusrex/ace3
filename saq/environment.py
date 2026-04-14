@@ -25,7 +25,7 @@ from saq.constants import (
 )
 
 class GlobalRuntimeSettings(BaseModel):
-    analyst_data_dir: str = Field(default="/opt/ace/data/analyst", description="a directory controlled by the analysts that contains various data and configuration files")
+    analyst_data_dir: str = Field(default="/opt/ace/signatures/analyst_data", description="a directory controlled by the analysts that contains various data and configuration files")
     api_prefix: Optional[str] = Field(default=None, description="what prefix other systems use to communicate to the API server for this node")
     automation_user_id: Optional[int] = Field(default=None, description='global user ID for the "automation" user')
     ca_chain_path: Optional[str] = Field(default=None, description="path to the certifcate chain used by all SSL certs")

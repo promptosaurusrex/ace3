@@ -9,6 +9,26 @@ if TYPE_CHECKING:
 
 INCLUDE_DIRECTIVE = "include"
 
+
+def _get_observable_mapping_identity(item: Any) -> tuple[str, frozenset[str]] | None:
+    """Returns a hashable identity for observable mapping dicts, or None.
+
+    Identity is (type, frozenset(fields)) where fields is normalized from
+    either the 'fields' list or the singular 'field' string. When both are
+    present, 'fields' takes precedence (matching Pydantic validation behavior).
+    """
+    if not isinstance(item, dict) or "type" not in item:
+        return None
+    fields = item.get("fields")
+    if not fields:
+        field = item.get("field")
+        if field:
+            fields = [field]
+        else:
+            return None
+    return (item["type"], frozenset(fields))
+
+
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Deeply merges two dictionaries.
 
@@ -34,9 +54,21 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
             # both are dicts, recursively merge
             result[key] = deep_merge(result[key], value)
         elif isinstance(value, list) and isinstance(result[key], list):
-            # both are lists, extend avoiding duplicates
+            # copy the list to avoid mutating the original base dict's list
+            result[key] = list(result[key])
+            # build identity map for observable mapping entries in the base list
+            identity_map: dict[tuple[str, frozenset[str]], int] = {}
+            for i, existing in enumerate(result[key]):
+                identity = _get_observable_mapping_identity(existing)
+                if identity is not None:
+                    identity_map[identity] = i
+            # merge override items
             for item in value:
-                if item not in result[key]:
+                identity = _get_observable_mapping_identity(item)
+                if identity is not None and identity in identity_map:
+                    # replace matching observable mapping entry in place
+                    result[key][identity_map[identity]] = item
+                elif item not in result[key]:
                     result[key].append(item)
         else:
             # simple value or type mismatch, override

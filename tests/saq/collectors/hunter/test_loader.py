@@ -3,7 +3,12 @@ import os
 import pytest
 from pydantic import BaseModel, Field
 
-from saq.collectors.hunter.loader import load_from_yaml, deep_merge, _load_and_merge_yaml
+from saq.collectors.hunter.loader import (
+    load_from_yaml,
+    deep_merge,
+    _load_and_merge_yaml,
+    _get_observable_mapping_identity,
+)
 
 
 class SimpleConfig(BaseModel):
@@ -173,6 +178,57 @@ class TestDeepMerge:
 
         # lists are extended, not merged element-wise
         assert result == {"items": [{"id": 1, "name": "item1"}, {"id": 2, "name": "item2"}]}
+
+    def test_merge_observable_mapping_override_by_fields(self):
+        """should replace observable_mapping entry when fields match"""
+        base = {"observable_mapping": [
+            {"fields": ["callerIpAddress"], "type": "ip", "time": True},
+            {"fields": ["correlationId"], "type": "azure_correlation_id", "time": False},
+        ]}
+        override = {"observable_mapping": [
+            {"fields": ["callerIpAddress"], "type": "ip", "time": False},
+        ]}
+
+        result = deep_merge(base, override)
+
+        assert len(result["observable_mapping"]) == 2
+        # callerIpAddress entry should be replaced (time=False from override)
+        ip_entry = next(e for e in result["observable_mapping"] if e["fields"] == ["callerIpAddress"])
+        assert ip_entry["time"] is False
+        # correlationId entry should be unchanged
+        corr_entry = next(e for e in result["observable_mapping"] if e["fields"] == ["correlationId"])
+        assert corr_entry["time"] is False
+
+    def test_merge_observable_mapping_append_new_fields(self):
+        """should append observable_mapping entry when fields don't match any existing"""
+        base = {"observable_mapping": [
+            {"fields": ["callerIpAddress"], "type": "ip", "time": True},
+        ]}
+        override = {"observable_mapping": [
+            {"fields": ["authentication_detail"], "type": "authentication_detail", "time": False},
+        ]}
+
+        result = deep_merge(base, override)
+
+        assert len(result["observable_mapping"]) == 2
+
+    def test_merge_observable_mapping_mixed_override_and_append(self):
+        """should handle a mix of overrides and new entries"""
+        base = {"observable_mapping": [
+            {"fields": ["callerIpAddress"], "type": "ip", "time": True, "display_type": "Source IP"},
+            {"fields": ["correlationId"], "type": "azure_correlation_id", "time": False},
+        ]}
+        override = {"observable_mapping": [
+            {"fields": ["callerIpAddress"], "type": "ip", "time": False},
+            {"fields": ["newField"], "type": "custom", "time": False},
+        ]}
+
+        result = deep_merge(base, override)
+
+        assert len(result["observable_mapping"]) == 3
+        # overridden entry should fully replace (no display_type from base)
+        ip_entry = next(e for e in result["observable_mapping"] if e["fields"] == ["callerIpAddress"])
+        assert ip_entry == {"fields": ["callerIpAddress"], "type": "ip", "time": False}
 
     def test_merge_list_duplicate_detection(self):
         """should detect duplicates in lists correctly"""
@@ -963,3 +1019,168 @@ class TestYAMLLoaderRelativePaths:
 
         expected_path = os.path.normpath(str(scripts_dir / "enrich.py"))
         assert result["rule"]["correlate"]["logic"][0]["transform"]["command"]["path"] == expected_path
+
+
+@pytest.mark.unit
+class TestGetObservableMappingIdentity:
+    """Tests for the _get_observable_mapping_identity helper."""
+
+    def test_fields_list_with_type(self):
+        """should return identity for dict with fields list and type"""
+        item = {"fields": ["callerIpAddress"], "type": "ip", "time": True}
+        assert _get_observable_mapping_identity(item) == ("ip", frozenset(["callerIpAddress"]))
+
+    def test_singular_field_with_type(self):
+        """should return identity for dict with singular field and type"""
+        item = {"field": "callerIpAddress", "type": "ip"}
+        assert _get_observable_mapping_identity(item) == ("ip", frozenset(["callerIpAddress"]))
+
+    def test_both_field_and_fields_prefers_fields(self):
+        """should prefer fields over field when both are present"""
+        item = {"field": "x", "fields": ["a", "b"], "type": "ip"}
+        assert _get_observable_mapping_identity(item) == ("ip", frozenset(["a", "b"]))
+
+    def test_multi_field_order_independent(self):
+        """should produce same identity regardless of field order"""
+        item1 = {"fields": ["a", "b"], "type": "ip"}
+        item2 = {"fields": ["b", "a"], "type": "ip"}
+        assert _get_observable_mapping_identity(item1) == _get_observable_mapping_identity(item2)
+
+    def test_non_dict_returns_none(self):
+        """should return None for non-dict items"""
+        assert _get_observable_mapping_identity("string") is None
+        assert _get_observable_mapping_identity(42) is None
+
+    def test_missing_type_returns_none(self):
+        """should return None for dict without type key"""
+        assert _get_observable_mapping_identity({"fields": ["x"]}) is None
+
+    def test_missing_fields_and_field_returns_none(self):
+        """should return None for dict without fields or field key"""
+        assert _get_observable_mapping_identity({"type": "ip"}) is None
+
+    def test_empty_fields_list_returns_none(self):
+        """should return None for empty fields list"""
+        assert _get_observable_mapping_identity({"fields": [], "type": "ip"}) is None
+
+    def test_empty_field_string_returns_none(self):
+        """should return None for empty field string"""
+        assert _get_observable_mapping_identity({"field": "", "type": "ip"}) is None
+
+
+@pytest.mark.unit
+class TestDeepMergeObservableMappingOverride:
+    """Tests for observable_mapping override behavior in deep_merge."""
+
+    def test_singular_field_override_matches_fields_list(self):
+        """should match when base uses fields list and override uses singular field"""
+        base = {"mapping": [
+            {"fields": ["callerIpAddress"], "type": "ip", "time": True},
+        ]}
+        override = {"mapping": [
+            {"field": "callerIpAddress", "type": "ip", "time": False},
+        ]}
+
+        result = deep_merge(base, override)
+
+        assert len(result["mapping"]) == 1
+        assert result["mapping"][0]["time"] is False
+
+    def test_fields_list_override_matches_singular_field(self):
+        """should match when base uses singular field and override uses fields list"""
+        base = {"mapping": [
+            {"field": "callerIpAddress", "type": "ip", "time": True},
+        ]}
+        override = {"mapping": [
+            {"fields": ["callerIpAddress"], "type": "ip", "time": False},
+        ]}
+
+        result = deep_merge(base, override)
+
+        assert len(result["mapping"]) == 1
+        assert result["mapping"][0]["time"] is False
+
+    def test_different_type_same_fields_not_replaced(self):
+        """should keep both entries when fields match but type differs"""
+        base = {"mapping": [
+            {"fields": ["callerIpAddress"], "type": "ip", "time": True},
+        ]}
+        override = {"mapping": [
+            {"fields": ["callerIpAddress"], "type": "source_ip", "time": False},
+        ]}
+
+        result = deep_merge(base, override)
+
+        assert len(result["mapping"]) == 2
+
+    def test_same_type_different_fields_not_replaced(self):
+        """should keep both entries when type matches but fields differ"""
+        base = {"mapping": [
+            {"fields": ["callerIpAddress"], "type": "ip", "time": True},
+        ]}
+        override = {"mapping": [
+            {"fields": ["destinationIpAddress"], "type": "ip", "time": False},
+        ]}
+
+        result = deep_merge(base, override)
+
+        assert len(result["mapping"]) == 2
+
+    def test_override_preserves_position(self):
+        """should replace entry at its original position in the list"""
+        base = {"mapping": [
+            {"fields": ["fieldA"], "type": "typeA", "time": True},
+            {"fields": ["fieldB"], "type": "typeB", "time": True},
+            {"fields": ["fieldC"], "type": "typeC", "time": True},
+        ]}
+        override = {"mapping": [
+            {"fields": ["fieldB"], "type": "typeB", "time": False},
+        ]}
+
+        result = deep_merge(base, override)
+
+        assert len(result["mapping"]) == 3
+        assert result["mapping"][1] == {"fields": ["fieldB"], "type": "typeB", "time": False}
+
+    def test_full_replacement_no_base_leakage(self):
+        """should fully replace the entry, not merge individual properties"""
+        base = {"mapping": [
+            {"fields": ["callerIpAddress"], "type": "ip", "time": True, "display_type": "Source IP"},
+        ]}
+        override = {"mapping": [
+            {"fields": ["callerIpAddress"], "type": "ip", "time": False},
+        ]}
+
+        result = deep_merge(base, override)
+
+        assert len(result["mapping"]) == 1
+        assert result["mapping"][0] == {"fields": ["callerIpAddress"], "type": "ip", "time": False}
+        assert "display_type" not in result["mapping"][0]
+
+    def test_does_not_mutate_base_list(self):
+        """should not mutate the original base dictionary's list"""
+        base_list = [
+            {"fields": ["callerIpAddress"], "type": "ip", "time": True},
+        ]
+        base = {"mapping": base_list}
+        override = {"mapping": [
+            {"fields": ["callerIpAddress"], "type": "ip", "time": False},
+        ]}
+
+        deep_merge(base, override)
+
+        assert base_list[0]["time"] is True
+
+    def test_multi_field_order_independent_matching(self):
+        """should match entries regardless of field order in lists"""
+        base = {"mapping": [
+            {"fields": ["a", "b"], "type": "composite", "time": True},
+        ]}
+        override = {"mapping": [
+            {"fields": ["b", "a"], "type": "composite", "time": False},
+        ]}
+
+        result = deep_merge(base, override)
+
+        assert len(result["mapping"]) == 1
+        assert result["mapping"][0]["time"] is False

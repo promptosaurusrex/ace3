@@ -632,6 +632,105 @@ def test_phishkit_analyzer_continue_analysis_success(monkeypatch, test_context):
         assert analysis.stderr == "no errors"
 
 
+@pytest.mark.unit
+def test_phishkit_analyzer_continue_analysis_extracts_marker_urls(monkeypatch, test_context):
+    """Test that MARKER URL lines in dom.html are extracted as URL observables."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
+    analysis = PhishkitAnalysis()
+    analysis.job_id = "test-job-marker"
+    analysis.output_dir = "/tmp/test-output"
+    url_observable.add_analysis(analysis)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create dom.html with MARKER URL lines mixed with HTML content
+        dom_file = os.path.join(temp_dir, "dom.html")
+        with open(dom_file, "w") as f:
+            f.write("<html><body>page content</body></html>\n")
+            f.write("\n\nMARKER URL: https://evil.com/login.php\n\n")
+            f.write("<script>var x = 1;</script>\n")
+            f.write("\n\nMARKER URL: https://evil.com/steal.js\n\n")
+            f.write("more response content\n")
+            f.write("\n\nMARKER URL: https://cdn.example.com/payload.html\n\n")
+
+        exit_code_file = os.path.join(temp_dir, "exit.code")
+        with open(exit_code_file, "w") as f:
+            f.write("0")
+
+        output_files = [exit_code_file, dom_file]
+        analysis.output_dir = temp_dir
+
+        monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result",
+                            lambda job_id, output_dir, timeout=1: output_files)
+
+        # Track calls to add_observable_by_spec on the analysis
+        added_urls = []
+        original_add = analysis.add_observable_by_spec
+        def tracking_add(o_type, o_value, **kwargs):
+            if o_type == F_URL:
+                added_urls.append(o_value)
+            return original_add(o_type, o_value, **kwargs)
+        monkeypatch.setattr(analysis, "add_observable_by_spec", tracking_add)
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+        result = analyzer.continue_analysis(url_observable, analysis)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        assert added_urls == [
+            "https://evil.com/login.php",
+            "https://evil.com/steal.js",
+            "https://cdn.example.com/payload.html",
+        ]
+
+
+@pytest.mark.unit
+def test_phishkit_analyzer_continue_analysis_no_marker_urls(monkeypatch, test_context):
+    """Test that dom.html with no MARKER URL lines adds no URL observables."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
+    analysis = PhishkitAnalysis()
+    analysis.job_id = "test-job-no-markers"
+    analysis.output_dir = "/tmp/test-output"
+    url_observable.add_analysis(analysis)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        dom_file = os.path.join(temp_dir, "dom.html")
+        with open(dom_file, "w") as f:
+            f.write("<html><body>just a normal page</body></html>\n")
+
+        exit_code_file = os.path.join(temp_dir, "exit.code")
+        with open(exit_code_file, "w") as f:
+            f.write("0")
+
+        output_files = [exit_code_file, dom_file]
+        analysis.output_dir = temp_dir
+
+        monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result",
+                            lambda job_id, output_dir, timeout=1: output_files)
+
+        added_urls = []
+        original_add = analysis.add_observable_by_spec
+        def tracking_add(o_type, o_value, **kwargs):
+            if o_type == F_URL:
+                added_urls.append(o_value)
+            return original_add(o_type, o_value, **kwargs)
+        monkeypatch.setattr(analysis, "add_observable_by_spec", tracking_add)
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+        result = analyzer.continue_analysis(url_observable, analysis)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        assert added_urls == []
+
+
 @pytest.mark.integration
 def test_phishkit_analyzer_file_not_analyzed_in_non_correlation_mode(monkeypatch, test_context):
     """Test that F_FILE observables are NOT analyzed when root analysis is NOT in correlation mode."""

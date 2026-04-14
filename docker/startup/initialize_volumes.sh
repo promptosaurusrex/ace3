@@ -22,7 +22,15 @@ fi
 # this ensures that the volumes are owned by ace instead
 #
 
-for path in /opt/ace/data /opt/ace/data/external /opt/ace/ssl /docker-entrypoint-initdb.d /ace-sql-readonly /auth /home/ace /phishkit /phishkit/input /phishkit/output
+for path in \
+    /opt/ace/data \
+    /opt/ace/signatures \
+    /opt/ace/ssl \
+    /docker-entrypoint-initdb.d \
+    /ace-sql-readonly \
+    /auth \
+    /home/ace \
+    /phishkit /phishkit/input /phishkit/output
 do
     if [ -d "${path}" ]
     then

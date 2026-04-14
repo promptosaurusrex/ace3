@@ -1,9 +1,10 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 import logging
 from operator import attrgetter
 import os
 import shutil
 import threading
+import time
 from typing import Optional, Union
 from enum import Enum
 
@@ -13,6 +14,7 @@ from saq.analysis.errors import ExcessiveFileDataSizeError
 from saq.analysis.module_path import MODULE_PATH
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis
+from saq.analysis.snapshot import ModuleExecutionSnapshot
 from saq.configuration.config import (
     get_config,
     get_engine_config,
@@ -1087,6 +1089,22 @@ class AnalysisExecutor:
             try:
                 module_start_time = datetime.now()
 
+                # snapshot before module execution for delta tracking
+                snapshot_before = None
+                try:
+                    wide_diff = getattr(analysis_module.config, 'wide_diff', False)
+                    if wide_diff:
+                        snapshot_before = ModuleExecutionSnapshot.wide(root, work_item.observable, analysis_module)
+                    else:
+                        snapshot_before = ModuleExecutionSnapshot.narrow(root, work_item.observable, analysis_module)
+                except Exception:
+                    logging.warning(
+                        "failed to capture pre-execution snapshot for %s on %s",
+                        analysis_module, work_item.observable,
+                        exc_info=True,
+                    )
+                delta_start_ns = time.monotonic_ns()
+
                 # if the analysis module has specified a semaphore name in the configuration
                 # then we need to acquire the semaphore before analyzing
                 if analysis_module.semaphore_name is not None:
@@ -1098,6 +1116,31 @@ class AnalysisExecutor:
                     analysis_result = analysis_module.analyze(
                         work_item.observable, context.final_analysis_mode, context.is_delayed_analysis
                     )
+
+                # snapshot after and compute delta — wrapped in try/except so
+                # delta recording failures never prevent root.save()
+                if snapshot_before is not None:
+                    try:
+                        if wide_diff:
+                            snapshot_after = ModuleExecutionSnapshot.wide(root, work_item.observable, analysis_module)
+                        else:
+                            snapshot_after = ModuleExecutionSnapshot.narrow(root, work_item.observable, analysis_module)
+                        delta = ModuleExecutionSnapshot.diff(snapshot_before, snapshot_after, analysis_module, work_item.observable)
+                        delta.execution_time_ms = (time.monotonic_ns() - delta_start_ns) // 1_000_000
+                        if not delta.is_empty:
+                            root.record_module_execution(delta)
+
+                        if delta.has_removals:
+                            logging.info(
+                                "module %s produced removals in delta for observable %s",
+                                analysis_module.config.name, work_item.observable,
+                            )
+                    except Exception:
+                        logging.warning(
+                            "failed to record module execution delta for %s on %s",
+                            analysis_module, work_item.observable,
+                            exc_info=True,
+                        )
 
                 logging.debug(
                     f"analysis module {analysis_module} returned {analysis_result} for {work_item}"

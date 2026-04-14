@@ -120,7 +120,7 @@ load_proxy
 yss/.yss.pid
 yss/logs/
 backups/
-data/
+/data/
 extra/
 bro/ace_local.bro
 
@@ -151,8 +151,8 @@ docker/provision/ace/etc
 sql/70-create-db-user.sql
 sql/71-create-db-super-user.sql
 
-# yara signatures
-etc/yara
+# signatures (separate repo, mounted as named volume)
+signatures/
 
 # compiled yara rules
 *.yarc
@@ -165,11 +165,6 @@ data_unittest
 
 # any site directory
 **/site/
-
-# hunts
-hunts/*
-!hunts/sample/
-!hunts/test/
 
 # symlinks
 logs
