@@ -58,6 +58,8 @@ COMMENT_REGEX = re.compile(r'^\s*#.*?$', re.M)
 
 
 class QueryHuntConfig(HuntConfig, BaseQueryConfig):
+    model_config = {"extra": "forbid"}
+
     time_range: Optional[str] = Field(
         default=None,
         description="The time range to query over. Can also be specified via time_ranges.TIMESPEC."

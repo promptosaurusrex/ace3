@@ -1,4 +1,4 @@
-from typing import Any, Literal, Optional, Union
+from typing import Any, Optional, Union
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -7,6 +7,8 @@ from saq.collectors.hunter.correlation.timespec import parse_timespec
 
 class ExpressionConfig(BaseModel):
     """Configuration for a conditional expression."""
+    model_config = {"extra": "forbid"}
+
     type: str = Field(default="jinja", description="Expression type: and, or, not, equals, glob, regex, jinja")
     value: Any = Field(..., description="Expression value or list of sub-expressions")
     property: Optional[str] = Field(default=None, description="Event property to compare against (required for equals, glob, regex)")
@@ -33,6 +35,8 @@ class ExpressionConfig(BaseModel):
 
 class TimeRangeConfig(BaseModel):
     """Time range configuration for query commands."""
+    model_config = {"extra": "forbid"}
+
     before: Optional[str] = Field(default=None, description="Timespec for duration before reference time")
     after: Optional[str] = Field(default=None, description="Timespec for duration after reference time")
     relative_time_field: Optional[str] = Field(default=None, description="Event field containing the reference time")
@@ -41,8 +45,9 @@ class TimeRangeConfig(BaseModel):
 
 class CommandConfig(BaseModel):
     """Configuration for a transformation command."""
+    model_config = {"extra": "forbid"}
+
     type: str = Field(..., description="Command type: query, executable, defined")
-    on_error: Optional[list] = Field(default=None, description="Actions to execute on error")
     timeout: str = Field(default="30s", description="Command timeout as timespec")
     cache: Optional[str] = Field(default=None, description="Cache duration as timespec")
 
@@ -75,6 +80,8 @@ class CommandConfig(BaseModel):
 
 class MergeTimeSpecConfig(BaseModel):
     """Configuration for merge time specification."""
+    model_config = {"extra": "forbid"}
+
     l_field: str = Field(..., description="Field containing time in existing data")
     l_format: str = Field(..., description="Format of the timestamp in existing data")
     r_field: str = Field(..., description="Field containing time in new data")
@@ -83,6 +90,8 @@ class MergeTimeSpecConfig(BaseModel):
 
 class TransformConfig(BaseModel):
     """Configuration for a transform step."""
+    model_config = {"extra": "forbid"}
+
     type: str = Field(default="event", description="Transform type: stream or event")
     method: str = Field(default="property", description="Transform method: property, merge, mutate")
     property_name: Optional[str] = Field(default=None, description="Property name for property method")
@@ -105,6 +114,8 @@ class TransformConfig(BaseModel):
 
 class ActionConfig(BaseModel):
     """Configuration for an action step."""
+    model_config = {"extra": "forbid"}
+
     type: str = Field(..., description="Action type: filter, stop, discard, alert, log")
     queue: Optional[str] = Field(default=None, description="Queue override for alert action")
     analysis_mode: Optional[str] = Field(default=None, description="Analysis mode override for alert action")
@@ -128,11 +139,11 @@ class ActionConfig(BaseModel):
 
 class ConditionConfig(BaseModel):
     """Configuration for a conditional step."""
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
     when: Union[ExpressionConfig, str] = Field(..., description="Expression to evaluate")
     execute: list = Field(..., description="Steps to execute if condition is true")
     else_: Optional[list] = Field(default=None, alias="else", description="Steps to execute if condition is false")
-
-    model_config = {"populate_by_name": True}
 
     @model_validator(mode="after")
     def parse_when_string(self):
@@ -141,8 +152,14 @@ class ConditionConfig(BaseModel):
         return self
 
 
+_STEP_ALLOWED_WHEN_KEYS = frozenset({"when", "execute", "else", "description", "debug"})
+_STEP_ALLOWED_TRANSFORM_ACTION_KEYS = frozenset({"transform", "action", "description", "debug"})
+
+
 class StepConfig(BaseModel):
     """A single step in the correlation logic. Discriminated by the presence of when/transform/action keys."""
+    model_config = {"extra": "forbid"}
+
     step: Union[ConditionConfig, TransformConfig, ActionConfig]
 
     # common optional fields
@@ -154,6 +171,24 @@ class StepConfig(BaseModel):
     def dispatch_step_type(cls, data):
         if not isinstance(data, dict):
             return data
+
+        present = [k for k in ("when", "transform", "action") if k in data]
+        if len(present) > 1:
+            raise ValueError(
+                f"step must contain exactly one of 'when', 'transform', or 'action'; got {present}"
+            )
+        if not present:
+            raise ValueError("step must contain 'when', 'transform', or 'action' key")
+
+        allowed = (
+            _STEP_ALLOWED_WHEN_KEYS if present[0] == "when"
+            else _STEP_ALLOWED_TRANSFORM_ACTION_KEYS
+        )
+        extras = set(data.keys()) - allowed
+        if extras:
+            raise ValueError(
+                f"step has unexpected keys {sorted(extras)}; allowed: {sorted(allowed)}"
+            )
 
         description = data.get("description")
         debug = data.get("debug")
@@ -171,18 +206,17 @@ class StepConfig(BaseModel):
             step = TransformConfig.model_validate(data["transform"])
         elif "action" in data:
             step = ActionConfig.model_validate(data["action"])
-        else:
-            raise ValueError("step must contain 'when', 'transform', or 'action' key")
 
         return {"step": step, "description": description, "debug": debug}
 
 
 class PredefinedCommandConfig(BaseModel):
     """A predefined command that can be referenced by name."""
+    model_config = {"extra": "forbid"}
+
     name: str = Field(..., description="Name of the command")
     description: Optional[str] = Field(default=None, description="Description of the command")
     type: str = Field(..., description="Command type: query, executable")
-    on_error: Optional[list] = Field(default=None, description="Actions to execute on error")
     timeout: str = Field(default="30s", description="Command timeout as timespec")
     cache: Optional[str] = Field(default=None, description="Cache duration as timespec")
 
@@ -208,6 +242,8 @@ class PredefinedCommandConfig(BaseModel):
 
 class CorrelateConfig(BaseModel):
     """Top-level correlate configuration."""
+    model_config = {"extra": "forbid"}
+
     timeout: str = Field(default="15m", description="Maximum time for correlation processing")
     logic: list[StepConfig] = Field(..., description="List of correlation logic steps")
 

@@ -399,8 +399,8 @@ class TestEngineTrace:
         assert transform.error is None
         assert "/bin/echo enriched_value" in transform.rendered_command
 
-    def test_transform_error_trace(self):
-        """Verify transform error and on_error actions are traced."""
+    def test_transform_error_short_circuits_to_alert(self):
+        """A failing transform stops step processing for the event and alerts it."""
         config = _make_config([
             {
                 "transform": {
@@ -411,7 +411,6 @@ class TestEngineTrace:
                     "command": {
                         "type": "executable",
                         "path": "/bin/false",
-                        "on_error": [{"type": "filter"}],
                     },
                 },
             },
@@ -420,14 +419,125 @@ class TestEngineTrace:
         result = engine.execute([{"id": 1}])
 
         et = result.trace.event_traces[0]
-        assert et.outcome == "filter"
+        assert et.outcome == "error"
+        assert result.event_actions[0].action_type == "alert"
+        assert len(result.events) == 1
         transform = et.steps[0].step
         assert isinstance(transform, TransformTrace)
         assert transform.error is not None
-        assert transform.on_error_steps is not None
-        assert len(transform.on_error_steps) == 1
-        assert isinstance(transform.on_error_steps[0].step, ActionTrace)
-        assert transform.on_error_steps[0].step.action_type == "filter"
+
+    def test_transform_error_skips_remaining_steps(self):
+        """An error stops processing — subsequent filter steps must not run."""
+        config = _make_config([
+            {
+                "transform": {
+                    "type": "event",
+                    "method": "property",
+                    "property_name": "result",
+                    "property_type": "str",
+                    "command": {
+                        "type": "executable",
+                        "path": "/bin/false",
+                    },
+                },
+            },
+            {"action": "filter"},
+        ])
+        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
+        result = engine.execute([{"id": 1}])
+
+        et = result.trace.event_traces[0]
+        # The filter action would have produced "filter" outcome; error short-circuits first.
+        assert et.outcome == "error"
+        assert result.event_actions[0].action_type == "alert"
+        # Only the failing transform step is recorded — the filter never ran.
+        assert len(et.steps) == 1
+        assert isinstance(et.steps[0].step, TransformTrace)
+        assert et.steps[0].step.error is not None
+
+    def test_condition_expression_error_short_circuits(self):
+        """A condition whose expression raises short-circuits to alert."""
+        config = _make_config([
+            {
+                "when": "{{ _event.x | bad_filter }}",
+                "execute": [{"action": "filter"}],
+            },
+            {"action": "filter"},
+        ])
+        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
+        result = engine.execute([{"x": "val"}])
+
+        et = result.trace.event_traces[0]
+        assert et.outcome == "error"
+        assert result.event_actions[0].action_type == "alert"
+        cond = et.steps[0].step
+        assert isinstance(cond, ConditionTrace)
+        assert cond.error is not None
+        assert cond.expression.error is not None
+        # The trailing filter step never executed.
+        assert len(et.steps) == 1
+
+    def test_nested_transform_error_surfaces_through_condition(self):
+        """A transform failure inside a condition branch short-circuits the whole event."""
+        config = _make_config([
+            {
+                "when": {"type": "equals", "value": "admin", "property": "user"},
+                "execute": [
+                    {
+                        "transform": {
+                            "type": "event",
+                            "method": "property",
+                            "property_name": "result",
+                            "property_type": "str",
+                            "command": {
+                                "type": "executable",
+                                "path": "/bin/false",
+                            },
+                        },
+                    },
+                    {"action": "filter"},
+                ],
+            },
+            {"action": "filter"},
+        ])
+        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
+        result = engine.execute([{"user": "admin"}])
+
+        et = result.trace.event_traces[0]
+        assert et.outcome == "error"
+        assert result.event_actions[0].action_type == "alert"
+        # The condition step is present at the top level with the transform error nested inside.
+        assert len(et.steps) == 1
+        cond = et.steps[0].step
+        assert isinstance(cond, ConditionTrace)
+        assert cond.branch_taken == "execute"
+        # Only the failing transform inside the branch is recorded, not the filter after it.
+        assert len(cond.branch_steps) == 1
+        nested = cond.branch_steps[0].step
+        assert isinstance(nested, TransformTrace)
+        assert nested.error is not None
+
+    def test_action_error_recorded(self):
+        """An exception from execute_action is recorded and short-circuits to alert."""
+        config = _make_config([
+            {"action": "filter"},
+            {"action": "filter"},
+        ])
+        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
+        with patch(
+            "saq.collectors.hunter.correlation.engine.execute_action",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = engine.execute([{"id": 1}])
+
+        et = result.trace.event_traces[0]
+        assert et.outcome == "error"
+        assert result.event_actions[0].action_type == "alert"
+        # Only the first (failing) action is recorded; the second never ran.
+        assert len(et.steps) == 1
+        action_trace = et.steps[0].step
+        assert isinstance(action_trace, ActionTrace)
+        assert action_trace.error == "boom"
 
     def test_trace_serializes_to_json(self):
         """Verify that the trace can be serialized to JSON."""

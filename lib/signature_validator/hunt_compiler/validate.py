@@ -413,6 +413,8 @@ def _format_step(step: dict, lines: list, indent: int = 4):
         branch = inner["branch_taken"]
         lines.append(f"{prefix}WHEN ({result_color}{result}\033[0m) -> {branch}{desc_suffix}")
         _format_expression(inner["expression"], lines, indent + 4)
+        if inner.get("error"):
+            lines.append(f"{prefix}  \033[91merror: {inner['error']}\033[0m")
         for sub_step in inner.get("branch_steps", []):
             _format_step(sub_step, lines, indent + 4)
 
@@ -427,14 +429,14 @@ def _format_step(step: dict, lines: list, indent: int = 4):
             lines.append(f"{prefix}  results: {inner['result_count']}")
         if inner.get("error"):
             lines.append(f"{prefix}  \033[91merror: {inner['error']}\033[0m")
-        for sub_step in inner.get("on_error_steps") or []:
-            _format_step(sub_step, lines, indent + 4)
 
     elif trace_type == "action":
         interrupt = " [INTERRUPT]" if inner.get("is_interrupt") else ""
         lines.append(f"{prefix}ACTION {inner['action_type']}{interrupt}{desc_suffix}")
         if inner.get("rendered_log_message"):
             lines.append(f"{prefix}  msg: {inner['rendered_log_message']}")
+        if inner.get("error"):
+            lines.append(f"{prefix}  \033[91merror: {inner['error']}\033[0m")
 
 
 def format_correlation_trace(trace_data: dict) -> str:
@@ -455,7 +457,12 @@ def format_correlation_trace(trace_data: dict) -> str:
     event_traces = trace_data.get("event_traces", [])
     for et in event_traces:
         outcome = et["outcome"]
-        outcome_color = "\033[92m" if outcome == "alert" else "\033[93m"
+        if outcome == "alert":
+            outcome_color = "\033[92m"
+        elif outcome == "error":
+            outcome_color = "\033[91m"
+        else:
+            outcome_color = "\033[93m"
         lines.append(f"  Event {et['event_index']}: {outcome_color}{outcome}\033[0m")
         for step in et.get("steps", []):
             _format_step(step, lines, indent=4)

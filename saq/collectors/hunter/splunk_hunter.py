@@ -26,6 +26,8 @@ from saq.util import create_timedelta
 TIMESPEC_PATTERN = re.compile(r'<(TIMESPEC\w*)>')
 
 class SplunkHuntConfig(QueryHuntConfig):
+    model_config = {"extra": "forbid"}
+
     splunk_config: str = Field(default="default", description="The name of the splunk config to use for the hunt")
     namespace_user: Optional[str] = Field(alias="splunk_user_context", default=None, description="The namespace user to use for the hunt")
     namespace_app: Optional[str] = Field(alias="splunk_app_context", default=None, description="The namespace app to use for the hunt")

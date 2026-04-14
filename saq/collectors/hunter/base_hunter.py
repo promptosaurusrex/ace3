@@ -51,11 +51,14 @@ if TYPE_CHECKING:
 
 
 class HuntConfig(BaseModel):
+    model_config = {"extra": "forbid"}
+
     uuid: str = Field(..., description="The UUID of the hunt. This must be unique across all signatures in all repositories.")
     name: str = Field(..., description="The name of the hunt. This must be unique to the hunt type.")
     type_: str = Field(..., alias="type", description="The type of the hunt. Must be one of the supported hunt types.")
     enabled: bool = Field(..., description="Whether the hunt is enabled. If disabled, the hunt will not be executed.")
     instance_types: list[str] = Field(default_factory=list, description="The instance types this hunt will run on. Valid values are: production, development, qa.")
+    author: list[str] = Field(default_factory=list, description="Author(s) of the hunt. Accepts a single string or a list of strings in YAML; always normalized to a list.")
     description: str = Field(..., description="The description of the hunt. This is a long description that explains what this hunt is looking for.")
     alert_type: str = Field(..., description="The alert type of the hunt. This is used to categorize the alert in ACE when it is displayed.")
     analysis_mode: str = Field(default=ANALYSIS_MODE_CORRELATION, description="The analysis mode of the hunt. Review the configuration to get a list of valid values.")
@@ -68,6 +71,15 @@ class HuntConfig(BaseModel):
     icon_configuration: Optional[IconConfiguration] = Field(default=None, description="The icon to use for the hunt.")
     alert_template: Optional[str] = Field(default=None, description="The template to use to display the alert in ACE.")
     summary_details: list[SummaryDetailConfig] = Field(default_factory=list, description="Summary details to add to submissions. Each definition generates one or more SummaryDetail objects per submission.")
+
+    @field_validator("author", mode="before")
+    @classmethod
+    def normalize_author(cls, value):
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        return value
 
     @field_validator("frequency")
     @classmethod

@@ -14,8 +14,7 @@ from aceapi.auth import api_auth_check
 from aceapi.blueprints import hunt_bp
 from hunt_compiler import CompiledHunt, load_compiled_hunt
 from saq.analysis.root import RootAnalysis
-from saq.collectors.hunter.base_hunter import HuntConfig
-from saq.collectors.hunter.loader import load_from_yaml
+from saq.collectors.hunter.loader import peek_hunt_type
 from saq.collectors.hunter.query_hunter import QueryHunt
 from saq.collectors.hunter.service import HunterService
 from saq.configuration import get_config
@@ -71,21 +70,21 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
         Flask response tuple (response, status_code).
     """
     try:
-        hunt_dict, _ = load_from_yaml(target_file_path, HuntConfig)
+        hunt_type = peek_hunt_type(target_file_path)
     except FileNotFoundError:
         return jsonify({"valid": False, "error": "target file not found"}), 400
     except yaml.YAMLError as e:
         return jsonify({"valid": False, "error": f"YAML syntax error: {e}"}), 400
-    except ValidationError as e:
+    except ValueError as e:
         return jsonify({"valid": False, "error": f"invalid hunt config: {e}"}), 400
 
     # load it using the HuntManager
     hunter_service = HunterService()
     hunter_service.load_hunt_managers()
     try:
-        manager = hunter_service.hunt_managers[hunt_dict.type_]
+        manager = hunter_service.hunt_managers[hunt_type]
     except KeyError:
-        return jsonify({"valid": False, "error": f"invalid hunt type {hunt_dict.type_}"}), 400
+        return jsonify({"valid": False, "error": f"invalid hunt type {hunt_type}"}), 400
 
     # validate the hunt config with the appropriate class
     try:

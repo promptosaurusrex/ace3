@@ -28,6 +28,8 @@ VALID_SUMMARY_DETAIL_FORMATS = {
 
 
 class SummaryDetailConfig(BaseModel):
+    model_config = {"extra": "forbid"}
+
     content: str
     header: Optional[str] = None
     format: str = SUMMARY_DETAIL_FORMAT_MD
@@ -50,12 +52,16 @@ class SummaryDetailConfig(BaseModel):
 
 class TimeRangeConfig(BaseModel):
     """Configuration for a named TIMESPEC token's time range."""
+    model_config = {"extra": "forbid"}
+
     duration_before: Optional[str] = Field(default=None, description="Lookback duration from anchor time")
     duration_after: Optional[str] = Field(default=None, description="Lookahead duration from anchor time")
 
 
 class BaseQueryConfig(BaseModel):
     """Shared query configuration mixin for hunts and API analysis modules."""
+    model_config = {"extra": "forbid"}
+
     query: Optional[str] = Field(default=None, description="The query to execute.")
     query_path: Optional[str] = Field(default=None, description="The path to the query file.")
     observable_mapping: list[ObservableMapping] = Field(

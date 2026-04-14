@@ -16,8 +16,6 @@ rule:
   group_by: process_id
   search: hunts/test/splunk/test_query.query
   use_index_time: yes
-  earliest: '01:00:00'
-  latest: '00:05:00'
 
   observable_mapping:
     - fields: ['python_file']

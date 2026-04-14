@@ -327,3 +327,71 @@ class TestPredefinedCommandConfig:
         )
         cmd = predef.to_command_config()
         assert cmd.env == {"KEY": "value"}
+
+
+# Minimal payloads that satisfy each config's required fields. Used to prove
+# that a typo next to known-good fields raises a ValidationError naming the
+# extra field, not a "missing field" error.
+_STRICT_PAYLOADS: list[tuple[type, dict]] = [
+    (ExpressionConfig, {"type": "jinja", "value": "{{ x }}"}),
+    (TimeRangeConfig, {"before": "1h"}),
+    (CommandConfig, {"type": "query", "source": "splunk", "query": "search"}),
+    (MergeTimeSpecConfig, {"l_field": "a", "l_format": "x", "r_field": "b", "r_format": "y"}),
+    (TransformConfig, {
+        "type": "event", "method": "property", "property_name": "p",
+        "command": {"type": "query", "source": "splunk", "query": "q"},
+    }),
+    (ActionConfig, {"type": "filter"}),
+    (ConditionConfig, {"when": "{{ true }}", "execute": []}),
+    (PredefinedCommandConfig, {"name": "c", "type": "executable", "path": "/bin/true"}),
+    (CorrelateConfig, {"logic": []}),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("cls,payload", _STRICT_PAYLOADS, ids=lambda x: getattr(x, "__name__", str(x)))
+def test_extra_field_rejected(cls, payload):
+    """Every correlation config must reject unknown fields with a clear error."""
+    bad = {**payload, "not_a_real_field": "oops"}
+    with pytest.raises(ValidationError) as exc_info:
+        cls.model_validate(bad)
+    assert "not_a_real_field" in str(exc_info.value)
+
+
+@pytest.mark.unit
+def test_step_config_rejects_extra_at_step_level():
+    with pytest.raises(ValidationError) as exc_info:
+        StepConfig.model_validate({
+            "when": "{{ true }}",
+            "execute": [],
+            "typo_field": "x",
+        })
+    assert "typo_field" in str(exc_info.value)
+
+
+@pytest.mark.unit
+def test_step_config_rejects_extra_next_to_transform():
+    with pytest.raises(ValidationError) as exc_info:
+        StepConfig.model_validate({
+            "transform": {
+                "type": "event", "method": "property", "property_name": "p",
+                "command": {"type": "query", "source": "splunk", "query": "q"},
+            },
+            "typo_field": "x",
+        })
+    assert "typo_field" in str(exc_info.value)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("keys", [
+    {"when": "{{ true }}", "transform": {}},
+    {"when": "{{ true }}", "action": "log"},
+    {"transform": {}, "action": "log"},
+    {"when": "{{ true }}", "transform": {}, "action": "log"},
+])
+def test_step_config_rejects_multiple_step_keys(keys):
+    """Silent-dispatch bug guard: a step with more than one of when/transform/action must fail loud."""
+    with pytest.raises(ValidationError) as exc_info:
+        StepConfig.model_validate(keys)
+    msg = str(exc_info.value)
+    assert "exactly one" in msg
