@@ -972,11 +972,15 @@ analysis_module_onenote_extraction:
   # the maximum number of bytes to read from the file
   max_bytes: 104857600
 
-analysis_module_synchrony:
-  name: synchrony
+analysis_module_javascript_deobfuscation:
+  name: javascript_deobfuscation
   python_module: saq.modules.file_analysis.js
-  python_class: SynchronyFileAnalyzer
+  python_class: JavaScriptDeobfuscationAnalyzer
   enabled: true
+  # wall-clock limit (seconds) for one scanner container invocation
+  scanner_timeout: 30
+  # wall-clock limit (seconds) to wait on the celery manager for a result
+  celery_timeout: 60
 
 analysis_module_command_line_analyzer:
   name: command_line_analyzer
@@ -1246,7 +1250,7 @@ analysis_module_file_hash_analyzer:
   ignore_pattern_phishkit: "phishkit/*"
   ignore_pattern_gs: "*.pdf.gs.pdf"
   ignore_pattern_ocr: "*.ocr"
-  ignore_pattern_synchrony: "*/synchrony-*"
+  ignore_pattern_js_deobfuscated: "*/deobfuscated-*"
 
 analysis_module_correlated_tag_analyzer:
   name: correlated_tag_analyzer
@@ -1963,6 +1967,7 @@ module_group_file:
     - ilspy
     - ioc_extraction
     - java_class_decompiler
+    - javascript_deobfuscation
     - lnk_parser
     - mhtml
     - microsoft_script_encoding_analysis
@@ -1982,7 +1987,6 @@ module_group_file:
     - rtfole
     - site_tagger
     - ssdeep
-    - synchrony
     - upx
     - url_extraction
     - vbscript_analyzer

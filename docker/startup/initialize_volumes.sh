@@ -18,6 +18,22 @@ then
 fi
 
 #
+# special handling for the js-deobfuscator volume
+#
+
+if [ ! -d /js-deobfuscator/input ]
+then
+    mkdir -p /js-deobfuscator/input
+    chown ace:ace /js-deobfuscator/input
+fi
+
+if [ ! -d /js-deobfuscator/output ]
+then
+    mkdir -p /js-deobfuscator/output
+    chown ace:ace /js-deobfuscator/output
+fi
+
+#
 # when docker creates a named volume it creates it owned root:root
 # this ensures that the volumes are owned by ace instead
 #
@@ -30,7 +46,8 @@ for path in \
     /ace-sql-readonly \
     /auth \
     /home/ace \
-    /phishkit /phishkit/input /phishkit/output
+    /phishkit /phishkit/input /phishkit/output \
+    /js-deobfuscator /js-deobfuscator/input /js-deobfuscator/output
 do
     if [ -d "${path}" ]
     then

@@ -1,0 +1,15 @@
+ARG NODE_DOCKER_IMAGE=node:24-alpine
+FROM ${NODE_DOCKER_IMAGE}
+
+# The container runs one harness invocation per scan and then exits (--rm).
+# No network, no persistent state, no package installs at runtime.
+
+RUN mkdir -p /opt/app /export
+
+COPY js_deobfuscator/harness.js /opt/app/harness.js
+
+# /export is mounted as a shared volume at runtime so the manager can
+# hand an input file in and read the output file back out.
+VOLUME ["/export"]
+
+WORKDIR /opt/app
