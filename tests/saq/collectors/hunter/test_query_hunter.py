@@ -82,6 +82,10 @@ def default_hunt(
     description_field=None,
     **kwargs):
 
+    hunt_kwargs = {}
+    if "manager" in kwargs:
+        hunt_kwargs["manager"] = kwargs.pop("manager")
+
     config = QueryHuntConfig(
         uuid=uuid,
         name=name,
@@ -102,7 +106,7 @@ def default_hunt(
         **kwargs
     )
 
-    return TestQueryHunt(config=config)
+    return TestQueryHunt(config=config, **hunt_kwargs)
 
 @pytest.fixture
 def manager_kwargs(rules_dir):

@@ -16,8 +16,6 @@ rule:
   group_by: field1
   search: hunts/test/splunk/test_1.query
   use_index_time: yes
-  earliest: '01:00:00'
-  latest: '00:05:00'
 
   observable_mapping:
     - fields: ['src_ip']

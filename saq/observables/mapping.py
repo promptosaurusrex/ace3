@@ -36,6 +36,8 @@ def is_ignored_value(patterns: list[re.Pattern], value: str) -> bool:
 
 class BaseObservableMapping(BaseModel):
     """Base class for observable mapping configurations shared by query hunters and API analyzers."""
+    model_config = {"extra": "forbid"}
+
     field: Optional[str] = Field(default=None, description="Single field to map to an observable")
     fields: list[str] = Field(default_factory=list, description="One or more fields to map to an observable")
     type: str = Field(..., description="The type of observable to map to")
@@ -107,11 +109,15 @@ FIELD_LOOKUP_TYPE_KEY = "key"
 
 
 class RelationshipMappingTarget(BaseModel):
+    model_config = {"extra": "forbid"}
+
     type: str = Field(..., description="The type of target to create")
     value: str = Field(..., description="The value of the target")
 
 
 class RelationshipMapping(BaseModel):
+    model_config = {"extra": "forbid"}
+
     type: str = Field(..., description="The type of relationship to create")
     target: RelationshipMappingTarget = Field(..., description="The target of the relationship")
 

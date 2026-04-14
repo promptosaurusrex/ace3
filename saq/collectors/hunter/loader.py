@@ -176,6 +176,34 @@ def _load_and_merge_yaml(path: str, resolved_history: set[str]) -> dict[str, Any
     return result
 
 
+def load_merged_yaml(path: str) -> tuple[dict[str, Any], set[str]]:
+    """Loads and merges a hunt YAML (with includes) without pydantic validation.
+
+    Returns:
+        A tuple of (the merged raw dict, the set of all file paths that were loaded).
+    """
+    resolved_history: set[str] = set()
+    resolved_history.add(path)
+    result = _load_and_merge_yaml(path, resolved_history)
+    return result, resolved_history
+
+
+def peek_hunt_type(path: str) -> str:
+    """Returns the `rule.type` field of a hunt YAML without validating the rest.
+
+    Used when a caller needs to route to the correct hunt subclass before
+    invoking that subclass's full pydantic validation.
+    """
+    merged, _ = load_merged_yaml(path)
+    rule = merged.get("rule")
+    if not isinstance(rule, dict):
+        raise ValueError(f"hunt YAML {path} is missing top-level 'rule' mapping")
+    hunt_type = rule.get("type")
+    if not isinstance(hunt_type, str) or not hunt_type:
+        raise ValueError(f"hunt YAML {path} is missing 'rule.type'")
+    return hunt_type
+
+
 def load_from_yaml(path: str, config_type: Type["HuntConfig"]) -> tuple["HuntConfig", set[str]]:
     """Loads a hunt configuration from a YAML file.
 
@@ -189,12 +217,8 @@ def load_from_yaml(path: str, config_type: Type["HuntConfig"]) -> tuple["HuntCon
 
     logging.debug(f"loading {path} from {config_type.__name__}")
 
-    # track resolved files to prevent circular references
-    resolved_history: set[str] = set()
-    resolved_history.add(path)
-
     # recursively load and merge
-    result = _load_and_merge_yaml(path, resolved_history)
+    result, resolved_history = load_merged_yaml(path)
 
     # and then return the validated configuration object and all file paths that were loaded
     config = config_type.model_validate(result["rule"])

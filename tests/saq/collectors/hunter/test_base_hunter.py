@@ -5,6 +5,7 @@ from queue import Queue
 import shutil
 from uuid import uuid4
 import pytest
+from pydantic import ValidationError
 
 from saq.analysis.root import RootAnalysis, Submission
 from saq.collectors.hunter import Hunt, HuntManager, HunterService, read_persistence_data
@@ -31,6 +32,24 @@ def default_hunt_config(**kwargs):
         **kwargs
     }
     return HuntConfig(**config_kwargs)
+
+
+@pytest.mark.unit
+def test_hunt_config_rejects_extra_field():
+    with pytest.raises(ValidationError) as exc_info:
+        default_hunt_config(typo_field="oops")
+    assert "typo_field" in str(exc_info.value)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value,expected", [
+    ("alice", ["alice"]),
+    (["alice", "bob"], ["alice", "bob"]),
+    (None, []),
+])
+def test_hunt_config_author_normalization(value, expected):
+    config = default_hunt_config(author=value)
+    assert config.author == expected
 
 def default_hunt(
     manager,
@@ -815,8 +834,7 @@ def test_initialize_last_execution_time_cron(monkeypatch, tmpdir):
     monkeypatch.setattr(get_global_runtime_settings(), "data_dir", str(data_dir))
     monkeypatch.setattr(get_config().collection, "persistence_dir", "p")
     #monkeypatch.setattr(saq, "CONFIG", { "collection": { "persistence_dir": "p" } })
-    hunt = Hunt(manager=MockManager(), config=default_hunt_config(name="test", cron_schedule="*/10 * * * *"))
-    #hunt.cron_schedule = "*/10 * * * *"
+    hunt = Hunt(manager=MockManager(), config=default_hunt_config(name="test", frequency="*/10 * * * *"))
     # shoule be ready
     assert hunt.next_execution_time <= local_time()
     assert hunt.ready
