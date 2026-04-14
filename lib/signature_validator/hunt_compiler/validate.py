@@ -30,7 +30,14 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Validate a hunt")
     parser.add_argument(
         "file_paths", type=str, nargs="*",
-        help="the hunt YAML file(s) to validate (defaults to all *.yaml files in the current directory)"
+        help="the hunt YAML file(s) to validate (required unless --signature-dir is used)"
+    )
+    parser.add_argument(
+        "--signature-dir",
+        type=str,
+        default=None,
+        help="Directory to scan for *.yaml hunt files (excluding template.yaml). "
+             "Mutually exclusive with positional file paths.",
     )
     parser.add_argument(
         "-r",
@@ -203,6 +210,19 @@ def parse_args():
 
 
 def validate_args(args: argparse.Namespace) -> None:
+    if args.signature_dir and args.file_paths:
+        raise ValueError(
+            "Cannot specify both positional hunt files and --signature-dir. Use one or the other."
+        )
+
+    if not args.signature_dir and not args.file_paths:
+        raise ValueError(
+            "At least one hunt YAML file is required, or use --signature-dir to scan a directory."
+        )
+
+    if args.signature_dir and not os.path.isdir(args.signature_dir):
+        raise ValueError(f"--signature-dir path is not a directory: {args.signature_dir}")
+
     if args.api_key is None:
         raise ValueError(
             "The API key is not set! Please set the ACE_API_KEY environment variable."
@@ -492,13 +512,16 @@ def main():
         args.end_time = now.strftime(date_fmt)
 
     # resolve input files
-    file_paths = args.file_paths
-    if not file_paths:
-        file_paths = sorted(f for f in glob.glob("*.yaml") if os.path.basename(f) != "template.yaml")
-
-    if not file_paths:
-        print("\033[1;91mno YAML files found to validate\033[0m")
-        sys.exit(1)
+    if args.signature_dir:
+        pattern = os.path.join(args.signature_dir, "*.yaml")
+        file_paths = sorted(
+            f for f in glob.glob(pattern) if os.path.basename(f) != "template.yaml"
+        )
+        if not file_paths:
+            print(f"\033[1;91mno YAML files found in {args.signature_dir}\033[0m")
+            sys.exit(1)
+    else:
+        file_paths = args.file_paths
 
     multiple_files = len(file_paths) > 1
     has_failures = False
