@@ -78,6 +78,7 @@ x-common-volumes: &common-volumes
   - ace-user-home:/home/ace
   - ./ssl:/opt/ace/ssl
   - ace-phishkit:/phishkit
+  - ace-js-deobfuscator:/js-deobfuscator
   - ace-signatures:/opt/ace/signatures
   - type: tmpfs
     target: /tmp
@@ -106,6 +107,7 @@ services:
       - ./ssl:/opt/ace/ssl
       - ace-auth:/auth
       - ace-phishkit:/phishkit
+      - ace-js-deobfuscator:/js-deobfuscator
       - ace-signatures:/opt/ace/signatures
     cap_add:
       - SYS_PTRACE
@@ -598,6 +600,8 @@ services:
         condition: service_started
       phishkit:
         condition: service_started
+      js-deobfuscator:
+        condition: service_started
       qdrant:
         condition: service_started
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start engine"
@@ -696,6 +700,52 @@ services:
     networks:
       - ace
 
+  js-deobfuscator-init:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: js_deobfuscator/Dockerfile.js_deobfuscator
+      args:
+        NODE_DOCKER_IMAGE: ${NODE_DOCKER_IMAGE:-node:20-alpine}
+    image: ${ACE3_JS_DEOBFUSCATOR_IMAGE_URL:-js-deobfuscator:latest}
+    # this is here just to build the scanner image
+    entrypoint: /bin/true
+
+  js-deobfuscator:
+    platform: linux/amd64
+    environment:
+      ACE3_JS_DEOBFUSCATOR_IMAGE_URL: ${ACE3_JS_DEOBFUSCATOR_IMAGE_URL:-js-deobfuscator:latest}
+    hostname: js-deobfuscator
+    build:
+      context: .
+      dockerfile: js_deobfuscator/Dockerfile
+      args:
+        DOCKER_IN_DOCKER_IMAGE: ${DOCKER_IN_DOCKER_IMAGE:-docker:dind}
+    image: ${ACE3_JS_DEOBFUSCATOR_MANAGER_IMAGE_URL:-js-deobfuscator-manager:latest}
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        tag: js-deobfuscator
+        fluentd-async: "true"
+    depends_on:
+      js-deobfuscator-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      fluent-bit:
+        condition: service_started
+    volumes:
+      # needed so this container can spawn sibling scanner containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      # shared volume for passing input files and returning output
+      - ace-js-deobfuscator:/js-deobfuscator
+      - ace-auth:/auth
+    networks:
+      - ace
+
 volumes:
   ace-data:
     name: ace-data
@@ -711,6 +761,8 @@ volumes:
     name: ace-sql-readonly
   ace-phishkit:
     name: ace-phishkit
+  ace-js-deobfuscator:
+    name: ace-js-deobfuscator
   ace-auth:
     name: ace-auth
   ace-qdrant:

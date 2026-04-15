@@ -162,11 +162,10 @@ RUN sed -i '/en_US.UTF-8 UTF-8/ s/^# //' /etc/locale.gen && \
 # support yara_scanner_v2 command line defaults
 RUN ln -s /opt/ace/signatures/yara /opt/signatures
 
-# install nodejs, deobfuscator, and esprima
-RUN curl -fsSLk https://deb.nodesource.com/setup_20.x | bash - && \
+# install nodejs
+# nodejs is used by is_javascript_file() to validate JS syntax via `node --check`
+RUN curl -fsSLk https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y nodejs && \
-    npm install --global deobfuscator && \
-    npm install --global esprima && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

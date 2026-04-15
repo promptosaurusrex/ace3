@@ -1,0 +1,11 @@
+{
+  "name": "ace3-js-deobfuscator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ACE3 JavaScript deobfuscation sandbox harness",
+  "type": "module",
+  "main": "harness.js",
+  "dependencies": {
+    "webcrack": "^2.15.1"
+  }
+}

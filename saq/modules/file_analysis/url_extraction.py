@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 from pydantic import Field
 from tld import get_tld
 from saq.analysis.analysis import Analysis
-from saq.constants import DIRECTIVE_CRAWL, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, F_FILE, F_URL, R_DOWNLOADED_FROM, AnalysisExecutionResult
+from saq.constants import DIRECTIVE_CRAWL, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, DIRECTIVE_YARA_META_PREFIX, F_FILE, F_URL, R_DOWNLOADED_FROM, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.observables.file import FileObservable
@@ -196,6 +196,20 @@ class URLExtractionAnalyzer(AnalysisModule):
             if downloaded_from:
                 base_url = downloaded_from.target.value
 
+        # For JavaScript-tagged observables, force urlfinderlib to treat the
+        # file as plain text. Without the override, urlfinderlib routes JS
+        # source through its HTML finder (via might_be_html() body-sniffing),
+        # which uses lxml and chokes on embedded string literals containing
+        # escape sequences that parse as XML-incompatible attribute values.
+        # For everything else we leave mimetype empty so urlfinderlib runs
+        # its own libmagic detection — forwarding ACE's FileTypeAnalysis
+        # mime string directly causes regressions because ACE reports mime
+        # in one form (e.g. "message/rfc822") and urlfinderlib's internal
+        # routing expects another (e.g. "rfc 822 mail").
+        url_mimetype = ""
+        if _file.has_directive(f"{DIRECTIVE_YARA_META_PREFIX}type=script.javascript"):
+            url_mimetype = "text/plain"
+
         # extract all the URLs out of this file
         extracted_urls = []
         with open(local_file_path, 'rb') as fp:
@@ -205,7 +219,7 @@ class URLExtractionAnalyzer(AnalysisModule):
                     domain_as_url = True
 
                 # XXX this can hang hard
-                extracted_urls = find_urls(fp.read(), base_url=base_url, domain_as_url=domain_as_url)
+                extracted_urls = find_urls(fp.read(), base_url=base_url, domain_as_url=domain_as_url, mimetype=url_mimetype)
                 logging.debug("extracted {} urls from {}".format(len(extracted_urls), local_file_path))
             except Exception as e:
                 logging.warning(f"failed to extract urls from {local_file_path}: {e}")

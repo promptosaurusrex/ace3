@@ -5,8 +5,8 @@ import pytest
 
 from saq.analysis import Observable
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_ARCHIVE, ANALYSIS_MODULE_AUTOIT, ANALYSIS_MODULE_DE4DOT, ANALYSIS_MODULE_EXIF, ANALYSIS_MODULE_FILE_HASH_ANALYZER, ANALYSIS_MODULE_FILE_TYPE, ANALYSIS_MODULE_HTML_DATA_URL_EXTRACTION, ANALYSIS_MODULE_LNK_PARSER, ANALYSIS_MODULE_OCR, ANALYSIS_MODULE_QRCODE, ANALYSIS_MODULE_SYNCHRONY, ANALYSIS_MODULE_URL_EXTRACTION, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, F_FILE, F_URL, R_EXTRACTED_FROM, AnalysisExecutionResult
-from saq.modules.file_analysis import ArchiveAnalysis, ArchiveAnalyzer, AutoItAnalyzer, De4dotAnalyzer, ExifAnalyzer, FileHashAnalysis, FileHashAnalyzer, FileTypeAnalysis, FileTypeAnalyzer, HTMLDataURLAnalysis, HTMLDataURLAnalyzer, LnkParseAnalyzer, OCRAnalysis, OCRAnalyzer, QRCodeAnalysis, QRCodeAnalyzer, SynchronyFileAnalysis, SynchronyFileAnalyzer, URLExtractionAnalysis, URLExtractionAnalyzer
+from saq.constants import ANALYSIS_MODULE_ARCHIVE, ANALYSIS_MODULE_AUTOIT, ANALYSIS_MODULE_DE4DOT, ANALYSIS_MODULE_EXIF, ANALYSIS_MODULE_FILE_HASH_ANALYZER, ANALYSIS_MODULE_FILE_TYPE, ANALYSIS_MODULE_HTML_DATA_URL_EXTRACTION, ANALYSIS_MODULE_LNK_PARSER, ANALYSIS_MODULE_OCR, ANALYSIS_MODULE_QRCODE, ANALYSIS_MODULE_URL_EXTRACTION, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, F_FILE, F_URL, R_EXTRACTED_FROM, AnalysisExecutionResult
+from saq.modules.file_analysis import ArchiveAnalysis, ArchiveAnalyzer, AutoItAnalyzer, De4dotAnalyzer, ExifAnalyzer, FileHashAnalysis, FileHashAnalyzer, FileTypeAnalysis, FileTypeAnalyzer, HTMLDataURLAnalysis, HTMLDataURLAnalyzer, LnkParseAnalyzer, OCRAnalysis, OCRAnalyzer, QRCodeAnalysis, QRCodeAnalyzer, URLExtractionAnalysis, URLExtractionAnalyzer
 from saq.modules.file_analysis.dotnet import De4dotAnalysis
 
 from saq.modules.adapter import AnalysisModuleAdapter
@@ -475,67 +475,6 @@ def test_one_file_in_zip_detection(datadir):
 
 
 
-
-@pytest.mark.unit
-def test_synchrony_analyzer(datadir, test_context, monkeypatch):
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-    observable = root.add_file_observable(datadir / "sample_obsfucated_javascript.js")
-    
-    # Mock FileTypeAnalysis to return a non-JSON mime type
-    class MockFileTypeAnalysis:
-        def __init__(self):
-            self.mime_type = "text/plain"
-    
-    def mock_wait_for_analysis(observable, analysis_class):
-        if analysis_class.__name__ == 'FileTypeAnalysis':
-            return MockFileTypeAnalysis()
-
-        return None
-    
-    synchrony_analyzer = SynchronyFileAnalyzer(
-        context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_SYNCHRONY))
-    monkeypatch.setattr(synchrony_analyzer, "wait_for_analysis", mock_wait_for_analysis)
-    analyzer = AnalysisModuleAdapter(synchrony_analyzer)
-    
-    result = analyzer.execute_analysis(observable)
-    assert result == AnalysisExecutionResult.COMPLETED
-    analysis = observable.get_and_load_analysis(SynchronyFileAnalysis)
-    assert isinstance(analysis, SynchronyFileAnalysis)
-    assert analysis.returncode == 0
-    assert len(analysis.extracted_files) == 1
-    assert os.path.basename(analysis.extracted_files[0]).startswith("synchrony-")
-
-@pytest.mark.unit
-def test_synchrony_analyzer_skips_json_files(datadir, test_context, monkeypatch):
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-    observable = root.add_file_observable(datadir / "sample_obsfucated_javascript.js")
-    
-    # mock FileTypeAnalysis to return JSON mime type
-    class MockFileTypeAnalysis:
-        def __init__(self):
-            self.mime_type = "application/json"
-    
-    def mock_wait_for_analysis(observable, analysis_class):
-        if analysis_class.__name__ == 'FileTypeAnalysis':
-            return MockFileTypeAnalysis()
-
-        return None
-    
-    synchrony_analyzer = SynchronyFileAnalyzer(
-        context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_SYNCHRONY))
-    monkeypatch.setattr(synchrony_analyzer, "wait_for_analysis", mock_wait_for_analysis)
-    analyzer = AnalysisModuleAdapter(synchrony_analyzer)
-    
-    result = analyzer.execute_analysis(observable)
-    assert result == AnalysisExecutionResult.COMPLETED
-    analysis = observable.get_and_load_analysis(SynchronyFileAnalysis)
-
-    # should be None because JSON files are skipped
-    assert analysis is None
 
 @pytest.mark.unit
 def test_empty_file_hash(datadir, test_context):
