@@ -291,6 +291,7 @@ COPY --chown=ace:ace bro /opt/ace/bro
 COPY --chown=ace:ace cron /opt/ace/cron
 COPY --chown=ace:ace docker /opt/ace/docker
 COPY --chown=ace:ace phishkit /opt/ace/phishkit
+COPY --chown=ace:ace js_deobfuscator /opt/ace/js_deobfuscator
 COPY --chown=ace:ace saq /opt/ace/saq
 COPY --chown=ace:ace sql /opt/ace/sql
 COPY --chown=ace:ace tests /opt/ace/tests
