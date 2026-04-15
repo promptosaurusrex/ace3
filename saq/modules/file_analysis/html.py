@@ -10,6 +10,8 @@ from saq.analysis.analysis import Analysis
 from saq.constants import DIRECTIVE_CRAWL, F_FILE, F_URL, R_DOWNLOADED_FROM, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
+from saq.modules.file_analysis.ocr import OCRAnalyzer
+from saq.modules.file_analysis.qrcode import QRCodeAnalyzer
 from saq.observables.file import FileObservable
 from saq.util.filesystem import map_mimetype_to_file_ext
 from saq.util.strings import format_item_list_for_summary
@@ -322,6 +324,10 @@ class HTMLDataURLAnalyzer(AnalysisModule):
                     file_observable.add_relationship(R_EXTRACTED_FROM, _file)
                     # don't recurse on extracted document
                     file_observable.exclude_analysis(self)
+                    # most data URLs are images and we don't need to run expensive OCR/QR analyses on them
+                    file_observable.exclude_analysis(OCRAnalyzer)
+                    file_observable.exclude_analysis(QRCodeAnalyzer)
+
                     file_observable.add_yara_meta("type", "document.html.embedded")
                     analysis.count += 1
 
