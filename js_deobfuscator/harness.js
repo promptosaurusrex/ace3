@@ -96,7 +96,7 @@ function safeStringify(value) {
       if (src.startsWith('[') && src.endsWith(']')) return src;
       if (src.includes('[native code]')) return '[native function]';
       if (src.length > 2048) {
-        return JSON.stringify(src.slice(0, 2048) + '…[truncated]');
+        return JSON.stringify(src.slice(0, 2048) + '...[truncated]');
       }
       return src;
     } catch (_) {
@@ -222,7 +222,7 @@ for (let i = 0; i < secondaryScripts.length; i++) {
 // Downstream URL extraction just needs the string values to be visible in
 // plaintext, so we render them as JS-ish assignments.
 const lines = [];
-lines.push('// ACE3 javascript deobfuscator — reconstructed from sandbox trace');
+lines.push('// ACE3 javascript deobfuscator -- reconstructed from sandbox trace');
 lines.push(`// source: ${INPUT_PATH}`);
 lines.push(`// webcrack static pass: ${webcrackStatus}`);
 lines.push('');
@@ -250,16 +250,23 @@ if (secondaryScripts.length) {
     lines.push('');
   }
 }
-// Also emit the webcracked source (or raw source if webcrack skipped) at the
-// tail of the output, wrapped in an `if (false)` block so it doesn't fight
-// with the trace lines above if anyone tries to lint-check the file. This
-// gives downstream URL/IOC extractors the full deobfuscated body to scan, not
-// just the events we captured through the recorder.
-lines.push('');
-lines.push('// --- deobfuscated source (post-webcrack) ---');
-lines.push('if (false) {');
-lines.push(SRC);
-lines.push('}');
+// Only append the webcracked source tail when webcrack materially changed
+// it. On "cosmetic only" / "skipped" / "failed" runs the tail is just the
+// raw obfuscated blob (or a trivially reformatted version), which (a)
+// provides zero additional analyst value beyond the sandbox trace, and (b)
+// can poison downstream URL / IOC extractors that try to parse the whole
+// file — notably urlfinderlib feeds the content to an lxml HTML parser that
+// chokes on huge embedded string literals. Dropping the tail in the
+// non-"applied" cases keeps the emitted file small, ASCII-clean, and
+// trivially parseable while preserving the tail for the field_btn1-style
+// obfuscator.io case where it's genuinely useful.
+if (webcrackStatus === 'applied') {
+  lines.push('');
+  lines.push('// --- deobfuscated source (post-webcrack) ---');
+  lines.push('if (false) {');
+  lines.push(SRC);
+  lines.push('}');
+}
 if (runError) {
   lines.push('');
   lines.push(`// run error: ${runError}`);
