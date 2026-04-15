@@ -1,25 +1,81 @@
 // JavaScript deobfuscation harness for ACE3.
 //
-// Usage: node js_deobfuscator.js <input_path> <output_path>
+// Usage: node harness.js <input_path> <output_path>
 //
-// Runs the input script inside a node vm sandbox with stubbed browser
-// globals. Every read and write the script performs against those globals
-// is recorded via Proxy traps. At the end, the recorded events are written
-// to <output_path> as a pseudo-JS listing that downstream ACE modules can
-// URL-extract from, and a JSON status report is printed to stdout.
+// Two-stage pipeline:
+//   1. Static pass — webcrack resolves string-table indirection, constant-
+//      folds JSFuck-style expressions, beautifies, and prunes dead code.
+//      Uses a node:vm-backed custom sandbox so we don't pull in the
+//      isolated-vm native addon.
+//   2. Dynamic pass — runs the cleaned source inside a node:vm sandbox
+//      with stubbed browser and Acrobat globals. Every read and write the
+//      script performs against those globals is recorded via Proxy traps.
+//
+// The reconstructed pseudo-JS trace is written to <output_path>, and a
+// JSON status report is printed to stdout. Webcrack is optional: if it's
+// unavailable (missing dependency, crash), we fall back to the raw source
+// and continue with the dynamic pass so the module still produces output.
 
-'use strict';
-
-const fs = require('fs');
-const vm = require('vm');
+import fs from 'node:fs';
+import vm from 'node:vm';
 
 const [, , INPUT_PATH, OUTPUT_PATH] = process.argv;
 if (!INPUT_PATH || !OUTPUT_PATH) {
-  process.stdout.write(JSON.stringify({ status: 'error', error: 'usage: js_deobfuscator.js <input> <output>' }));
+  process.stdout.write(JSON.stringify({ status: 'error', error: 'usage: harness.js <input> <output>' }));
   process.exit(2);
 }
 
-const SRC = fs.readFileSync(INPUT_PATH, 'utf8');
+let SRC = fs.readFileSync(INPUT_PATH, 'utf8');
+// status values:
+//   "skipped"                   — webcrack not available / not tried
+//   "applied"                   — webcrack ran and materially changed source
+//   "applied (cosmetic only)"   — webcrack ran but deltas are < 2% of size,
+//                                 meaning the tail block is unlikely to reveal
+//                                 anything new to an analyst
+//   "failed: <reason>"          — webcrack threw
+let webcrackStatus = 'skipped';
+let webcrackError = null;
+
+// ---------------------------------------------------------------------------
+// Stage 1 — webcrack static pre-pass
+// ---------------------------------------------------------------------------
+try {
+  const { webcrack } = await import('webcrack');
+  // Pass a custom sandbox so webcrack runs the obfuscator's string-decoder
+  // function through node:vm instead of isolated-vm. isolated-vm needs a
+  // native C++ build which we don't want in the scanner image. Our dynamic
+  // stage runs in vm anyway, so pulling in a second sandbox runtime buys
+  // nothing.
+  const nodeVmSandbox = async (code) => {
+    const ctx = vm.createContext({});
+    return vm.runInContext(code, ctx, { timeout: 10000 });
+  };
+  const result = await webcrack(SRC, {
+    sandbox: nodeVmSandbox,
+    jsx: false,
+    unpack: false,
+    mangle: false,
+  });
+  if (result && typeof result.code === 'string' && result.code.length > 0) {
+    // Classify: did webcrack change anything meaningful, or just reformat /
+    // constant-fold a few tokens? Compare whitespace-stripped lengths — if
+    // the relative delta is under 2%, the tail block is unlikely to help
+    // an analyst (webcrack hit a JSFuck-only or eval-wrapped sample where
+    // the sandbox does the real work) and we should say so in the header.
+    const rawCompact = SRC.replace(/\s+/g, '');
+    const newCompact = result.code.replace(/\s+/g, '');
+    const delta = Math.abs(newCompact.length - rawCompact.length) / Math.max(rawCompact.length, 1);
+    webcrackStatus = (delta < 0.02) ? 'applied (cosmetic only)' : 'applied';
+    SRC = result.code;
+  }
+} catch (e) {
+  webcrackError = e && (e.message || String(e));
+  webcrackStatus = `failed: ${webcrackError}`;
+}
+
+// ---------------------------------------------------------------------------
+// Stage 2 — dynamic sandbox
+// ---------------------------------------------------------------------------
 const events = [];
 const secondaryScripts = [];
 
@@ -29,7 +85,24 @@ function safeStringify(value) {
   const t = typeof value;
   if (t === 'string') return JSON.stringify(value);
   if (t === 'number' || t === 'boolean') return String(value);
-  if (t === 'function') return '[function]';
+  if (t === 'function') {
+    try {
+      // String(value) hits the recorder Proxy's toString trap (returning
+      // `[label]` for our wrappers) or calls Function.prototype.toString on a
+      // real user-written function (returning its source). That lets us
+      // surface cleartext function bodies the malware author actually wrote
+      // while still rendering recorders as readable labels.
+      const src = String(value);
+      if (src.startsWith('[') && src.endsWith(']')) return src;
+      if (src.includes('[native code]')) return '[native function]';
+      if (src.length > 2048) {
+        return JSON.stringify(src.slice(0, 2048) + '…[truncated]');
+      }
+      return src;
+    } catch (_) {
+      return '[function]';
+    }
+  }
   try {
     return JSON.stringify(value);
   } catch (_) {
@@ -151,6 +224,7 @@ for (let i = 0; i < secondaryScripts.length; i++) {
 const lines = [];
 lines.push('// ACE3 javascript deobfuscator — reconstructed from sandbox trace');
 lines.push(`// source: ${INPUT_PATH}`);
+lines.push(`// webcrack static pass: ${webcrackStatus}`);
 lines.push('');
 for (const ev of events) {
   if (ev.kind === 'set') {
@@ -176,6 +250,16 @@ if (secondaryScripts.length) {
     lines.push('');
   }
 }
+// Also emit the webcracked source (or raw source if webcrack skipped) at the
+// tail of the output, wrapped in an `if (false)` block so it doesn't fight
+// with the trace lines above if anyone tries to lint-check the file. This
+// gives downstream URL/IOC extractors the full deobfuscated body to scan, not
+// just the events we captured through the recorder.
+lines.push('');
+lines.push('// --- deobfuscated source (post-webcrack) ---');
+lines.push('if (false) {');
+lines.push(SRC);
+lines.push('}');
 if (runError) {
   lines.push('');
   lines.push(`// run error: ${runError}`);
@@ -188,4 +272,6 @@ process.stdout.write(JSON.stringify({
   event_count: events.length,
   secondary_script_count: secondaryScripts.length,
   error: runError,
+  webcrack_status: webcrackStatus,
+  webcrack_error: webcrackError,
 }));

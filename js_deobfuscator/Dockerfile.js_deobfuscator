@@ -6,6 +6,13 @@ FROM ${NODE_DOCKER_IMAGE}
 
 RUN mkdir -p /opt/app /export
 
+# Install webcrack (and its pure-JS deps) for the static deobfuscation
+# pre-pass. --ignore-scripts skips the native build of isolated-vm; our
+# harness supplies a node:vm-backed custom sandbox to webcrack instead, so
+# that native addon is not needed.
+COPY js_deobfuscator/package.json /opt/app/package.json
+RUN cd /opt/app && npm install --ignore-scripts --omit=dev && npm cache clean --force
+
 COPY js_deobfuscator/harness.js /opt/app/harness.js
 
 # /export is mounted as a shared volume at runtime so the manager can
