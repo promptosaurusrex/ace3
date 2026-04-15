@@ -304,10 +304,10 @@ class PhishkitAnalyzer(AnalysisModule):
                         match = re.match(r"MARKER URL: (.+)$", line.strip())
                         if match:
                             url = URL(match.group(1).strip())
-                            if url.value:
+                            if url.value and not url.value.startswith("file:///"):
                                 obs = analysis.add_observable_by_spec(F_URL, url.value)
                                 if obs:
-                                    obs.display_type = "Request URL"
+                                    obs.display_type = "Phishkit Request URL"
             except Exception as e:
                 logging.error(f"failed to extract MARKER URLs from dom.html for {observable}: {e}")
 
