@@ -14,7 +14,7 @@ from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.analysis.presenter.analysis_presenter import AnalysisPresenter, register_analysis_presenter
 from saq.configuration.config import get_service_config
-from saq.constants import SERVICE_YARA_SCANNER, AnalysisExecutionResult, DIRECTIVE_NO_SCAN, DIRECTIVE_SANDBOX, F_FILE, F_INDICATOR, F_YARA_RULE, F_YARA_STRING, create_yara_string
+from saq.constants import SERVICE_YARA_SCANNER, AnalysisExecutionResult, DIRECTIVE_NO_SCAN, DIRECTIVE_SANDBOX, F_FILE, F_INDICATOR, F_SIGNATURE_ID, F_YARA_RULE, F_YARA_STRING, create_yara_string
 from saq.database import Observable as db_Observable
 from saq.database.pool import get_db
 from saq.environment import get_base_dir, get_data_dir
@@ -359,11 +359,20 @@ class YaraScanner_v3_4(AnalysisModule):
         if not analysis:
             return AnalysisExecutionResult.COMPLETED
 
+        emitted_signature_ids: set[str] = set()
         for yara_result in analysis.scan_results:
             # Add the matching Yara rule as an observable
             rule_observable = analysis.add_observable_by_spec(F_YARA_RULE, yara_result['rule'])
             if rule_observable is None:
                 continue
+
+            # Emit a signature_id observable carrying the rule's uuid meta field,
+            # so analysts can filter alerts in the GUI by rule uuid. Most rules
+            # have one; the few that don't are skipped silently.
+            rule_uuid = (yara_result.get('meta') or {}).get('uuid')
+            if rule_uuid and rule_uuid not in emitted_signature_ids:
+                analysis.add_observable_by_spec(F_SIGNATURE_ID, rule_uuid)
+                emitted_signature_ids.add(rule_uuid)
 
             # If the thing that matched was a for_detection observable, then add that observable to the alert as well
             if 'strings' in yara_result:

@@ -10,7 +10,7 @@ import yaml
 from pydantic import Field
 
 from saq.analysis.analysis import Analysis
-from saq.constants import DIRECTIVE_YARA_META_PREFIX, AnalysisExecutionResult
+from saq.constants import DIRECTIVE_YARA_META_PREFIX, F_SIGNATURE_ID, AnalysisExecutionResult
 from saq.environment import get_base_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -292,6 +292,7 @@ class RuleActions:
 @dataclass
 class Rule:
     name: str
+    uuid: str
     description: str
     enabled: bool
     conditions: RuleConditions
@@ -342,6 +343,13 @@ class ObservableModifierAnalyzer(AnalysisModule):
 
     def _parse_rule(self, rule_data: dict) -> Optional[Rule]:
         name = rule_data.get("name", "unnamed")
+        rule_uuid = rule_data.get("uuid")
+        if not rule_uuid:
+            logging.error(
+                f"observable modifier rule '{name}' is missing required 'uuid' field -- "
+                f"refusing to load this rule"
+            )
+            return None
         description = rule_data.get("description", "")
         enabled = rule_data.get("enabled", True)
         phase = rule_data.get("phase", "post")
@@ -424,6 +432,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
 
         return Rule(
             name=name,
+            uuid=rule_uuid,
             description=description,
             enabled=enabled,
             conditions=conditions,
@@ -507,6 +516,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
                 applied = rule.actions.apply(observable)
                 matched_rules.append({
                     "name": rule.name,
+                    "uuid": rule.uuid,
                     "actions_applied": applied,
                 })
                 logging.info(f"observable modifier pre-phase rule '{rule.name}' matched {observable}")
@@ -542,6 +552,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
                 applied = rule.actions.apply(observable)
                 matched_rules.append({
                     "name": rule.name,
+                    "uuid": rule.uuid,
                     "actions_applied": applied,
                 })
                 logging.info(f"observable modifier rule '{rule.name}' matched {observable}")
@@ -582,5 +593,14 @@ class ObservableModifierAnalyzer(AnalysisModule):
             analysis = self.create_analysis(observable)
             analysis.details["matched_rules"] = matched_rules
             analysis.summary = analysis.generate_summary()
+
+            # Emit a signature_id observable for each distinct matched rule uuid.
+            # Dedup protects against the same rule matching in both pre and post phases.
+            emitted_uuids: set[str] = set()
+            for match in matched_rules:
+                rule_uuid = match.get("uuid")
+                if rule_uuid and rule_uuid not in emitted_uuids:
+                    analysis.add_observable_by_spec(F_SIGNATURE_ID, rule_uuid)
+                    emitted_uuids.add(rule_uuid)
 
         return AnalysisExecutionResult.COMPLETED
