@@ -11,13 +11,13 @@ from saq.constants import (
     AnalysisExecutionResult,
     DIRECTIVE_CRAWL_EXTRACTED_URLS,
     DIRECTIVE_EXTRACT_URLS,
+    DIRECTIVE_YARA_META_PREFIX,
     F_FILE,
     R_EXTRACTED_FROM,
 )
 from saq.js_deobfuscator import deobfuscate_file
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
-from saq.modules.file_analysis.is_file_type import is_javascript_file
 from saq.observables.file import FileObservable
 from saq.util.filesystem import create_temporary_directory
 from saq.util.strings import format_item_list_for_summary
@@ -149,9 +149,14 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
         return F_FILE
 
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
-        from saq.modules.file_analysis.file_type import FileTypeAnalysis
-
         local_file_path = _file.full_path
+
+        # run on files tagged as JavaScript by upstream extraction modules
+        # (html_js_extraction, pdf, ole, etc.) OR files with a .js extension
+        # (covers manually uploaded JS files that have no upstream tagger)
+        has_js_tag = _file.has_directive(f"{DIRECTIVE_YARA_META_PREFIX}type=script.javascript")
+        if not has_js_tag and not _file.file_name.endswith(".js"):
+            return AnalysisExecutionResult.COMPLETED
 
         # don't re-analyze our own output
         if _file.file_name.startswith(DEOBFUSCATED_PREFIX):
@@ -163,20 +168,6 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
 
         if os.path.getsize(local_file_path) == 0:
             logging.debug(f"local file {local_file_path} is empty")
-            return AnalysisExecutionResult.COMPLETED
-
-        if _file.file_name.endswith(".json"):
-            return AnalysisExecutionResult.COMPLETED
-
-        file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
-        if file_type_analysis is not None and file_type_analysis.mime_type == "application/json":
-            return AnalysisExecutionResult.COMPLETED
-
-        if _file.file_name == "exiftool.out":
-            return AnalysisExecutionResult.COMPLETED
-
-        if not is_javascript_file(local_file_path):
-            logging.debug(f"local file {local_file_path} is not a javascript file")
             return AnalysisExecutionResult.COMPLETED
 
         _file.add_tag("js")
@@ -230,6 +221,13 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
                     logging.debug(f"failed to read report.json from deobfuscator: {e}")
             elif basename == "deobfuscated.js":
                 deobfuscated_src = result_file
+
+        # if the harness ran without a hard failure (exit_code 0, no
+        # exception), the file is legitimate JavaScript regardless of whether
+        # we emit a deobfuscated observable. tag the source so downstream
+        # modules (yara rules, url extractor text/plain override) see it.
+        if analysis.exit_code == 0 and not analysis.error and not has_js_tag:
+            _file.add_yara_meta("type", "script.javascript")
 
         if analysis.exit_code != 0:
             logging.warning(
