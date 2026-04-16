@@ -66,6 +66,31 @@ def is_nt_path(path):
 
     return True
 
+RE_ESCAPED_QUOTED_DRIVE_PATH = re.compile(r'\\"([a-zA-Z]:[^"]*?)\\"')
+RE_ESCAPED_QUOTED_UNC_PATH = re.compile(r'\\"(\\\\[^\\]+\\[^"]*?)\\"')
+RE_QUOTED_DRIVE_PATH = re.compile(r'(?<!\\)"([a-zA-Z]:[^"]*?)(?<!\\)"')
+RE_QUOTED_UNC_PATH = re.compile(r'(?<!\\)"(\\\\[^\\]+\\[^"]*?)(?<!\\)"')
+
+def find_nt_paths_in_text(text):
+    """Find Windows file paths in arbitrary text using regex.
+
+    This handles paths embedded in script bodies where shlex tokenization fails,
+    such as PowerShell -Command arguments with escaped quotes (\\"...\\").
+    """
+    paths = []
+    seen = set()
+
+    for pattern in [RE_ESCAPED_QUOTED_DRIVE_PATH, RE_ESCAPED_QUOTED_UNC_PATH,
+                    RE_QUOTED_DRIVE_PATH, RE_QUOTED_UNC_PATH]:
+        for match in pattern.finditer(text):
+            path = match.group(1)
+            if path not in seen and is_nt_path(path):
+                paths.append(path)
+                seen.add(path)
+
+    return paths
+
+
 def safe_file_name(file_name):
     """Returns a file name with all path separator and directory traversal replaced with underscores."""
     return re.sub('_+', '_', file_name.replace('\\', '_').replace('../', '_').replace('/', '_').replace('~', '_'))

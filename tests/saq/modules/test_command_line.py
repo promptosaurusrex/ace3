@@ -38,6 +38,37 @@ def test_command_line_analyzer(root_analysis):
 
 
 @pytest.mark.integration
+def test_command_line_analyzer_powershell_command_with_escaped_quotes(root_analysis):
+    """test that file paths embedded in PowerShell -Command script bodies with escaped quotes are extracted"""
+    root_analysis.analysis_mode = "test_groups"
+
+    command_line_value = r'powershell.exe -Command "$jarFilePath = \"C:\Program Files (x86)\Hive Streaming\application\lib\log4j-core-2.20.0.jar\"; Copy-Item $jarFilePath -Destination \"C:\Temp\output\""'
+    command_line_observable = root_analysis.add_observable_by_spec(F_COMMAND_LINE, command_line_value)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('command_line_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    command_line_observable = root_analysis.get_observable(command_line_observable.uuid)
+    assert command_line_observable
+    analysis = command_line_observable.get_and_load_analysis(CommandLineAnalysis)
+    assert isinstance(analysis, CommandLineAnalysis)
+    assert analysis.load_details()
+    assert r'C:\Program Files (x86)\Hive Streaming\application\lib\log4j-core-2.20.0.jar' in analysis.file_paths
+    assert r'C:\Temp\output' in analysis.file_paths
+    # C:\Program should NOT be extracted — it is a prefix substring of the full path
+    assert r'C:\Program' not in analysis.file_paths
+    assert len(analysis.file_paths) == 2
+
+    assert analysis.find_observable(lambda o: o.type == F_FILE_PATH and o.value == r'C:\Program Files (x86)\Hive Streaming\application\lib\log4j-core-2.20.0.jar')
+    assert analysis.find_observable(lambda o: o.type == F_FILE_PATH and o.value == r'C:\Temp\output')
+    assert not analysis.find_observable(lambda o: o.type == F_FILE_PATH and o.value == r'C:\Program')
+
+
+@pytest.mark.integration
 def test_command_line_base64_extraction_powershell_encoded_command(root_analysis):
     """test that base64 encoded payloads in powershell -EncodedCommand are extracted and decoded"""
     root_analysis.analysis_mode = "test_groups"
