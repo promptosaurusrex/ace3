@@ -444,6 +444,44 @@ def test_file_observable_lt_sorts_by_file_path():
 
 
 @pytest.mark.unit
+def test_copy_directives_to_skips_fixed_directives():
+    """Fixed directives defined in config should not be copied between observables."""
+    root = create_root_analysis()
+    source = root.add_observable_by_spec(F_TEST, "source")
+    target = root.add_observable_by_spec(F_TEST, "target")
+
+    source.add_directive("extract_urls")
+    source.add_directive("archive")
+    source.add_directive("sandbox")
+
+    get_config().fixed_directives = ["archive"]
+
+    source.copy_directives_to(target)
+
+    assert target.has_directive("extract_urls")
+    assert not target.has_directive("archive")
+    assert target.has_directive("sandbox")
+
+
+@pytest.mark.unit
+def test_copy_directives_to_copies_all_when_no_fixed_directives():
+    """When no fixed directives are configured, all directives should be copied."""
+    root = create_root_analysis()
+    source = root.add_observable_by_spec(F_TEST, "source2")
+    target = root.add_observable_by_spec(F_TEST, "target2")
+
+    source.add_directive("extract_urls")
+    source.add_directive("archive")
+
+    get_config().fixed_directives = []
+
+    source.copy_directives_to(target)
+
+    assert target.has_directive("extract_urls")
+    assert target.has_directive("archive")
+
+
+@pytest.mark.unit
 def test_observable_lt_different_types_sort_by_type():
     """Cross-type comparison is unchanged — it still sorts by type first."""
     root = create_root_analysis()

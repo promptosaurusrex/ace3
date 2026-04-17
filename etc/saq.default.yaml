@@ -113,6 +113,10 @@ global:
   # leave empty to not use a proxy at all
   default_proxy:
 
+# directives that cannot be copied between observables via copy_directives_to
+fixed_directives:
+  - archive
+
 # LLM settings
 llm:
   # the embedding model to use for vectorization

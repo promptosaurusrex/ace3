@@ -416,6 +416,7 @@ class FileCollectorConfig(BaseModel):
 
 class ACEConfig(BaseModel):
     global_settings: GlobalConfig = Field(alias="global")
+    fixed_directives: list[str] = Field(default_factory=list, description="Directives that cannot be copied between observables via copy_directives_to.")
     llm: Optional[LLMConfig] = None
     monitor: Optional[MonitorConfig] = None
     rabbitmq: Optional[RabbitMQConfig] = None
