@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.35] - 2026-04-17
+
+- [Minor improvements for adding phishkit MARKER URL observables](https://github.com/ACE-Collective/ace3/pull/144)
+- [Various JS deobfuscation improvements](https://github.com/ACE-Collective/ace3/pull/145)
+- [Makes command_line analysis module a bit more robust](https://github.com/ACE-Collective/ace3/pull/146)
+
 ## [3.0.34] - 2026-04-15
 
 - [Require observable modifier rule uuid](https://github.com/ACE-Collective/ace3/pull/138)
