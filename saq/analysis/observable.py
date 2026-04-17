@@ -256,10 +256,12 @@ class Observable(BaseNode):
             logging.debug("removed directive {} from {}".format(directive, self))
 
     def copy_directives_to(self, target):
-        """Copies all directives applied to this Observable to another Observable."""
+        """Copies all directives applied to this Observable to another Observable, except fixed directives."""
         assert isinstance(target, Observable)
+        fixed = get_config().fixed_directives
         for directive in self.directives:
-            target.add_directive(directive)
+            if directive not in fixed:
+                target.add_directive(directive)
 
     @property
     def redirection(self):
