@@ -1,7 +1,8 @@
 import pytest
 
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_HTML_JS_EXTRACTION, F_FILE, F_URI_PATH, F_URL, R_EXTRACTED_FROM, AnalysisExecutionResult
+from saq.constants import ANALYSIS_MODULE_HTML_JS_EXTRACTION, DIRECTIVE_PREVIEW, DIRECTIVE_YARA_META_PREFIX, F_FILE, F_URI_PATH, F_URL, R_EXTRACTED_FROM, AnalysisExecutionResult
+from saq.modules.file_analysis.file_type import FileTypeAnalysis
 from saq.modules.file_analysis.html_js_extraction import (
     HTMLJavaScriptExtractor,
     HTMLJavaScriptExtractionAnalysis,
@@ -480,3 +481,276 @@ def test_file_naming(tmpdir, test_context):
         # Filename should match pattern: sample_js_<type>_<index>_<hash>.js
         assert file_obs.file_name.startswith("sample_js_")
         assert file_obs.file_name.endswith(".js")
+
+
+def _make_mock_file_type_analysis(mime_type):
+    """Create a mock FileTypeAnalysis with the given MIME type."""
+    analysis = FileTypeAnalysis()
+    analysis.details = {'type': None, 'mime': mime_type}
+    return analysis
+
+
+@pytest.mark.unit
+def test_svg_defanged_extension_with_mime_fallback(monkeypatch, tmpdir, test_context):
+    """Test that .svg_ files are processed when MIME type matches."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    svg_content = """<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+    <script type="text/javascript">
+        <![CDATA[
+        function maliciousFunction() {
+            alert("Defanged SVG test");
+        }
+        ]]>
+    </script>
+</svg>"""
+
+    target_path = root.create_file_path("ATT021.svg_")
+    with open(target_path, "w") as fp:
+        fp.write(svg_content)
+
+    observable = root.add_file_observable(target_path)
+
+    analyzer = AnalysisModuleAdapter(HTMLJavaScriptExtractor(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
+    analyzer.root = root
+
+    mock_analysis = _make_mock_file_type_analysis('image/svg+xml')
+
+    def mock_wait_for_analysis(observable, analysis_type):
+        return mock_analysis
+
+    monkeypatch.setattr(analyzer._module, "wait_for_analysis", mock_wait_for_analysis)
+
+    result = analyzer.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    assert isinstance(analysis, HTMLJavaScriptExtractionAnalysis)
+    assert len(analysis.extracted_files) >= 1
+
+
+@pytest.mark.unit
+def test_svg_ecmascript_type(tmpdir, test_context):
+    """Test that text/ecmascript script type is extracted from SVG files."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    svg_content = """<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+    <script type="text/ecmascript">
+        <![CDATA[
+        var payload = "obfuscated content here";
+        (0,eval)(payload);
+        ]]>
+    </script>
+</svg>"""
+
+    target_path = root.create_file_path("test_ecmascript.svg")
+    with open(target_path, "w") as fp:
+        fp.write(svg_content)
+
+    observable = root.add_file_observable(target_path)
+
+    analyzer = AnalysisModuleAdapter(HTMLJavaScriptExtractor(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
+    analyzer.root = root
+
+    result = analyzer.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    assert isinstance(analysis, HTMLJavaScriptExtractionAnalysis)
+    assert len(analysis.extracted_files) == 1
+
+    # Verify script.javascript yara meta is set
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    expected_directive = f"{DIRECTIVE_YARA_META_PREFIX}type=script.javascript"
+    assert expected_directive in file_observables[0].directives
+
+
+@pytest.mark.unit
+def test_svg_defanged_extension_with_ecmascript(monkeypatch, tmpdir, test_context):
+    """Test .svg_ file with text/ecmascript -- matches the real phishing alert."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    svg_content = """<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     viewBox="0 0 1 1" preserveAspectRatio="none"
+     style="position:fixed;top:0;left:0;width:100%;height:100%;opacity:0;pointer-events:none">
+<script type="text/ecmascript">
+<![CDATA[
+window.dawa='$dGVzdEB0ZXN0LmNvbQ==';
+(function(){
+var D=function(e){return atob(e)};
+var _e="Y29uc29sZS5sb2coIm1hbGljaW91cyBwYXlsb2FkIik=";
+var _c=D(_e);
+if(_c)(0,eval)(_c);
+})();
+]]></script>
+</svg>"""
+
+    target_path = root.create_file_path("ATT021.svg_")
+    with open(target_path, "w") as fp:
+        fp.write(svg_content)
+
+    observable = root.add_file_observable(target_path)
+
+    analyzer = AnalysisModuleAdapter(HTMLJavaScriptExtractor(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
+    analyzer.root = root
+
+    mock_analysis = _make_mock_file_type_analysis('image/svg+xml')
+
+    def mock_wait_for_analysis(observable, analysis_type):
+        return mock_analysis
+
+    monkeypatch.setattr(analyzer._module, "wait_for_analysis", mock_wait_for_analysis)
+
+    result = analyzer.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    assert isinstance(analysis, HTMLJavaScriptExtractionAnalysis)
+    assert len(analysis.extracted_files) == 1
+
+    # Verify script.javascript yara meta is set
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    expected_directive = f"{DIRECTIVE_YARA_META_PREFIX}type=script.javascript"
+    assert expected_directive in file_observables[0].directives
+
+    # Verify CDATA markers are stripped from extracted content
+    extracted_path = file_observables[0].full_path
+    with open(extracted_path, 'r') as fp:
+        content = fp.read()
+    assert '<![CDATA[' not in content
+    assert ']]>' not in content
+    assert "window.dawa=" in content
+
+    # Verify preview directive is NOT inherited by extracted scripts
+    assert not file_observables[0].has_directive(DIRECTIVE_PREVIEW)
+
+
+@pytest.mark.unit
+def test_svg_cdata_stripped_from_extracted_scripts(tmpdir, test_context):
+    """Test that CDATA wrappers are stripped from extracted SVG script content."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    svg_content = """<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+    <script type="text/javascript">
+        <![CDATA[
+        function testFunction() {
+            return "clean content";
+        }
+        ]]>
+    </script>
+</svg>"""
+
+    target_path = root.create_file_path("test_cdata.svg")
+    with open(target_path, "w") as fp:
+        fp.write(svg_content)
+
+    observable = root.add_file_observable(target_path)
+
+    analyzer = AnalysisModuleAdapter(HTMLJavaScriptExtractor(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
+    analyzer.root = root
+
+    result = analyzer.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    assert isinstance(analysis, HTMLJavaScriptExtractionAnalysis)
+    assert len(analysis.extracted_files) == 1
+
+    # Read the extracted file and verify no CDATA markers
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    extracted_path = file_observables[0].full_path
+    with open(extracted_path, 'r') as fp:
+        content = fp.read()
+    assert '<![CDATA[' not in content
+    assert ']]>' not in content
+    assert 'function testFunction()' in content
+
+
+@pytest.mark.unit
+def test_preview_directive_not_inherited(tmpdir, test_context):
+    """Test that extracted scripts do not inherit the preview directive."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    html_content = """<!DOCTYPE html>
+<html>
+<head>
+    <script>console.log("test preview");</script>
+</head>
+<body></body>
+</html>"""
+
+    target_path = root.create_file_path("test_preview.html")
+    with open(target_path, "w") as fp:
+        fp.write(html_content)
+
+    observable = root.add_file_observable(target_path)
+    # Simulate the parent file having the preview directive (as email attachments do)
+    observable.add_directive(DIRECTIVE_PREVIEW)
+
+    analyzer = AnalysisModuleAdapter(HTMLJavaScriptExtractor(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
+    analyzer.root = root
+
+    result = analyzer.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    assert isinstance(analysis, HTMLJavaScriptExtractionAnalysis)
+    assert len(analysis.extracted_files) == 1
+
+    # Extracted script should NOT have preview directive
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    assert not file_observables[0].has_directive(DIRECTIVE_PREVIEW)
+
+
+@pytest.mark.unit
+def test_unknown_extension_no_mime_skipped(monkeypatch, tmpdir, test_context):
+    """Test that files with unknown extension and non-HTML MIME type are skipped."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    target_path = root.create_file_path("document.pdf")
+    with open(target_path, "w") as fp:
+        fp.write("<script>alert('sneaky')</script>")
+
+    observable = root.add_file_observable(target_path)
+
+    analyzer = AnalysisModuleAdapter(HTMLJavaScriptExtractor(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
+    analyzer.root = root
+
+    mock_analysis = _make_mock_file_type_analysis('application/pdf')
+
+    def mock_wait_for_analysis(observable, analysis_type):
+        return mock_analysis
+
+    monkeypatch.setattr(analyzer._module, "wait_for_analysis", mock_wait_for_analysis)
+
+    result = analyzer.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+    # No analysis should be created for non-HTML files
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    assert analysis is None

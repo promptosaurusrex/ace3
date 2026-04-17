@@ -7,7 +7,7 @@ from typing import Type, override
 from pydantic import Field
 from urlfinderlib.url import URL
 from saq.analysis.analysis import Analysis
-from saq.constants import DIRECTIVE_CRAWL, DIRECTIVE_CRAWL_EXTRACTED_URLS, F_FILE, F_URI_PATH, F_URL, R_EXTRACTED_FROM, AnalysisExecutionResult
+from saq.constants import DIRECTIVE_CRAWL, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_PREVIEW, F_FILE, F_URI_PATH, F_URL, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.observables.file import FileObservable
@@ -182,19 +182,26 @@ class HTMLJavaScriptExtractor(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         # Check if file should be analyzed based on extension or MIME type
+        mime_type = None
         if not self._is_html_file(_file):
-            return AnalysisExecutionResult.COMPLETED
+            # Extension didn't match -- fall back to MIME type from FileTypeAnalysis
+            try:
+                file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
+                mime_type = file_type_analysis.mime_type if file_type_analysis else None
+            except Exception:
+                pass
+
+            if not mime_type or mime_type not in self.HTML_MIME_TYPES:
+                return AnalysisExecutionResult.COMPLETED
+        else:
+            # Extension matched -- still try to get MIME type for MHTML detection
+            try:
+                file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
+                mime_type = file_type_analysis.mime_type if file_type_analysis else None
+            except Exception:
+                pass
 
         logging.info(f"extracting JavaScript from {_file.file_name}")
-
-        # Try to get file type analysis for MIME type (optional)
-        mime_type = None
-        try:
-            file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
-            mime_type = file_type_analysis.mime_type if file_type_analysis else None
-        except Exception:
-            # File type analysis not available, continue with extension-based detection
-            pass
 
         # Determine if this is an MHTML file
         is_mhtml = self._is_mhtml_file(_file, mime_type)
@@ -345,7 +352,7 @@ class HTMLJavaScriptExtractor(AnalysisModule):
             script_type = script.get('type', 'text/javascript').lower()
 
             # Skip non-JavaScript scripts (e.g., application/json)
-            if script_type not in ['text/javascript', 'application/javascript', '']:
+            if script_type not in ['text/javascript', 'application/javascript', 'text/ecmascript', 'application/ecmascript', '']:
                 continue
 
             # Get script content
@@ -354,6 +361,10 @@ class HTMLJavaScriptExtractor(AnalysisModule):
                 continue
 
             script_content = script_content.strip()
+
+            # Strip CDATA wrappers that the lxml HTML parser preserves from XML/SVG files
+            if script_content.startswith('<![CDATA[') and script_content.endswith(']]>'):
+                script_content = script_content[9:-3].strip()
 
             # Skip empty or too-small scripts
             if len(script_content) < self.min_script_size:
@@ -490,6 +501,7 @@ class HTMLJavaScriptExtractor(AnalysisModule):
             file_observable.exclude_analysis(self)  # Don't re-analyze our own output
             file_observable.add_yara_meta("type", "script.javascript")
             _file.copy_directives_to(file_observable)
+            file_observable.remove_directive(DIRECTIVE_PREVIEW)
             tracking_list.append(file_observable.file_path)
             logging.debug(f"extracted {script_type} JavaScript to {filename}")
 

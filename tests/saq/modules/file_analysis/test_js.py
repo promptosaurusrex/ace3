@@ -20,6 +20,7 @@ from saq.constants import (
     AnalysisExecutionResult,
     DIRECTIVE_CRAWL_EXTRACTED_URLS,
     DIRECTIVE_EXTRACT_URLS,
+    DIRECTIVE_YARA_META_PREFIX,
     F_FILE,
     R_EXTRACTED_FROM,
 )
@@ -32,6 +33,7 @@ from saq.modules.file_analysis.js import (
 from tests.saq.helpers import create_root_analysis
 from tests.saq.test_util import create_test_context
 
+YARA_META_JS = f"{DIRECTIVE_YARA_META_PREFIX}type=script.javascript"
 
 HARNESS_PATH = os.path.normpath(
     os.path.join(
@@ -44,9 +46,7 @@ HARNESS_PATH = os.path.normpath(
 
 def _local_deobfuscate_file(file_path, output_dir, is_async=False, timeout=60, scanner_timeout=30):
     """Stand-in for saq.js_deobfuscator.deobfuscate_file that runs the
-    harness directly via node and writes the same output contract
-    (deobfuscated.js, std.out, std.err, exit.code, report.json) that the
-    real manager container produces."""
+    harness directly via node."""
     os.makedirs(output_dir, exist_ok=True)
     out_js = os.path.join(output_dir, "deobfuscated.js")
     proc = subprocess.run(
@@ -86,38 +86,25 @@ def patched_deobfuscate(monkeypatch):
     )
 
 
-def _build_analyzer(root, mime_type="text/plain", monkeypatch=None):
-    """Build the analyzer wired to a root, bypassing the FileTypeAnalysis wait."""
-
-    class _MockFileTypeAnalysis:
-        def __init__(self, mime):
-            self.mime_type = mime
-
+def _build_analyzer(root):
+    """Build the analyzer wired to a root."""
     raw_analyzer = JavaScriptDeobfuscationAnalyzer(
         context=create_test_context(root=root),
         config=get_analysis_module_config(ANALYSIS_MODULE_JAVASCRIPT_DEOBFUSCATION),
     )
-
-    def _mock_wait(observable, analysis_class, instance=None):
-        if analysis_class.__name__ == "FileTypeAnalysis":
-            return _MockFileTypeAnalysis(mime_type)
-        return None
-
-    if monkeypatch is not None:
-        monkeypatch.setattr(raw_analyzer, "wait_for_analysis", _mock_wait)
-
     return AnalysisModuleAdapter(raw_analyzer)
 
 
 @pytest.mark.unit
 def test_obfuscated_sample_is_deobfuscated(datadir, monkeypatch, patched_deobfuscate):
-    """The canonical obfuscator.io sample should produce a deobfuscated
-    sibling file marked for URL extraction and crawling."""
+    """Feeding the canonical obfuscator.io sample should produce a
+    deobfuscated sibling file marked for URL extraction and crawling."""
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     observable = root.add_file_observable(datadir / "sample_obsfucated_javascript.js")
+    observable.add_directive(YARA_META_JS)
 
-    analyzer = _build_analyzer(root, monkeypatch=monkeypatch)
+    analyzer = _build_analyzer(root)
     result = analyzer.execute_analysis(observable)
 
     assert result == AnalysisExecutionResult.COMPLETED
@@ -137,9 +124,6 @@ def test_obfuscated_sample_is_deobfuscated(datadir, monkeypatch, patched_deobfus
     assert emitted_obs.has_relationship(R_EXTRACTED_FROM)
     assert observable.has_tag("js")
 
-    # The sample writes strings via console.log; the cleartext "in loop"
-    # message is baked into the string table and should surface after
-    # sandbox execution.
     with open(emitted_obs.full_path, "r", encoding="utf-8") as fp:
         body = fp.read()
     assert "in loop" in body
@@ -152,8 +136,9 @@ def test_plain_js_emits_url_to_extracted_file(datadir, monkeypatch, patched_deob
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     observable = root.add_file_observable(datadir / "plain.js")
+    observable.add_directive(YARA_META_JS)
 
-    analyzer = _build_analyzer(root, monkeypatch=monkeypatch)
+    analyzer = _build_analyzer(root)
     result = analyzer.execute_analysis(observable)
 
     assert result == AnalysisExecutionResult.COMPLETED
@@ -174,16 +159,13 @@ def test_plain_js_emits_url_to_extracted_file(datadir, monkeypatch, patched_deob
 @pytest.mark.unit
 def test_acrobat_pdf_bracket_notation_js(datadir, monkeypatch, patched_deobfuscate):
     """A PDF-extracted sample that uses only bracket-notation calls on
-    Acrobat globals (app, util, SOAP, getField) — the failure mode from
-    alert 12c40141. This file has NO whole-word JS keywords, so it only
-    passes is_javascript_file() because of the \\w\\( regex alternative,
-    and it only deobfuscates because the harness pre-populates Acrobat
-    globals as recorders."""
+    Acrobat globals (app, util, SOAP, getField)."""
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     observable = root.add_file_observable(datadir / "acrobat_pdf.js")
+    observable.add_directive(YARA_META_JS)
 
-    analyzer = _build_analyzer(root, monkeypatch=monkeypatch)
+    analyzer = _build_analyzer(root)
     result = analyzer.execute_analysis(observable)
 
     assert result == AnalysisExecutionResult.COMPLETED
@@ -197,20 +179,14 @@ def test_acrobat_pdf_bracket_notation_js(datadir, monkeypatch, patched_deobfusca
     emitted_obs = file_observables[0]
     with open(emitted_obs.full_path, "r", encoding="utf-8") as fp:
         body = fp.read()
-    # The harness should have captured the bracket-notation calls through the
-    # recorder chain. We don't care about exact formatting — just that the
-    # Acrobat global names surface in clear text.
     assert "getField" in body
     assert "SOAP" in body or "streamDecode" in body
 
 
 @pytest.mark.unit
 def test_harness_crash_still_emits_observable(tmpdir, monkeypatch):
-    """When the sandbox harness crashes partway through (e.g. the obfuscated
-    sample calls a name we didn't pre-populate), the analyzer should still
-    emit the deobfuscated-<name> observable carrying analysis.error so the
-    analyst can see what happened and any events captured before the crash
-    still get URL-extracted."""
+    """When the sandbox harness crashes partway through, the analyzer should
+    still emit the deobfuscated-<name> observable carrying analysis.error."""
     import json as _json
 
     def _crashing_shim(file_path, output_dir, is_async=False, timeout=60, scanner_timeout=30):
@@ -218,7 +194,7 @@ def test_harness_crash_still_emits_observable(tmpdir, monkeypatch):
         out_js = os.path.join(output_dir, "deobfuscated.js")
         with open(out_js, "w") as fp:
             fp.write(
-                "// ACE3 javascript deobfuscator — reconstructed from sandbox trace\n"
+                "// ACE3 javascript deobfuscator -- reconstructed from sandbox trace\n"
                 "// partial capture before crash\n"
                 "// run error: TypeError: this[<obfuscated>] is not a function\n"
             )
@@ -247,20 +223,18 @@ def test_harness_crash_still_emits_observable(tmpdir, monkeypatch):
 
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
-    # use a dedicated fixture name so we don't collide with other tests'
-    # deobfuscated-plain.js in the shared test storage dir
     crash_src = tmpdir / "harness_crash_sample.js"
     crash_src.write('var x = 1; app.unknown_method();')
     observable = root.add_file_observable(str(crash_src))
+    observable.add_directive(YARA_META_JS)
 
-    analyzer = _build_analyzer(root, monkeypatch=monkeypatch)
+    analyzer = _build_analyzer(root)
     result = analyzer.execute_analysis(observable)
 
     assert result == AnalysisExecutionResult.COMPLETED
     analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
     assert analysis is not None
     assert analysis.error and "not a function" in analysis.error
-    # observable should still be emitted with the error context
     file_observables = [o for o in analysis.observables if o.type == F_FILE]
     assert len(file_observables) == 1
     emitted_obs = file_observables[0]
@@ -278,8 +252,9 @@ def test_deobfuscator_error_does_not_crash(datadir, monkeypatch):
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     observable = root.add_file_observable(datadir / "plain.js")
+    observable.add_directive(YARA_META_JS)
 
-    analyzer = _build_analyzer(root, monkeypatch=monkeypatch)
+    analyzer = _build_analyzer(root)
     result = analyzer.execute_analysis(observable)
 
     assert result == AnalysisExecutionResult.COMPLETED
@@ -290,28 +265,39 @@ def test_deobfuscator_error_does_not_crash(datadir, monkeypatch):
 
 
 @pytest.mark.unit
-def test_json_files_are_skipped(datadir, monkeypatch, patched_deobfuscate):
-    """JSON mime type short-circuits the analyzer."""
+def test_js_extension_triggers_without_yara_tag(tmpdir, monkeypatch, patched_deobfuscate):
+    """A .js file without the yara meta tag (e.g. manually uploaded) should
+    still be deobfuscated, and the tag should be added to the source
+    observable on success."""
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
-    observable = root.add_file_observable(datadir / "sample_obsfucated_javascript.js")
+    manual_upload = tmpdir / "uploaded_sample.js"
+    manual_upload.write('window.location.href = "https://example.com/manual";')
+    observable = root.add_file_observable(str(manual_upload))
+    # deliberately NOT adding the yara meta directive — .js extension is enough
 
-    analyzer = _build_analyzer(root, mime_type="application/json", monkeypatch=monkeypatch)
+    analyzer = _build_analyzer(root)
     result = analyzer.execute_analysis(observable)
 
     assert result == AnalysisExecutionResult.COMPLETED
-    assert observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis) is None
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    assert analysis.exit_code == 0
+    # the source observable should now have the yara meta tag applied
+    assert observable.has_directive(YARA_META_JS)
 
 
 @pytest.mark.unit
-def test_json_extension_is_skipped(tmpdir, monkeypatch, patched_deobfuscate):
+def test_skipped_without_tag_or_js_extension(tmpdir, monkeypatch, patched_deobfuscate):
+    """Files without the yara meta tag AND without a .js extension should be
+    skipped entirely — no analysis created."""
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
-    json_path = tmpdir / "config.json"
-    json_path.write('{"x": 1}')
-    observable = root.add_file_observable(str(json_path))
+    txt_path = tmpdir / "notes.txt"
+    txt_path.write("just some plain text")
+    observable = root.add_file_observable(str(txt_path))
 
-    analyzer = _build_analyzer(root, monkeypatch=monkeypatch)
+    analyzer = _build_analyzer(root)
     result = analyzer.execute_analysis(observable)
 
     assert result == AnalysisExecutionResult.COMPLETED
@@ -325,25 +311,9 @@ def test_empty_file_is_skipped(tmpdir, monkeypatch, patched_deobfuscate):
     empty_path = tmpdir / "empty.js"
     empty_path.write("")
     observable = root.add_file_observable(str(empty_path))
+    observable.add_directive(YARA_META_JS)
 
-    analyzer = _build_analyzer(root, monkeypatch=monkeypatch)
-    result = analyzer.execute_analysis(observable)
-
-    assert result == AnalysisExecutionResult.COMPLETED
-    assert observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis) is None
-
-
-@pytest.mark.unit
-def test_non_javascript_file_is_skipped(tmpdir, monkeypatch, patched_deobfuscate):
-    """A .txt file with nothing resembling JS grammar should be rejected
-    by is_javascript_file() and produce no analysis."""
-    root = create_root_analysis(analysis_mode="test_single")
-    root.initialize_storage()
-    txt_path = tmpdir / "notes.txt"
-    txt_path.write("just some plain text without javascript grammar at all")
-    observable = root.add_file_observable(str(txt_path))
-
-    analyzer = _build_analyzer(root, monkeypatch=monkeypatch)
+    analyzer = _build_analyzer(root)
     result = analyzer.execute_analysis(observable)
 
     assert result == AnalysisExecutionResult.COMPLETED
@@ -359,8 +329,9 @@ def test_own_output_is_not_reanalyzed(tmpdir, monkeypatch, patched_deobfuscate):
     out_path = tmpdir / f"{DEOBFUSCATED_PREFIX}already.js"
     out_path.write("const x = 1;")
     observable = root.add_file_observable(str(out_path))
+    observable.add_directive(YARA_META_JS)
 
-    analyzer = _build_analyzer(root, monkeypatch=monkeypatch)
+    analyzer = _build_analyzer(root)
     result = analyzer.execute_analysis(observable)
 
     assert result == AnalysisExecutionResult.COMPLETED

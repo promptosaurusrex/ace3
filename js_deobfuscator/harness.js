@@ -26,6 +26,12 @@ if (!INPUT_PATH || !OUTPUT_PATH) {
 }
 
 let SRC = fs.readFileSync(INPUT_PATH, 'utf8');
+
+// Strip XML CDATA wrappers that SVG/XML JS extraction modules may leave
+// around <script> content. <![CDATA[...]]> is not valid JavaScript and
+// will crash both webcrack's parser and Node's vm context.
+SRC = SRC.replace(/^\s*<!\[CDATA\[/, '').replace(/\]\]>\s*$/, '');
+
 // status values:
 //   "skipped"                   — webcrack not available / not tried
 //   "applied"                   — webcrack ran and materially changed source
@@ -158,7 +164,17 @@ const sandbox = {
     }
     return 0;
   },
-  setInterval: () => 0,
+  setInterval: (fn, _ms, ...rest) => {
+    // Fire the callback a bounded number of times so countdown-style
+    // redirects (e.g. decrement from 5 → 0 then window.top.location.href)
+    // get captured. Break on exception to avoid infinite-loop patterns.
+    if (typeof fn === 'function') {
+      for (let i = 0; i < 10; i++) {
+        try { fn.apply(null, rest); } catch (e) { break; }
+      }
+    }
+    return 0;
+  },
   setImmediate: (fn) => {
     if (typeof fn === 'function') {
       try { fn(); } catch (e) { events.push({ kind: 'setImmediate.error', error: String(e) }); }
