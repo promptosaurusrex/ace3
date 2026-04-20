@@ -20,6 +20,11 @@
         <button type="button" name="btn-show-remove-tags" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#tag_remove_modal"><span class="bi bi-tags"></span> Remove Tag(s)</button>
         <button type="button" class="btn btn-outline-dark btn-sm" onclick="show_remediation_targets(['{{alert.uuid}}'])"><span class="bi bi-magic"></span> Remediation</button>
         <button id="btn-open-event-modal" type="button" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#event_modal"><span class="bi bi-plus"></span> Add to Event</button>
+        {% if alert.root_analysis.has_tag('needs_research') %}
+        <button type="button" class="btn btn-outline-danger btn-sm" data-bs-toggle="modal" data-bs-target="#research_complete_modal"><span class="bi bi-check2-square"></span> Research Complete</button>
+        {% else %}
+        <button type="button" class="btn btn-outline-danger btn-sm" data-bs-toggle="modal" data-bs-target="#needs_research_modal"><span class="bi bi-search"></span> Needs Research</button>
+        {% endif %}
     </form>
 </div>
 <div class="col">
@@ -127,6 +132,52 @@
 <form id="toggle-prune-form-volatile" action={{url_for('analysis.toggle_prune_volatile')}} method="POST">
     <input type="hidden" name="alert_uuid" value="{{alert.uuid}}"/>
 </form>
+
+<div class="modal fade" id="needs_research_modal" tabindex="-1" role="dialog" aria-labelledby="needs_research_modal_label" aria-hidden="true">
+    <div class="modal-dialog">
+        <form class="form-horizontal" role="form" method="POST" action="{{url_for('analysis.add_tag')}}">
+            <input type="hidden" name="tag" value="needs_research"/>
+            <input type="hidden" name="uuids" value="{{alert.uuid}}"/>
+            <input type="hidden" name="redirect" value="analysis"/>
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h1 class="modal-title fs-5" id="needs_research_modal_label">Mark as Needs Research?</h1>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    Flag this alert as needing further research? It will be tagged <code>needs_research</code> and highlighted for attention.
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">No</button>
+                    <button type="submit" class="btn btn-outline-primary">Yes</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="modal fade" id="research_complete_modal" tabindex="-1" role="dialog" aria-labelledby="research_complete_modal_label" aria-hidden="true">
+    <div class="modal-dialog">
+        <form class="form-horizontal" role="form" method="POST" action="{{url_for('analysis.remove_tag')}}">
+            <input type="hidden" name="tag" value="needs_research"/>
+            <input type="hidden" name="uuids" value="{{alert.uuid}}"/>
+            <input type="hidden" name="redirect" value="analysis"/>
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h1 class="modal-title fs-5" id="research_complete_modal_label">Mark Research Complete?</h1>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    Clear the <code>needs_research</code> tag from this alert?
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">No</button>
+                    <button type="submit" class="btn btn-outline-primary">Yes</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
 
 {% with add_observable_action=url_for('analysis.add_observable') %}
     {% include "analysis/_add_observable_modal.html" %}

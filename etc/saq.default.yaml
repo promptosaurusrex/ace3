@@ -1913,6 +1913,7 @@ tags:
   lnk_in_zip: alert
   suspect_ole_attachment: alert
   critical: critical
+  needs_research: critical
   denied: detail
   proxied: alert
   observed: alert
