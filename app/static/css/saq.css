@@ -580,3 +580,11 @@ nav[data-toggle="toc"] {
 .comments-collapsible.expanded {
     max-height: none;
 }
+
+/* keep pointer-events on disabled lock-dependent buttons so tooltips still work */
+.lock-dependent:disabled,
+.lock-dependent.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    pointer-events: auto;
+}

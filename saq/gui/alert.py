@@ -26,6 +26,7 @@ class GUIAlert(Alert):
 
     def get_metadata_json(self) -> dict:
         """Returns a dict of alert metadata intended to be used by client API calls."""
+        lock = self.lock
         return {
             "disposition": self.disposition,
             "disposition_user_id": self.disposition_user_id,
@@ -33,6 +34,9 @@ class GUIAlert(Alert):
             "owner_id": self.owner_id,
             "owner_name": self.owner.gui_display if self.owner_id is not None else None,
             "owner_time": self.owner_time.isoformat() + "Z" if self.owner_time is not None else None,
+            "is_locked": lock is not None,
+            "lock_owner": lock.lock_owner if lock is not None else None,
+            "status": self.status,
         }
 
     """Extends the Alert class to add functionality specific to the GUI."""

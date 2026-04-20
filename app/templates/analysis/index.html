@@ -15,15 +15,15 @@
         <button id="add_comment_button_alert" type="button" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#comment_modal" uuid="{{alert.uuid}}"><span class="bi bi-chat-right-text"></span> Add Comment</button>
         <button onclick="set_owner('{{alert.uuid}}')" type="button" class="btn btn-outline-dark btn-sm"><span class="bi bi-lock"></span> Take Ownership</button>
         <button id="btn-assign-ownership-dialog" type="button" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#assign_ownership_modal"><span class="bi bi-person-plus"></span> Assign Ownership</button>
-        <button id="btn-add-observable" type="button" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#add_observable_modal"><span class="bi bi-plus-circle-fill"></span> Add Observable</button>
-        <button type="button" name="btn-show-add-tags" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#tag_modal"><span class="bi bi-tags"></span> Add Tag(s)</button>
-        <button type="button" name="btn-show-remove-tags" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#tag_remove_modal"><span class="bi bi-tags"></span> Remove Tag(s)</button>
+        <button id="btn-add-observable" type="button" class="btn btn-outline-dark btn-sm lock-dependent" data-bs-toggle="modal" data-bs-target="#add_observable_modal"><span class="bi bi-plus-circle-fill"></span> Add Observable</button>
+        <button type="button" name="btn-show-add-tags" class="btn btn-outline-dark btn-sm lock-dependent" data-bs-toggle="modal" data-bs-target="#tag_modal"><span class="bi bi-tags"></span> Add Tag(s)</button>
+        <button type="button" name="btn-show-remove-tags" class="btn btn-outline-dark btn-sm lock-dependent" data-bs-toggle="modal" data-bs-target="#tag_remove_modal"><span class="bi bi-tags"></span> Remove Tag(s)</button>
         <button type="button" class="btn btn-outline-dark btn-sm" onclick="show_remediation_targets(['{{alert.uuid}}'])"><span class="bi bi-magic"></span> Remediation</button>
         <button id="btn-open-event-modal" type="button" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#event_modal"><span class="bi bi-plus"></span> Add to Event</button>
         {% if alert.root_analysis.has_tag('needs_research') %}
-        <button type="button" class="btn btn-outline-danger btn-sm" data-bs-toggle="modal" data-bs-target="#research_complete_modal"><span class="bi bi-check2-square"></span> Research Complete</button>
+        <button type="button" class="btn btn-outline-danger btn-sm lock-dependent" data-bs-toggle="modal" data-bs-target="#research_complete_modal"><span class="bi bi-check2-square"></span> Research Complete</button>
         {% else %}
-        <button type="button" class="btn btn-outline-danger btn-sm" data-bs-toggle="modal" data-bs-target="#needs_research_modal"><span class="bi bi-search"></span> Needs Research</button>
+        <button type="button" class="btn btn-outline-danger btn-sm lock-dependent" data-bs-toggle="modal" data-bs-target="#needs_research_modal"><span class="bi bi-search"></span> Needs Research</button>
         {% endif %}
     </form>
 </div>

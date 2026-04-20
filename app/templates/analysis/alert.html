@@ -60,7 +60,7 @@
     </tr>
     <tr>
         <td class="col-md-2">Status</td>
-        <td class="col-md-10">{{alert.status}}</td>
+        <td class="col-md-10" id="alert-status-value">{{alert.status}}</td>
     </tr>
     {% if alert.disposition != 'OPEN' %}
     <tr>
@@ -141,6 +141,7 @@
 </table>
 <script type="text/javascript">
     var current_alert_owner_id = {{ alert.owner_id if alert.owner else "null" }};
+    var current_alert_is_locked = {{ 'true' if alert.lock is not none else 'false' }};
     // set the title of the window
     document.title = atob("{{ alert.description | s64encode }}");
 </script>
