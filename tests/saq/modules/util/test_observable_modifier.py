@@ -2786,6 +2786,247 @@ def test_tree_condition_parent_scope_parsed_from_yaml():
 
 
 # ============================================================
+# Tests for descendants scope in tree conditions
+# ============================================================
+
+
+@pytest.mark.unit
+def test_tree_condition_descendants_scope_match():
+    """Descendants scope should match when the analysis type runs on a descendant observable."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    target = root.add_observable_by_spec(F_URL, "https://newdomain.example/login")
+
+    class ParseURLAnalysisStub(Analysis):
+        pass
+
+    parse_url_analysis = ParseURLAnalysisStub()
+    parse_url_analysis.details = {}
+    parse_url_analysis.details_modified = True
+    target.add_analysis(parse_url_analysis)
+
+    child_fqdn = parse_url_analysis.add_observable_by_spec(F_FQDN, "newdomain.example")
+
+    class WhoisAnalysisStub(Analysis):
+        pass
+
+    whois_analysis = WhoisAnalysisStub()
+    whois_analysis.details = {"age_created_in_days": "3"}
+    whois_analysis.details_modified = True
+    child_fqdn.add_analysis(whois_analysis)
+
+    module_path = f"{WhoisAnalysisStub.__module__}:{WhoisAnalysisStub.__name__}"
+    tc = TreeCondition(
+        analysis_type=module_path,
+        scope="descendants",
+        details_match={"age_created_in_days": re.compile(r"^[0-7]$")},
+    )
+    assert tc.evaluate(target, root) is True
+
+
+@pytest.mark.unit
+def test_tree_condition_descendants_scope_no_match_details():
+    """Descendants scope should fail when descendant analysis details don't match."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    target = root.add_observable_by_spec(F_URL, "https://olddomain.example/login")
+
+    class ParseURLAnalysisStub2(Analysis):
+        pass
+
+    parse_url_analysis = ParseURLAnalysisStub2()
+    parse_url_analysis.details = {}
+    parse_url_analysis.details_modified = True
+    target.add_analysis(parse_url_analysis)
+
+    child_fqdn = parse_url_analysis.add_observable_by_spec(F_FQDN, "olddomain.example")
+
+    class WhoisAnalysisStub2(Analysis):
+        pass
+
+    whois_analysis = WhoisAnalysisStub2()
+    whois_analysis.details = {"age_created_in_days": "500"}
+    whois_analysis.details_modified = True
+    child_fqdn.add_analysis(whois_analysis)
+
+    module_path = f"{WhoisAnalysisStub2.__module__}:{WhoisAnalysisStub2.__name__}"
+    tc = TreeCondition(
+        analysis_type=module_path,
+        scope="descendants",
+        details_match={"age_created_in_days": re.compile(r"^[0-7]$")},
+    )
+    assert tc.evaluate(target, root) is False
+
+
+@pytest.mark.unit
+def test_tree_condition_descendants_scope_excludes_self():
+    """Descendants scope must not match analyses performed directly on the target observable."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    target = root.add_observable_by_spec(F_URL, "https://example.test/x")
+
+    class SelfOnlyAnalysis(Analysis):
+        pass
+
+    self_analysis = SelfOnlyAnalysis()
+    self_analysis.details = {"flag": "yes"}
+    self_analysis.details_modified = True
+    target.add_analysis(self_analysis)
+
+    module_path = f"{SelfOnlyAnalysis.__module__}:{SelfOnlyAnalysis.__name__}"
+    tc = TreeCondition(
+        analysis_type=module_path,
+        scope="descendants",
+        details_match={"flag": re.compile(r"^yes$")},
+    )
+    assert tc.evaluate(target, root) is False
+
+
+@pytest.mark.unit
+def test_tree_condition_descendants_scope_parsed_from_yaml():
+    """scope: 'descendants' should be read correctly from YAML rule config."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    target = root.add_observable_by_spec(F_URL, "https://fresh.example/q")
+
+    class YAMLParseURL(Analysis):
+        pass
+
+    parse_url_analysis = YAMLParseURL()
+    parse_url_analysis.details = {}
+    parse_url_analysis.details_modified = True
+    target.add_analysis(parse_url_analysis)
+
+    child_fqdn = parse_url_analysis.add_observable_by_spec(F_FQDN, "fresh.example")
+
+    class YAMLWhois(Analysis):
+        pass
+
+    whois_analysis = YAMLWhois()
+    whois_analysis.details = {"age_created_in_days": "1"}
+    whois_analysis.details_modified = True
+    child_fqdn.add_analysis(whois_analysis)
+
+    module_path = f"{YAMLWhois.__module__}:{YAMLWhois.__name__}"
+    rules = [{
+        "name": "descendants scope yaml test",
+        "conditions": {
+            "observable_types": ["url"],
+            "tree_conditions": [{
+                "analysis_type": module_path,
+                "scope": "descendants",
+                "details_match": {
+                    "age_created_in_days": "^[0-7]$",
+                },
+            }],
+        },
+        "actions": {
+            "add_directives": ["crawl"],
+        },
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(target)
+    result = adapter.analyze(target, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert target.has_directive("crawl")
+
+
+# ============================================================
+# Tests for reset_analysis action
+# ============================================================
+
+
+@pytest.mark.unit
+def test_reset_analysis_clears_no_analysis_sentinel():
+    """reset_analysis should delete the False sentinel so the module can re-run."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    target = root.add_observable_by_spec(F_URL, "https://example.test/x")
+    sentinel_key = "saq.modules.phishkit:PhishkitAnalysis"
+    target._analysis[sentinel_key] = False  # simulate add_no_analysis()
+
+    actions = RuleActions(
+        reset_analysis=[sentinel_key],
+        add_directives=["crawl"],
+    )
+    applied = actions.apply(target)
+
+    assert applied.get("reset_analysis") == [sentinel_key]
+    assert sentinel_key not in target._analysis
+    assert target.has_directive("crawl")
+
+
+@pytest.mark.unit
+def test_reset_analysis_preserves_real_analysis():
+    """reset_analysis must not delete an entry holding an actual Analysis object."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    target = root.add_observable_by_spec(F_URL, "https://example.test/y")
+
+    class RealAnalysis(Analysis):
+        pass
+
+    real = RealAnalysis()
+    real.details = {"ok": True}
+    real.details_modified = True
+    target.add_analysis(real)
+    key = real.module_path
+
+    actions = RuleActions(reset_analysis=[key])
+    applied = actions.apply(target)
+
+    assert "reset_analysis" not in applied
+    assert target._analysis[key] is real
+
+
+@pytest.mark.unit
+def test_reset_analysis_missing_entry_is_noop():
+    """reset_analysis should silently skip modules with no prior record."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    target = root.add_observable_by_spec(F_URL, "https://example.test/z")
+
+    actions = RuleActions(reset_analysis=["saq.modules.never:RanAnalysis"])
+    applied = actions.apply(target)
+
+    assert "reset_analysis" not in applied
+
+
+@pytest.mark.unit
+def test_reset_analysis_parsed_from_yaml():
+    """reset_analysis list should be read correctly from YAML rule config."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    target = root.add_observable_by_spec(F_URL, "https://example.test/yaml")
+    sentinel_key = "saq.modules.phishkit:PhishkitAnalysis"
+    target._analysis[sentinel_key] = False
+
+    rules = [{
+        "name": "reset analysis yaml test",
+        "conditions": {"observable_types": ["url"]},
+        "actions": {
+            "add_directives": ["crawl"],
+            "reset_analysis": [sentinel_key],
+        },
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(target)
+    result = adapter.analyze(target, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert sentinel_key not in target._analysis
+    assert target.has_directive("crawl")
+
+
+# ============================================================
 # Integration tests for ignore action with parent removal
 # ============================================================
 

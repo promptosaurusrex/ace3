@@ -6,11 +6,13 @@ import subprocess
 from typing import Optional, List, Type, override
 from urlfinderlib.url import URL
 
+import yaml
 from fluent import sender
 from pydantic import Field
 from saq.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_CRAWL, DIRECTIVE_RENDER, F_URL, F_FILE, AnalysisExecutionResult
+from saq.environment import get_base_dir
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -188,6 +190,31 @@ class PhishkitAnalyzer(AnalysisModule):
             if self._proxy_string:
                 logging.info(f"phishkit analyzer using proxy: {self.config.proxy}")
 
+        self._deny_crawl_patterns: list[str] = []
+        self._yaml_config_path = os.path.join(get_base_dir(), self.config.config_path)
+        self._load_deny_patterns()
+        self.watch_file(self._yaml_config_path, self._load_deny_patterns)
+
+    def _load_deny_patterns(self):
+        """Load deny_crawl_url_patterns from the phishkit YAML config."""
+        try:
+            with open(self._yaml_config_path, "r") as fp:
+                data = yaml.safe_load(fp) or {}
+        except Exception as e:
+            logging.warning(
+                f"failed to load phishkit YAML config {self._yaml_config_path}: {e}"
+            )
+            self._deny_crawl_patterns = []
+            return
+
+        raw = data.get("deny_crawl_url_patterns", []) or []
+        self._deny_crawl_patterns = [
+            p.lower() for p in raw if isinstance(p, str) and p
+        ]
+        logging.debug(
+            f"loaded {len(self._deny_crawl_patterns)} phishkit deny_crawl_url_patterns"
+        )
+
     @property
     def generated_analysis_type(self):
         return PhishkitAnalysis
@@ -199,6 +226,14 @@ class PhishkitAnalyzer(AnalysisModule):
     def custom_requirement(self, observable: Observable) -> bool:
         """Custom requirement for phishkit analysis."""
         if observable.type == F_URL:
+            url_lc = observable.value.lower()
+            for pattern in self._deny_crawl_patterns:
+                if pattern in url_lc:
+                    logging.info(
+                        f"phishkit refusing to scan {observable.value} - "
+                        f"matched deny pattern {pattern!r}"
+                    )
+                    return False
             return True
         elif observable.type == F_FILE:
             # phishkit file rendering only meaningful in correlation mode

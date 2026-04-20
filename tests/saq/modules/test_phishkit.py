@@ -113,9 +113,98 @@ def test_phishkit_analysis_generate_summary():
 def test_phishkit_analyzer_properties():
     """Test PhishkitAnalyzer properties."""
     analyzer = PhishkitAnalyzer(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER))
-    
+
     assert analyzer.generated_analysis_type == PhishkitAnalysis
     assert analyzer.valid_observable_types == [F_URL, F_FILE]
+
+
+def _analyzer_with_deny_patterns(tmp_path, root, patterns):
+    """Build a PhishkitAnalyzer whose YAML config has the given deny_crawl_url_patterns."""
+    import yaml as _yaml
+    config_file = tmp_path / "phishkit_config.yaml"
+    config_file.write_text(_yaml.safe_dump({"deny_crawl_url_patterns": list(patterns)}))
+    analyzer = PhishkitAnalyzer(
+        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+        context=create_test_context(root=root),
+    )
+    analyzer._yaml_config_path = str(config_file)
+    analyzer._load_deny_patterns()
+    return analyzer
+
+
+@pytest.mark.integration
+def test_phishkit_custom_requirement_denies_matching_url(tmp_path):
+    """custom_requirement returns False for URLs matching a deny pattern."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    url = root.add_observable_by_spec(F_URL, "https://login.windows.net/common/oauth2")
+
+    analyzer = _analyzer_with_deny_patterns(tmp_path, root, ["login.windows.net"])
+
+    assert analyzer.custom_requirement(url) is False
+
+
+@pytest.mark.integration
+def test_phishkit_custom_requirement_allows_non_matching_url(tmp_path):
+    """custom_requirement returns True for URLs that don't match any deny pattern."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    url = root.add_observable_by_spec(F_URL, "https://winecellarsbycoastalblog.com/ls/click")
+
+    analyzer = _analyzer_with_deny_patterns(tmp_path, root, ["login.windows.net", "microsoft.com"])
+
+    assert analyzer.custom_requirement(url) is True
+
+
+@pytest.mark.integration
+def test_phishkit_custom_requirement_case_insensitive(tmp_path):
+    """Deny pattern match is case-insensitive."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    url = root.add_observable_by_spec(F_URL, "https://LOGIN.Microsoftonline.COM/authorize")
+
+    analyzer = _analyzer_with_deny_patterns(tmp_path, root, ["login.microsoftonline.com"])
+
+    assert analyzer.custom_requirement(url) is False
+
+
+@pytest.mark.integration
+def test_phishkit_custom_requirement_empty_deny_list(tmp_path):
+    """Missing deny_crawl_url_patterns means nothing is denied."""
+    import yaml as _yaml
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    url = root.add_observable_by_spec(F_URL, "https://login.windows.net/common")
+
+    config_file = tmp_path / "phishkit_config.yaml"
+    config_file.write_text(_yaml.safe_dump({"skip_body_url_patterns": ["unrelated.com"]}))
+    analyzer = PhishkitAnalyzer(
+        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+        context=create_test_context(root=root),
+    )
+    analyzer._yaml_config_path = str(config_file)
+    analyzer._load_deny_patterns()
+
+    assert analyzer._deny_crawl_patterns == []
+    assert analyzer.custom_requirement(url) is True
+
+
+@pytest.mark.integration
+def test_phishkit_custom_requirement_missing_yaml_file(tmp_path):
+    """A missing YAML config must not crash; deny list stays empty."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    url = root.add_observable_by_spec(F_URL, "https://login.windows.net/common")
+
+    analyzer = PhishkitAnalyzer(
+        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+        context=create_test_context(root=root),
+    )
+    analyzer._yaml_config_path = str(tmp_path / "does_not_exist.yaml")
+    analyzer._load_deny_patterns()
+
+    assert analyzer._deny_crawl_patterns == []
+    assert analyzer.custom_requirement(url) is True
 
 
 @pytest.mark.integration
