@@ -13,12 +13,14 @@ contain removals (§A4) as a safety net.
 
 Size discipline (design doc §A3):
 
-- Every delta is zstd-compressed before it hits the DB.
-- ``analysis.details`` dicts larger than ``DETAILS_SPILL_THRESHOLD_BYTES``
-  uncompressed are spilled to the blob store and replaced with a
-  ``{"__blob_ref__": "<sha>"}`` pointer in the cached delta.
-- Compressed deltas over ``MAX_COMPRESSED_DELTA_BYTES`` are refused outright
-  and logged as a warning.
+- Every delta is zstd-compressed before it hits the DB. Compression level is
+  tunable via ``global.analysis_cache_zstd_level``.
+- ``analysis.details`` dicts larger than
+  ``global.analysis_cache_details_spill_bytes`` (uncompressed) are spilled
+  to the blob store and replaced with a ``{"__blob_ref__": "<sha>"}``
+  pointer in the cached delta.
+- Compressed deltas over ``global.analysis_cache_max_compressed_bytes``
+  are refused outright and logged as a warning.
 """
 
 import hashlib
@@ -39,22 +41,6 @@ from saq.database.pool import get_db
 if TYPE_CHECKING:
     from saq.analysis.module_execution_delta import ModuleExecutionDelta
     from saq.analysis.observable import Observable
-
-
-# zstd level 3 is a good default — the JSON-to-bytes ratio is near optimal by
-# level 3 for our payload shape and the CPU cost is negligible next to the
-# module execution we're avoiding on replay.
-ZSTD_COMPRESSION_LEVEL = 3
-
-# Spill analysis.details to the blob store when its uncompressed serialized
-# size exceeds this. See design doc §A3 Layer 2.
-DETAILS_SPILL_THRESHOLD_BYTES = 16 * 1024
-
-# Refuse to cache compressed deltas above this size. See design doc §A3 Layer 3.
-MAX_COMPRESSED_DELTA_BYTES = 1 * 1024 * 1024
-
-# How many rows the prune sweep deletes per batch. Keeps lock windows short.
-PRUNE_BATCH_SIZE = 1000
 
 
 def generate_cache_key(observable: "Observable", module) -> Optional[str]:
@@ -98,7 +84,8 @@ def _maybe_spill_details(delta_dict: dict, blob_store: BlobStore, cache_key: str
 
     # Serialize separately so we can both measure and avoid double-serializing.
     details_bytes = json.dumps(details, sort_keys=True, default=str).encode("utf-8")
-    if len(details_bytes) < DETAILS_SPILL_THRESHOLD_BYTES:
+    threshold = get_config().global_settings.analysis_cache_details_spill_bytes
+    if len(details_bytes) < threshold:
         return False
 
     sha = blob_store.put(details_bytes)
@@ -144,16 +131,20 @@ def put_cached_delta(
         delta_dict = delta.to_dict()
         has_blob_refs = _maybe_spill_details(delta_dict, blob_store, cache_key)
 
+        global_settings = get_config().global_settings
+        zstd_level = global_settings.analysis_cache_zstd_level
+        max_compressed_bytes = global_settings.analysis_cache_max_compressed_bytes
+
         delta_json = json.dumps(delta_dict, sort_keys=True, default=str).encode("utf-8")
         uncompressed_size = len(delta_json)
-        compressor = zstandard.ZstdCompressor(level=ZSTD_COMPRESSION_LEVEL)
+        compressor = zstandard.ZstdCompressor(level=zstd_level)
         delta_zstd = compressor.compress(delta_json)
 
-        if len(delta_zstd) > MAX_COMPRESSED_DELTA_BYTES:
+        if len(delta_zstd) > max_compressed_bytes:
             logging.warning(
                 "refusing to cache delta for %s on %s:%s — compressed size %d exceeds cap %d",
                 module.config.name, delta.observable_type, delta.observable_value,
-                len(delta_zstd), MAX_COMPRESSED_DELTA_BYTES,
+                len(delta_zstd), max_compressed_bytes,
             )
             # If we spilled details but are bailing out, unreference the blob
             # so the prune/GC story doesn't hold onto it for a cache row that
@@ -244,12 +235,13 @@ def delete_for_module(module_name: str) -> int:
     module wants to evict stale entries immediately rather than wait for TTL.
     Batched to keep lock windows short.
     """
+    batch_size = get_config().global_settings.analysis_cache_prune_batch_size
     total = 0
     while True:
         cache_keys = get_db().scalars(
             select(AnalysisResultCache.cache_key)
             .where(AnalysisResultCache.module_name == module_name)
-            .limit(PRUNE_BATCH_SIZE)
+            .limit(batch_size)
         ).all()
         if not cache_keys:
             return total
@@ -268,11 +260,11 @@ def delete_for_module(module_name: str) -> int:
         get_db().commit()
 
         total += len(cache_keys)
-        if len(cache_keys) < PRUNE_BATCH_SIZE:
+        if len(cache_keys) < batch_size:
             return total
 
 
-def prune(blob_store: BlobStore, batch_size: int = PRUNE_BATCH_SIZE) -> int:
+def prune(blob_store: BlobStore, batch_size: Optional[int] = None) -> int:
     """Delete expired cache rows and drop their blob_refs in the same tx.
 
     Returns total rows deleted. Follows design doc §A8's sketch: SELECT ...
@@ -282,7 +274,12 @@ def prune(blob_store: BlobStore, batch_size: int = PRUNE_BATCH_SIZE) -> int:
     The backend's ``unreference`` is called *after* each batch commits for any
     housekeeping it needs — for the local backend this is a no-op (actual blob
     deletion lives in ``blob_store.gc()``).
+
+    ``batch_size`` defaults to ``global.analysis_cache_prune_batch_size``;
+    tests may override it for finer-grained control.
     """
+    if batch_size is None:
+        batch_size = get_config().global_settings.analysis_cache_prune_batch_size
     total = 0
     while True:
         cache_keys = get_db().scalars(

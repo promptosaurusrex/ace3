@@ -9,8 +9,6 @@ import zstandard
 
 from saq.analysis.blob_store import LocalHardlinkBlobStore
 from saq.analysis.cache import (
-    DETAILS_SPILL_THRESHOLD_BYTES,
-    MAX_COMPRESSED_DELTA_BYTES,
     collect_stats,
     delete_for_module,
     generate_cache_key,
@@ -210,7 +208,9 @@ class TestPutCachedDelta:
     @pytest.mark.integration
     def test_large_details_spill_to_blob_store(self, blob_store):
         module = _make_module()
-        big_details = {"payload": "x" * (DETAILS_SPILL_THRESHOLD_BYTES * 2)}
+        # 32 KiB is 2× the default global.analysis_cache_details_spill_bytes,
+        # so this reliably triggers the blob-store spill path.
+        big_details = {"payload": "x" * (32 * 1024)}
         analysis = {
             "type": "saq.modules.test:Dummy",
             "summary": "big",
@@ -242,7 +242,10 @@ class TestPutCachedDelta:
     @pytest.mark.integration
     def test_refuses_oversized_delta(self, blob_store, monkeypatch):
         # Drop the cap to something tiny so even a small analysis blows it.
-        monkeypatch.setattr("saq.analysis.cache.MAX_COMPRESSED_DELTA_BYTES", 50)
+        from saq.configuration.config import get_config
+        monkeypatch.setattr(
+            get_config().global_settings, "analysis_cache_max_compressed_bytes", 50
+        )
         module = _make_module()
         delta = _make_delta(module)
         assert put_cached_delta(delta, module, blob_store) is False
@@ -297,7 +300,9 @@ class TestPrune:
     @pytest.mark.integration
     def test_prune_drops_blob_refs_in_same_tx(self, blob_store):
         module = _make_module()
-        big_details = {"payload": "x" * (DETAILS_SPILL_THRESHOLD_BYTES * 2)}
+        # 32 KiB is 2× the default global.analysis_cache_details_spill_bytes,
+        # so this reliably triggers the blob-store spill path.
+        big_details = {"payload": "x" * (32 * 1024)}
         analysis = {
             "type": "saq.modules.test:Dummy",
             "summary": "big",
@@ -329,7 +334,9 @@ class TestCollectStats:
     @pytest.mark.integration
     def test_stats_reflect_table_state(self, blob_store):
         module = _make_module()
-        big_details = {"payload": "x" * (DETAILS_SPILL_THRESHOLD_BYTES * 2)}
+        # 32 KiB is 2× the default global.analysis_cache_details_spill_bytes,
+        # so this reliably triggers the blob-store spill path.
+        big_details = {"payload": "x" * (32 * 1024)}
         delta_small = _make_delta(module, observable_value="https://small.example/")
         delta_big = _make_delta(
             module,

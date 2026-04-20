@@ -118,6 +118,14 @@ global:
   # root directory for the content-addressed blob store used by the analysis cache
   # unset = <data_dir>/blob_store; relative paths are resolved against SAQ_HOME
   blob_store_dir:
+  # zstd compression level for cached analysis deltas (1-22; 3 is near-optimal)
+  analysis_cache_zstd_level: 3
+  # spill analysis.details to the blob store once its serialized size exceeds this many bytes
+  analysis_cache_details_spill_bytes: 16384
+  # refuse to cache deltas whose compressed payload exceeds this many bytes
+  analysis_cache_max_compressed_bytes: 1048576
+  # prune sweep batch size — keep lock windows short
+  analysis_cache_prune_batch_size: 1000
 
 # directives that cannot be copied between observables via copy_directives_to
 fixed_directives:
