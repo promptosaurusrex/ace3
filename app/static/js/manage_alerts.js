@@ -562,6 +562,19 @@ function set_special_filter_7_days() {
     })();
 }
 
+function set_special_filter_needs_research() {
+    (function() {
+        fetch('reset_filters_needs_research', { credentials: 'same-origin' })
+        .then(function(resp){
+            if (!resp.ok) { throw new Error(resp.statusText); }
+            window.location.replace('/ace/manage');
+        })
+        .catch(function(err){
+            alert('DOH: ' + err.message);
+        });
+    })();
+}
+
 // adds a filter
 function add_filter(name, values) {
     (function() {

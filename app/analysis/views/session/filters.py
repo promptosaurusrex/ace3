@@ -29,6 +29,13 @@ def _reset_filters_special(hours: int):
     ]
     session["search"] = None
 
+def _reset_filters_needs_research():
+    session["filters"] = [
+        { "name": "Queue", "inverted": False, "values": [ current_user.queue ] },
+        { "name": "Tag", "inverted": False, "values": [ "needs_research" ] },
+    ]
+    session["search"] = None
+
 def reset_checked_alerts():
     session['checked'] = []
 

@@ -37,7 +37,8 @@
             <span class="badge label-special" style="cursor:pointer" data-bs-toggle="modal" data-bs-target="#filter_modal">Edit</span>
             <span class="badge label-special" style="cursor:pointer" onmousedown='reset_filters()'>Reset</span>
             <span class="badge label-special" style="cursor:pointer" onmousedown='set_special_filter_24_hours()'>Last 24h</span>
-            <span class="badge label-special" style="cursor:pointer" onmousedown='set_special_filter_7_days()()'>Last 7d</span> | 
+            <span class="badge label-special" style="cursor:pointer" onmousedown='set_special_filter_7_days()()'>Last 7d</span>
+            <span class="badge label-special" style="cursor:pointer" onmousedown='set_special_filter_needs_research()'>Needs Research</span> |
             {% for _filter in session['filters'] %}
                 {% set name = _filter['name'] %}
                 {% set inverted = _filter['inverted'] %}
