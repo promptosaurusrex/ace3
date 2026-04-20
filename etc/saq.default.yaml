@@ -112,6 +112,12 @@ global:
   # optional default proxy to use for all http/https requests
   # leave empty to not use a proxy at all
   default_proxy:
+  # global kill switch for the analysis result cache (Phase 2+)
+  # set to false to stop all cache writes without touching per-module cache_ttl settings
+  analysis_cache_enabled: true
+  # root directory for the content-addressed blob store used by the analysis cache
+  # unset = <data_dir>/blob_store; relative paths are resolved against SAQ_HOME
+  blob_store_dir:
 
 # directives that cannot be copied between observables via copy_directives_to
 fixed_directives:

@@ -104,3 +104,46 @@ def test_distribute_old_alerts(days, target, insert_alert, alert_age_days, add_t
 
     if insert_alert:
         assert storage_dir.isdir() == alert_still_exists
+
+
+@pytest.mark.integration
+def test_prune_analysis_result_cache_emits_cache_stats(caplog):
+    """Each prune run should emit a cache_stats heartbeat for Splunk."""
+    import logging as _logging
+    from saq.util.maintenance import prune_analysis_result_cache
+
+    with caplog.at_level(_logging.INFO):
+        prune_analysis_result_cache()
+
+    stats_lines = [r for r in caplog.records if "cache_stats" in r.getMessage()]
+    assert stats_lines, "expected cache_stats heartbeat from prune run"
+    msg = stats_lines[0].getMessage()
+    for field in ("total_rows=", "expired_rows=", "total_uncompressed_bytes=",
+                  "blob_refs_rows=", "modules="):
+        assert field in msg, f"cache_stats line missing field {field!r}: {msg}"
+
+
+@pytest.mark.integration
+def test_prune_analysis_result_cache_warns_on_backlog(caplog, monkeypatch):
+    """If rows remain expired after a sweep, prune should emit prune_backlog."""
+    import logging as _logging
+    import saq.util.maintenance as maintenance
+
+    # Force collect_stats to report an unresolved backlog.
+    monkeypatch.setattr(
+        maintenance,
+        "collect_cache_stats",
+        lambda: {
+            "total_rows": 100,
+            "expired_rows": 5,
+            "total_uncompressed_bytes": 1234,
+            "blob_refs_rows": 0,
+            "modules_with_entries": 1,
+        },
+    )
+    with caplog.at_level(_logging.WARNING):
+        maintenance.prune_analysis_result_cache()
+
+    backlog = [r for r in caplog.records if "prune_backlog" in r.getMessage()]
+    assert backlog, "expected prune_backlog warning when expired_rows > 0"
+    assert "remaining_expired=5" in backlog[0].getMessage()

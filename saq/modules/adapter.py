@@ -4,6 +4,7 @@ Adapter classes that implement the dependency injection interfaces.
 
 import importlib
 import logging
+from datetime import timedelta
 from typing import Optional, Type
 
 from saq.analysis.analysis import Analysis
@@ -95,7 +96,17 @@ class AnalysisModuleAdapter(AnalysisModuleInterface):
     def version(self) -> int:
         """Get the module version for cache validation."""
         return self._module.version
-    
+
+    @property
+    def cache_ttl(self) -> Optional[timedelta]:
+        """Get the cache TTL for this module. None disables caching."""
+        return self._module.cache_ttl
+
+    @property
+    def extended_version(self) -> dict[str, str]:
+        """Get dynamic inputs mixed into the cache key (rules hash, feed version, etc.)."""
+        return self._module.extended_version
+
     # Analysis execution methods
     def analyze(self, obj, final_analysis=False, delayed_analysis=False) -> AnalysisExecutionResult:
         """Analyze the given object.

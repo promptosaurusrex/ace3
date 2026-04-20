@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+source bin/initialize-environment.sh && ace prune-analysis-cache

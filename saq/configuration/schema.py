@@ -43,6 +43,8 @@ class GlobalConfig(BaseModel):
     maximum_analysis_disk_size: int = Field(..., description="maximum allowed size in bytes for an analysis (JSON + size of file observables); set this to 0 to disable this functionality")
     maximum_observable_count: dict[str, int] = Field(default_factory=dict, description="per-type observable limits; once a type's threshold is met, no more observables of that type can be added; types not listed have no limit")
     default_proxy: Optional[str] = Field(default=None, description="If set, all http/https requests will use this proxy by default")
+    analysis_cache_enabled: bool = Field(default=True, description="Global kill switch for the analysis result cache write path. When false, no deltas are persisted regardless of per-module cache_ttl settings.")
+    blob_store_dir: Optional[str] = Field(default=None, description="Root directory for the content-addressed blob store. If unset, defaults to <data_dir>/blob_store. Relative paths are resolved against SAQ_HOME.")
 
 class ServiceConfig(BaseModel):
     name: str = Field(..., description="The name of the service. Must be unique across all services.")
