@@ -184,6 +184,33 @@ def test_acrobat_pdf_bracket_notation_js(datadir, monkeypatch, patched_deobfusca
 
 
 @pytest.mark.unit
+def test_window_property_is_resolved_in_url(datadir, monkeypatch, patched_deobfuscate):
+    """Values written to `window.<prop>` must be resolved when read back and
+    concatenated into a later redirect URL — otherwise the sandbox emits a
+    bogus URL like `https://host/[window.prop]` from Proxy stringification."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(datadir / "window_property_substitution.js")
+    observable.add_directive(YARA_META_JS)
+
+    analyzer = _build_analyzer(root)
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    assert analysis.exit_code == 0
+
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    emitted_obs = file_observables[0]
+    with open(emitted_obs.full_path, "r", encoding="utf-8") as fp:
+        body = fp.read()
+    assert "https://evil.com/?e=user@example.com" in body
+    assert "[window.abcd]" not in body
+
+
+@pytest.mark.unit
 def test_harness_crash_still_emits_observable(tmpdir, monkeypatch):
     """When the sandbox harness crashes partway through, the analyzer should
     still emit the deobfuscated-<name> observable carrying analysis.error."""
