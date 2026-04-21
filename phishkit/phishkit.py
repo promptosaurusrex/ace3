@@ -9,9 +9,14 @@ import json
 import logging
 import mimetypes
 import os
+import socket
+import subprocess
+import threading
+import time
 from subprocess import PIPE, Popen, TimeoutExpired
 import uuid
 from celery import Celery
+from celery.signals import worker_ready, worker_shutting_down
 import shutil
 from yaml import load, SafeLoader
 import magic
@@ -19,6 +24,128 @@ import magic
 logger = logging.getLogger(__name__)
 
 SHARED_CONFIG = "/phishkit/config/phishkit_config.yaml"
+DEFAULT_CONFIG_PATH = "/opt/ace/etc/phishkit_config.yaml"
+
+DEFAULT_RESOURCE_LIMITS = {
+    "container_memory": "2g",
+    "container_cpus": "2.0",
+    "reaper_max_age_seconds": 600,
+    "reaper_interval_seconds": 60,
+    "scanner_timeout_hint": 15,
+}
+
+
+def _load_resource_limits(config_path: str | None = None) -> dict:
+    """Load the resource_limits section from the phishkit yaml, falling back to safe defaults."""
+    path = config_path or DEFAULT_CONFIG_PATH
+    merged = dict(DEFAULT_RESOURCE_LIMITS)
+    try:
+        with open(path, "r") as fp:
+            data = load(fp, Loader=SafeLoader) or {}
+        user = data.get("resource_limits") or {}
+        if isinstance(user, dict):
+            merged.update({k: v for k, v in user.items() if k in DEFAULT_RESOURCE_LIMITS})
+    except FileNotFoundError:
+        logger.debug("resource_limits config not found at %s, using defaults", path)
+    except Exception as e:
+        logger.warning("failed to load resource_limits from %s: %s", path, e)
+    return merged
+
+
+def _force_stop_container(name: str) -> None:
+    """Best-effort kill and remove a scanner container. Silent if already gone."""
+    try:
+        subprocess.run(["docker", "kill", name],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=10, check=False)
+    except Exception as e:
+        logger.debug("docker kill %s failed: %s", name, e)
+    try:
+        subprocess.run(["docker", "rm", "-f", name],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=10, check=False)
+    except Exception as e:
+        logger.debug("docker rm -f %s failed: %s", name, e)
+
+
+def _list_phishkit_containers() -> list[dict]:
+    """Return metadata for every running scanner container labeled by phishkit."""
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "--filter", "label=phishkit.job_id",
+             "--format",
+             '{{.ID}}|{{.Names}}|{{.Label "phishkit.started_at"}}|{{.Label "phishkit.worker"}}'],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except Exception as e:
+        logger.warning("docker ps for reaper failed: %s", e)
+        return []
+    containers = []
+    for line in result.stdout.splitlines():
+        parts = line.split("|", 3)
+        if len(parts) != 4:
+            continue
+        cid, name, started, worker = parts
+        try:
+            started_at = int(started)
+        except ValueError:
+            continue
+        containers.append({"id": cid, "name": name, "started_at": started_at, "worker": worker})
+    return containers
+
+
+def _reap_orphans(max_age_seconds: int, only_this_worker: bool = False) -> int:
+    """Kill any phishkit scanner container older than max_age_seconds. Returns count killed."""
+    now = int(time.time())
+    this_worker = socket.gethostname()
+    killed = 0
+    for c in _list_phishkit_containers():
+        if only_this_worker and c["worker"] != this_worker:
+            continue
+        age = now - c["started_at"]
+        if age > max_age_seconds:
+            logger.warning("reaping orphan phishkit container %s (age=%ss, worker=%s)",
+                           c["name"], age, c["worker"])
+            _force_stop_container(c["name"])
+            killed += 1
+    return killed
+
+
+_reaper_stop = threading.Event()
+
+
+def _reaper_loop(max_age: int, interval: int) -> None:
+    while not _reaper_stop.wait(interval):
+        try:
+            _reap_orphans(max_age)
+        except Exception as e:
+            logger.exception("reaper sweep failed: %s", e)
+
+
+@worker_ready.connect
+def _start_reaper(**_):
+    cfg = _load_resource_limits()
+    # Floor prevents a mistakenly-small reaper_max_age_seconds from killing jobs that just
+    # barely finish on time — must be several multiples of the task timeout plus margin.
+    max_age = max(int(cfg["reaper_max_age_seconds"]),
+                  int(cfg["scanner_timeout_hint"]) * 4 + 120)
+    interval = int(cfg["reaper_interval_seconds"])
+    logger.info("phishkit reaper starting: max_age=%ss interval=%ss", max_age, interval)
+    try:
+        _reap_orphans(max_age)
+    except Exception as e:
+        logger.exception("initial reaper sweep failed: %s", e)
+    threading.Thread(target=_reaper_loop, args=(max_age, interval),
+                     daemon=True, name="phishkit-reaper").start()
+
+
+@worker_shutting_down.connect
+def _shutdown_reaper(**_):
+    _reaper_stop.set()
+    try:
+        _reap_orphans(max_age_seconds=0, only_this_worker=True)
+    except Exception as e:
+        logger.exception("shutdown reaper sweep failed: %s", e)
 
 
 def _has_proxy_error(stdout: str, stderr: str, error_patterns: list[str]) -> bool:
@@ -96,14 +223,28 @@ def _run_scanner(
     with open(abs_config, "r") as f:
         config = load(f, Loader=SafeLoader)
     proxy_fallback = config.get("proxy_fallback", {}) if isinstance(config, dict) else {}
+    resource_limits = _load_resource_limits(abs_config)
 
     synced = _sync_config(abs_config)
 
-    def build_cmd(use_proxy, out_dir):
+    container_name = f"phishkit-scan-{job_id}"
+    worker_hostname = socket.gethostname()
+
+    def build_cmd(use_proxy, out_dir, name):
+        mem = resource_limits["container_memory"]
         cmd = [
             "docker",
             "run",
             "--rm",
+            "--init",
+            "--name", name,
+            "--label", f"phishkit.job_id={job_id}",
+            "--label", f"phishkit.worker={worker_hostname}",
+            "--label", f"phishkit.started_at={int(time.time())}",
+            "--memory", str(mem),
+            "--memory-swap", str(mem),
+            "--cpus", str(resource_limits["container_cpus"]),
+            "--stop-timeout", "5",
             "-v",
             "ace-phishkit:/phishkit",
             os.environ.get("ACE3_PHISHKIT_IMAGE_URL", "phishkit"),
@@ -119,7 +260,7 @@ def _run_scanner(
             cmd.extend(["--config", synced])
         return cmd
 
-    cmd = build_cmd(use_proxy=True, out_dir=output_dir)
+    cmd = build_cmd(use_proxy=True, out_dir=output_dir, name=container_name)
     process = Popen(cmd, stdout=PIPE, stderr=PIPE, text=True)
 
     should_retry = False
@@ -127,16 +268,24 @@ def _run_scanner(
     _stdout, _stderr = "", ""
 
     try:
-        _stdout, _stderr = process.communicate(timeout=timeout)
-    except TimeoutExpired:
-        process.kill()
-        process.wait()
-        timed_out = True
-        if proxy and proxy_fallback_to_direct and proxy_fallback.get("retry_on_timeout", False):
-            should_retry = True
-            logger.warning("timeout for job %s, retrying without proxy", job_id)
-        else:
-            raise
+        try:
+            _stdout, _stderr = process.communicate(timeout=timeout)
+        except TimeoutExpired:
+            logger.warning("phishkit job %s timed out, killing container %s", job_id, container_name)
+            _force_stop_container(container_name)
+            try:
+                _stdout, _stderr = process.communicate(timeout=10)
+            except TimeoutExpired:
+                process.kill()
+                _stdout, _stderr = process.communicate()
+            timed_out = True
+            if proxy and proxy_fallback_to_direct and proxy_fallback.get("retry_on_timeout", False):
+                should_retry = True
+                logger.warning("timeout for job %s, retrying without proxy", job_id)
+            else:
+                raise
+    finally:
+        _force_stop_container(container_name)
 
     if not timed_out:
         for line in _stdout.splitlines():
@@ -160,14 +309,24 @@ def _run_scanner(
         retry_output_dir = f"{output_dir}-direct"
         os.makedirs(retry_output_dir, exist_ok=True)
 
-        retry_cmd = build_cmd(use_proxy=False, out_dir=retry_output_dir)
+        retry_container_name = f"phishkit-scan-{job_id}-direct"
+        retry_cmd = build_cmd(use_proxy=False, out_dir=retry_output_dir, name=retry_container_name)
         process = Popen(retry_cmd, stdout=PIPE, stderr=PIPE, text=True)
         try:
-            _stdout, _stderr = process.communicate(timeout=timeout)
-        except TimeoutExpired:
-            process.kill()
-            process.wait()
-            raise
+            try:
+                _stdout, _stderr = process.communicate(timeout=timeout)
+            except TimeoutExpired:
+                logger.warning("phishkit job %s (direct retry) timed out, killing container %s",
+                               job_id, retry_container_name)
+                _force_stop_container(retry_container_name)
+                try:
+                    _stdout, _stderr = process.communicate(timeout=10)
+                except TimeoutExpired:
+                    process.kill()
+                    _stdout, _stderr = process.communicate()
+                raise
+        finally:
+            _force_stop_container(retry_container_name)
 
         for line in _stdout.splitlines():
             logging.info(f"stdout(direct)> {line}")
@@ -218,6 +377,8 @@ app = Celery(
     broker=f"pyamqp://ace3:{rabbitmq_password}@rabbitmq//")
 
 app.conf.broker_transport_options = {"global_keyprefix": "phishkit"}
+app.conf.task_time_limit = 300
+app.conf.task_soft_time_limit = 240
 
 @app.task
 def ping() -> str:
