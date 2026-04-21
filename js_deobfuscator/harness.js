@@ -118,6 +118,17 @@ function safeStringify(value) {
 
 function recorder(label) {
   const target = function () {};
+  // Per-recorder maps: values assigned by the sample, and memoized child
+  // recorders so chained access (`window.a.b.c = ...` then a later read of
+  // `window.a.b.c`) resolves on the same proxy. Without this, every `get`
+  // returned a fresh Proxy, so any value the script wrote to itself was
+  // dropped and later reads stringified to `[label]` via Symbol.toPrimitive
+  // — producing bogus URLs like `https://host/[window.abcd]` when
+  // malware concatenates a stored value back into a redirect target.
+  // `Object.create(null)` avoids collisions with adversarial property
+  // names like `__proto__` or `hasOwnProperty`.
+  const stored = Object.create(null);
+  const children = Object.create(null);
   return new Proxy(target, {
     get(_t, prop) {
       if (typeof prop === 'symbol') {
@@ -128,10 +139,18 @@ function recorder(label) {
       if (prop === 'toString' || prop === 'valueOf') return () => `[${label}]`;
       if (prop === 'then') return undefined; // don't look like a thenable
       events.push({ kind: 'get', label, prop: String(prop) });
-      return recorder(`${label}.${String(prop)}`);
+      if (prop in stored) return stored[prop];
+      if (!(prop in children)) {
+        children[prop] = recorder(`${label}.${String(prop)}`);
+      }
+      return children[prop];
     },
     set(_t, prop, value) {
       events.push({ kind: 'set', label, prop: String(prop), value: safeStringify(value) });
+      stored[prop] = value;
+      // If the script already read this prop before writing it, drop the
+      // now-stale sub-recorder so the next read resolves the stored value.
+      delete children[prop];
       return true;
     },
     apply(_t, _thisArg, args) {
