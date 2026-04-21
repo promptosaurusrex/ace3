@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.36] - 2026-04-21
+
+- [Adds 'Needs Research' functionality](https://github.com/ACE-Collective/ace3/pull/150)
+- [Preserve whitespace in hunt instructions](https://github.com/ACE-Collective/ace3/pull/151)
+- [Adds descendants functionality to observable modifier](https://github.com/ACE-Collective/ace3/pull/152)
+- [Implement lock-dependent UI updates and status display for alerts](https://github.com/ACE-Collective/ace3/pull/153)
+- [Various Phishkit adjustments to handle wss](https://github.com/ACE-Collective/ace3/pull/154)
+- [Fixes for JS sandbox recorder proxy](https://github.com/ACE-Collective/ace3/pull/155)
+
 ## [3.0.35] - 2026-04-17
 
 - [Minor improvements for adding phishkit MARKER URL observables](https://github.com/ACE-Collective/ace3/pull/144)
