@@ -536,6 +536,43 @@ class TestVisualCheckboxBypass:
     @pytest.mark.unit
     @patch("scanner.cv2")
     @patch("scanner.Image.open")
+    def test_visual_checkbox_bypass_palette_mode_converts_to_rgb(
+        self, mock_image_open, mock_cv2, scanner, tmpdir
+    ):
+        # Palette-mode PNGs (mode='P') must be converted to RGB before
+        # cv2.cvtColor, otherwise OpenCV raises "Bad number of channels"
+        # and aborts the whole bypass (regression from 2026-04-21).
+        fake_screenshot = MagicMock()
+        fake_screenshot.size = (800, 600)
+        fake_checkbox = MagicMock()
+        fake_checkbox.mode = "P"
+        converted = MagicMock()
+        fake_checkbox.convert.return_value = converted
+
+        mock_image_open.side_effect = [fake_checkbox, fake_screenshot]
+
+        screenshot_gray = MagicMock()
+        screenshot_gray.shape = [600, 800]
+        needle_gray = MagicMock()
+        needle_gray.shape = [30, 30]
+        mock_cv2.cvtColor.side_effect = [screenshot_gray, needle_gray]
+        mock_cv2.TM_CCOEFF_NORMED = 5
+        mock_cv2.matchTemplate.return_value = MagicMock()
+        mock_cv2.minMaxLoc.return_value = (0, 0.5, (0, 0), (0, 0))
+
+        sb = MagicMock()
+        sb.execute_cdp_cmd.return_value = {"data": "AAAA"}
+        scanner._output_dir = str(tmpdir)
+        config = {"checkbox_pngs": ["iVBORw0KGgo="]}
+
+        # must not raise
+        scanner.visual_checkbox_bypass(sb, config)
+
+        fake_checkbox.convert.assert_called_with("RGB")
+
+    @pytest.mark.unit
+    @patch("scanner.cv2")
+    @patch("scanner.Image.open")
     def test_visual_checkbox_bypass_not_found(self, mock_image_open, mock_cv2, scanner, tmpdir, capsys):
         fake_screenshot = MagicMock()
         fake_screenshot.size = (800, 600)
@@ -568,3 +605,193 @@ class TestVisualCheckboxBypass:
         assert len(click_calls) == 0
         captured = capsys.readouterr()
         assert "Failed to find checkbox visually" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# WebSocket event handlers
+# ---------------------------------------------------------------------------
+
+def _ws_event(**attrs):
+    event = MagicMock()
+    for k, v in attrs.items():
+        setattr(event, k, v)
+    return event
+
+
+def _ws_frame(opcode=1, payload_data="hi"):
+    frame = MagicMock()
+    frame.opcode = opcode
+    frame.payload_data = payload_data
+    return frame
+
+
+class TestWebSocketCreatedHandler:
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_records_url_and_appends_request_entry(self, scanner):
+        event = _ws_event(request_id="ws-1", url="wss://example.com/8053", initiator=None)
+        await scanner.websocket_created_handler(event)
+
+        assert "ws-1" in scanner.websockets
+        assert scanner.websockets["ws-1"]["url"] == "wss://example.com/8053"
+        assert scanner.websockets["ws-1"]["created_at"] is not None
+        assert len(scanner.requests) == 1
+        assert scanner.requests[0]["type"] == "websocket_created"
+        assert scanner.requests[0]["url"] == "wss://example.com/8053"
+        assert scanner.requests[0]["requestId"] == "ws-1"
+
+
+class TestWebSocketHandshakeHandlers:
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_handshake_request_captures_headers(self, scanner):
+        req = MagicMock()
+        req.headers = {"User-Agent": "ua"}
+        event = _ws_event(request_id="ws-1", request=req)
+        await scanner.websocket_will_send_handshake_handler(event)
+
+        assert scanner.websockets["ws-1"]["handshake_request_headers"] == {"User-Agent": "ua"}
+        assert scanner.requests[-1]["type"] == "websocket_handshake_request"
+        assert scanner.requests[-1]["headers"] == {"User-Agent": "ua"}
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_handshake_response_captures_status_and_headers(self, scanner):
+        resp = MagicMock()
+        resp.status = 101
+        resp.headers = {"Upgrade": "websocket"}
+        event = _ws_event(request_id="ws-1", response=resp)
+        await scanner.websocket_handshake_response_handler(event)
+
+        record = scanner.websockets["ws-1"]
+        assert record["handshake_response_status"] == 101
+        assert record["handshake_response_headers"] == {"Upgrade": "websocket"}
+        assert scanner.requests[-1]["type"] == "websocket_handshake_response"
+        assert scanner.requests[-1]["status_code"] == 101
+
+
+class TestWebSocketFrameHandlers:
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_frame_sent_appends_frame_and_entry(self, scanner):
+        scanner.websockets["ws-1"] = {
+            "requestId": "ws-1", "url": "wss://example.com/8053",
+            "created_at": None, "handshake_request_headers": None,
+            "handshake_response_status": None, "handshake_response_headers": None,
+            "frames": [], "closed_at": None,
+        }
+        event = _ws_event(request_id="ws-1", response=_ws_frame(opcode=1, payload_data="ping"))
+        await scanner.websocket_frame_sent_handler(event)
+
+        frames = scanner.websockets["ws-1"]["frames"]
+        assert len(frames) == 1
+        assert frames[0]["direction"] == "sent"
+        assert frames[0]["opcode"] == 1
+        assert frames[0]["payload_data"] == "ping"
+        assert frames[0]["payload_truncated"] is False
+        assert scanner.requests[-1]["type"] == "websocket_frame_sent"
+        assert scanner.requests[-1]["url"] == "wss://example.com/8053"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_frame_received_appends_frame_and_entry(self, scanner):
+        event = _ws_event(request_id="ws-1", response=_ws_frame(opcode=2, payload_data="YWJj"))
+        await scanner.websocket_frame_received_handler(event)
+
+        frames = scanner.websockets["ws-1"]["frames"]
+        assert len(frames) == 1
+        assert frames[0]["direction"] == "received"
+        assert frames[0]["opcode"] == 2
+        assert frames[0]["payload_data"] == "YWJj"
+        assert scanner.requests[-1]["type"] == "websocket_frame_received"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_frame_payload_truncated_when_over_cap(self, scanner):
+        scanner.MAX_WS_FRAME_BYTES = 8
+        event = _ws_event(
+            request_id="ws-1",
+            response=_ws_frame(opcode=1, payload_data="A" * 32),
+        )
+        await scanner.websocket_frame_sent_handler(event)
+
+        frame = scanner.websockets["ws-1"]["frames"][0]
+        assert frame["payload_truncated"] is True
+        assert len(frame["payload_data"]) == 8
+
+
+class TestWebSocketErrorAndClosedHandlers:
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_frame_error_appends_entry(self, scanner):
+        event = _ws_event(request_id="ws-1", error_message="protocol error")
+        await scanner.websocket_frame_error_handler(event)
+
+        assert scanner.requests[-1]["type"] == "websocket_frame_error"
+        assert scanner.requests[-1]["error_message"] == "protocol error"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_closed_sets_closed_at(self, scanner):
+        event = _ws_event(request_id="ws-1")
+        await scanner.websocket_closed_handler(event)
+
+        assert scanner.websockets["ws-1"]["closed_at"] is not None
+        assert scanner.requests[-1]["type"] == "websocket_closed"
+
+
+class TestFormatWebSocketBlock:
+
+    @pytest.mark.unit
+    def test_block_contains_marker_url_and_frames(self, scanner):
+        ws = {
+            "requestId": "ws-1",
+            "url": "wss://example.com/8053",
+            "created_at": "2026-04-21T09:00:00",
+            "handshake_request_headers": {},
+            "handshake_response_status": 101,
+            "handshake_response_headers": {},
+            "frames": [
+                {"date": "2026-04-21T09:00:01", "direction": "sent",
+                 "opcode": 1, "payload_data": "hello", "payload_truncated": False},
+                {"date": "2026-04-21T09:00:02", "direction": "received",
+                 "opcode": 1, "payload_data": "world", "payload_truncated": True},
+            ],
+            "closed_at": "2026-04-21T09:00:03",
+        }
+        block = scanner._format_websocket_block(ws)
+        assert "MARKER URL: wss://example.com/8053" in block
+        assert "handshake_response_status: 101" in block
+        assert "SENT op=1" in block
+        assert "RECV op=1 [truncated]" in block
+        assert "hello" in block
+        assert "world" in block
+        assert "closed_at: 2026-04-21T09:00:03" in block
+
+    @pytest.mark.unit
+    def test_block_handles_missing_fields(self, scanner):
+        ws = {
+            "requestId": "ws-1",
+            "url": None,
+            "created_at": None,
+            "handshake_request_headers": None,
+            "handshake_response_status": None,
+            "handshake_response_headers": None,
+            "frames": [],
+            "closed_at": None,
+        }
+        block = scanner._format_websocket_block(ws)
+        # MARKER URL line is always present; uses placeholder when url missing
+        assert "MARKER URL: <unknown>" in block
+
+
+class TestScannerInitWebSockets:
+
+    @pytest.mark.unit
+    def test_init_includes_websockets_and_frame_cap(self, scanner):
+        assert scanner.websockets == {}
+        assert scanner.MAX_WS_FRAME_BYTES == 65536

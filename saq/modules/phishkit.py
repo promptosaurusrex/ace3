@@ -311,6 +311,36 @@ class PhishkitAnalyzer(AnalysisModule):
             except Exception as e:
                 logging.error(f"failed to extract MARKER URLs from dom.html for {observable}: {e}")
 
+        # extract URL observables from every request entry in requests.json.
+        # The MARKER URL pass above only covers URLs whose response bodies
+        # were captured into dom.html, which skips anything filtered by
+        # skip_body_ext / skip_body_url_patterns and anything that failed
+        # outright. Parsing requests.json catches those too — including
+        # errored URLs like the second-stage challenge endpoints that get
+        # blocked by upstream origin checks. add_observable_by_spec dedupes
+        # by value, so overlap with the MARKER URL pass is a no-op.
+        requests_path = os.path.join(analysis.output_dir, "requests.json")
+        if os.path.exists(requests_path):
+            try:
+                with open(requests_path, "r", errors="ignore") as fp:
+                    entries = json.load(fp)
+                for entry in entries:
+                    if entry.get("type") != "request":
+                        continue
+                    raw_url = entry.get("url")
+                    if not raw_url:
+                        continue
+                    if raw_url.startswith(("file:///", "data:", "blob:")):
+                        continue
+                    url = URL(raw_url)
+                    if not url.value:
+                        continue
+                    obs = analysis.add_observable_by_spec(F_URL, url.value)
+                    if obs:
+                        obs.display_type = "Phishkit Request URL"
+            except Exception as e:
+                logging.error(f"failed to extract URLs from requests.json for {observable}: {e}")
+
         return AnalysisExecutionResult.COMPLETED
 
     def execute_analysis(self, observable) -> AnalysisExecutionResult:

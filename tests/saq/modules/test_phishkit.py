@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import tempfile
@@ -684,6 +685,76 @@ def test_phishkit_analyzer_continue_analysis_extracts_marker_urls(monkeypatch, t
             "https://evil.com/login.php",
             "https://evil.com/steal.js",
             "https://cdn.example.com/payload.html",
+        ]
+
+
+@pytest.mark.unit
+def test_phishkit_analyzer_continue_analysis_extracts_requests_json_urls(monkeypatch, test_context):
+    """Every type=request entry in requests.json should yield a URL observable,
+    including URLs that never made it into dom.html as MARKER URLs."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
+    analysis = PhishkitAnalysis()
+    analysis.job_id = "test-job-requests-json"
+    analysis.output_dir = "/tmp/test-output"
+    url_observable.add_analysis(analysis)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # dom.html carries one MARKER URL; requests.json carries three more
+        # (a filtered CSS, a failed endpoint, and a duplicate of the MARKER URL)
+        # plus noise (response, error, file://, data:, blob:).
+        dom_file = os.path.join(temp_dir, "dom.html")
+        with open(dom_file, "w") as f:
+            f.write("\n\nMARKER URL: https://evil.com/login.php\n\n")
+
+        requests_file = os.path.join(temp_dir, "requests.json")
+        with open(requests_file, "w") as f:
+            json.dump([
+                {"type": "request", "url": "https://evil.com/login.php"},  # dup of MARKER
+                {"type": "request", "url": "https://cdn.example.com/styles.css"},  # filtered from dom.html
+                {"type": "response", "url": "https://evil.com/login.php"},  # ignored
+                {"type": "request", "url": "https://blocked.example.com/captcha.png"},  # failed fetch
+                {"type": "error", "url": "https://blocked.example.com/captcha.png"},  # ignored
+                {"type": "request", "url": "file:///local/path.html"},  # skipped
+                {"type": "request", "url": "data:image/svg+xml;base64,PHN2Zw=="},  # skipped
+                {"type": "request", "url": "blob:https://evil.com/abc123"},  # skipped
+                {"type": "websocket_created", "url": "wss://evil.com/ws"},  # not a request, ignored here
+            ], f)
+
+        exit_code_file = os.path.join(temp_dir, "exit.code")
+        with open(exit_code_file, "w") as f:
+            f.write("0")
+
+        output_files = [exit_code_file, dom_file, requests_file]
+        analysis.output_dir = temp_dir
+
+        monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result",
+                            lambda job_id, output_dir, timeout=1: output_files)
+
+        added_urls = []
+        original_add = analysis.add_observable_by_spec
+        def tracking_add(o_type, o_value, **kwargs):
+            if o_type == F_URL:
+                added_urls.append(o_value)
+            return original_add(o_type, o_value, **kwargs)
+        monkeypatch.setattr(analysis, "add_observable_by_spec", tracking_add)
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+        result = analyzer.continue_analysis(url_observable, analysis)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        # MARKER URL pass emits login.php once. requests.json pass then emits
+        # login.php (dedup), styles.css, and captcha.png. file:/data:/blob: and
+        # non-request types are skipped.
+        assert added_urls == [
+            "https://evil.com/login.php",
+            "https://evil.com/login.php",
+            "https://cdn.example.com/styles.css",
+            "https://blocked.example.com/captcha.png",
         ]
 
 
