@@ -59,7 +59,7 @@ def get_nested_value(data: dict, dot_path: str):
 @dataclass
 class TreeCondition:
     analysis_type: str
-    scope: str = "ancestors"  # "ancestors", "global", "self", or "parent"
+    scope: str = "ancestors"  # "ancestors", "descendants", "global", "self", or "parent"
     details_match: dict[str, re.Pattern] = field(default_factory=dict)
     observable_match: dict[str, re.Pattern] = field(default_factory=dict)
     negate: bool = False
@@ -71,6 +71,8 @@ class TreeCondition:
     def _evaluate_inner(self, observable: Observable, root: RootAnalysis) -> bool:
         if self.scope == "ancestors":
             analyses = _get_ancestor_analyses(observable)
+        elif self.scope == "descendants":
+            analyses = _get_descendant_analyses(observable)
         elif self.scope == "parent":
             analyses = observable.parents
         elif self.scope == "self":
@@ -126,6 +128,28 @@ def _get_ancestor_analyses(observable: Observable) -> Generator[Analysis, None, 
         yield analysis
         if analysis.observable:
             stack.extend(analysis.observable.parents)
+
+
+def _get_descendant_analyses(observable: Observable) -> Generator[Analysis, None, None]:
+    """Yield all Analysis objects that are descendants of this observable.
+
+    A descendant analysis runs on an observable that was (transitively) produced
+    by an analysis on this observable. Analyses directly on this observable
+    (scope: "self") are NOT included — use scope "self" for those.
+    """
+    visited = set()
+    stack = []
+    for self_analysis in observable.all_analysis:
+        for child in self_analysis.observables:
+            stack.extend(child.all_analysis)
+    while stack:
+        analysis = stack.pop()
+        if id(analysis) in visited:
+            continue
+        visited.add(id(analysis))
+        yield analysis
+        for child in analysis.observables:
+            stack.extend(child.all_analysis)
 
 
 @dataclass
@@ -244,12 +268,27 @@ class RuleActions:
     add_detection_points: list[str] = field(default_factory=list)
     exclude_analysis: list[str] = field(default_factory=list)
     limit_analysis: list[str] = field(default_factory=list)
+    reset_analysis: list[str] = field(default_factory=list)
     set_display_type: Optional[str] = None
     set_display_value: Optional[str] = None
     ignore: bool = False
 
     def apply(self, observable: Observable) -> dict:
         applied = {}
+        # Clear any "no_analysis" sentinels FIRST so that the subsequent
+        # add_directives below can trigger a re-dispatch (via
+        # EVENT_DIRECTIVE_ADDED) and have the targeted modules actually run
+        # instead of being skipped by accepts() seeing the False marker.
+        if self.reset_analysis:
+            reset_done = []
+            for module_path in self.reset_analysis:
+                current = observable._analysis.get(module_path)
+                if current is False:
+                    del observable._analysis[module_path]
+                    reset_done.append(module_path)
+            if reset_done:
+                applied["reset_analysis"] = reset_done
+
         if self.add_directives:
             for d in self.add_directives:
                 observable.add_directive(d)
@@ -425,6 +464,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
             add_detection_points=actions_data.get("add_detection_points", []) or [],
             exclude_analysis=actions_data.get("exclude_analysis", []) or [],
             limit_analysis=actions_data.get("limit_analysis", []) or [],
+            reset_analysis=actions_data.get("reset_analysis", []) or [],
             set_display_type=actions_data.get("set_display_type"),
             set_display_value=actions_data.get("set_display_value"),
             ignore=bool(actions_data.get("ignore", False)),
@@ -443,7 +483,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
     def _parse_tree_condition(self, tc_data: dict, rule_name: str) -> Optional[TreeCondition]:
         analysis_type = tc_data.get("analysis_type", "")
         scope = tc_data.get("scope", "ancestors")
-        if scope not in ("ancestors", "global", "self", "parent"):
+        if scope not in ("ancestors", "descendants", "global", "self", "parent"):
             logging.warning(f"invalid scope '{scope}' in tree_condition for rule '{rule_name}', defaulting to 'ancestors'")
             scope = "ancestors"
         details_match_raw = tc_data.get("details_match", {}) or {}

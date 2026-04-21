@@ -53,6 +53,16 @@ skip_body_url_patterns:
   - "website-files.com"    # Part of top 10 domains by traffic usage in SmartProxy statistics
   - "wixstatic.com"        # Part of top 10 domains by traffic usage in SmartProxy statistics
 
+# URL patterns that cause phishkit to refuse a scan entirely. A match is any
+# URL that *contains* the pattern string (case-insensitive). Unlike
+# skip_body_url_patterns (which only affects dom.html output), this blocks
+# the scan itself so no PhishkitAnalysis is created for the URL.
+#
+# Use this to suppress scans of high-trust domains that downstream modules
+# (e.g. JavaScriptDeobfuscationAnalyzer → url_extraction) pick up and tag
+# with the `crawl` directive.
+deny_crawl_url_patterns: []
+
 # Bypass definitions used to detect and click through warning/challenge pages.
 # Each entry has:
 #   type      — label for logging
