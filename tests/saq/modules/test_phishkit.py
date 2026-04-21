@@ -208,6 +208,28 @@ def test_phishkit_custom_requirement_missing_yaml_file(tmp_path):
 
 
 @pytest.mark.integration
+def test_phishkit_custom_requirement_invalid_deny_pattern_type(tmp_path):
+    """A non-list deny_crawl_url_patterns value should be ignored safely."""
+    import yaml as _yaml
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    url = root.add_observable_by_spec(F_URL, "https://login.windows.net/common")
+
+    config_file = tmp_path / "phishkit_config.yaml"
+    config_file.write_text(_yaml.safe_dump({"deny_crawl_url_patterns": "login.windows.net"}))
+    analyzer = PhishkitAnalyzer(
+        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+        context=create_test_context(root=root),
+    )
+    analyzer._yaml_config_path = str(config_file)
+    analyzer._load_deny_patterns()
+
+    assert analyzer._deny_crawl_patterns == []
+    assert analyzer.custom_requirement(url) is True
+
+
+@pytest.mark.integration
 def test_phishkit_analyzer_verify_environment(test_context):
     """Test PhishkitAnalyzer environment verification."""
     analyzer = PhishkitAnalyzer(

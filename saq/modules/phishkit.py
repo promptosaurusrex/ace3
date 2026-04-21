@@ -208,9 +208,13 @@ class PhishkitAnalyzer(AnalysisModule):
             return
 
         raw = data.get("deny_crawl_url_patterns", []) or []
-        self._deny_crawl_patterns = [
-            p.lower() for p in raw if isinstance(p, str) and p
-        ]
+        if not isinstance(raw, list):
+            logging.error(
+                f"invalid deny_crawl_url_patterns type in {self._yaml_config_path}: "
+                f"expected list, got {type(raw).__name__}"
+            )
+            raw = []
+        self._deny_crawl_patterns = [p.lower() for p in raw if isinstance(p, str) and p]
         logging.debug(
             f"loaded {len(self._deny_crawl_patterns)} phishkit deny_crawl_url_patterns"
         )
