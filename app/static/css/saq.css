@@ -568,7 +568,8 @@ nav[data-toggle="toc"] {
 }
 
 .comment-text,
-.obs-comment-text {
+.obs-comment-text,
+.instructions-text {
     white-space: pre-wrap;
 }
 
