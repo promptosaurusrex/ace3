@@ -8,6 +8,32 @@ var ownership_check_failures = 0;
 var last_successful_check = null;
 var FAILURE_WARNING_THRESHOLD = 3;
 
+function update_status_display(status, is_locked) {
+    var el = $("#alert-status-value");
+    if (is_locked) {
+        el.html(
+            '<span class="badge text-bg-warning">' +
+            '<span class="bi bi-lock-fill"></span> ' +
+            $("<span>").text(status).html() +
+            ' &mdash; locked actions are disabled until analysis completes</span>'
+        );
+    } else {
+        el.text(status);
+    }
+}
+
+function update_lock_ui(is_locked) {
+    $(".lock-dependent").each(function() {
+        var el = $(this);
+        el.prop("disabled", is_locked);
+        var tooltip = bootstrap.Tooltip.getInstance(el[0]);
+        if (tooltip) tooltip.dispose();
+        if (is_locked) {
+            new bootstrap.Tooltip(el[0], { title: "alert is currently locked" });
+        }
+    });
+}
+
 function format_time_ago(date) {
     var seconds = Math.floor((Date.now() - date.getTime()) / 1000);
     if (seconds < 30) return "just now";
@@ -41,6 +67,21 @@ function check_alert_meta() {
             ownership_check_failures = 0;
             last_successful_check = Date.now();
             $("#ownership_check_warning").addClass("d-none");
+
+            // update lock state and status field
+            var is_locked = data["is_locked"] === true;
+            var new_status = data["status"] || current_alert_status;
+            var lock_changed = is_locked !== current_alert_is_locked;
+            var status_changed = new_status !== current_alert_status;
+
+            if (lock_changed) {
+                current_alert_is_locked = is_locked;
+                update_lock_ui(is_locked);
+            }
+            if (lock_changed || status_changed) {
+                current_alert_status = new_status;
+                update_status_display(new_status, is_locked);
+            }
 
             var response_owner_id = data["owner_id"] != null ? Number(data["owner_id"]) : null;
             var local_owner_id = current_alert_owner_id != null ? Number(current_alert_owner_id) : null;
@@ -78,6 +119,12 @@ $(document).ready(function() {
 // debugger; // FREAKING AWESOME
 
     check_alert_meta();
+
+    // apply initial lock state
+    if (typeof current_alert_is_locked !== "undefined" && current_alert_is_locked) {
+        update_lock_ui(true);
+        update_status_display(current_alert_status, true);
+    }
 
     // Triggered when the modal is shown
     $('#disposition_modal').on('shown.bs.modal', function(e) {
