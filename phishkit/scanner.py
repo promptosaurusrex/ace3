@@ -260,13 +260,14 @@ class PhishkitConfig:
     skip_body_url_patterns: list
     handlers: dict
     bypasses: list
+    max_ws_frame_bytes: int = 65536
 
 
 def _load_config(config_path: str) -> PhishkitConfig:
     """Load phishkit config from a YAML file.
 
     Returns a PhishkitConfig with skip_body_ext, skip_body_url_patterns,
-    handlers, and bypasses.  Raises on missing or invalid config.
+    handlers, bypasses, and max_ws_frame_bytes. Raises on missing or invalid config.
     """
     with open(config_path, "r") as f:
         data = safe_load(f)
@@ -279,13 +280,15 @@ def _load_config(config_path: str) -> PhishkitConfig:
         skip_body_url_patterns=data.get("skip_body_url_patterns", []),
         handlers=data.get("handlers", {}),
         bypasses=data.get("bypasses", []),
+        max_ws_frame_bytes=int(data.get("max_ws_frame_bytes", 65536)),
     )
 
     print(
         f"loaded config from {config_path}: {len(config.skip_body_ext)} extensions, "
         f"{len(config.skip_body_url_patterns)} URL patterns, "
         f"{len(config.handlers)} handlers, "
-        f"{len(config.bypasses)} bypasses"
+        f"{len(config.bypasses)} bypasses, "
+        f"max_ws_frame_bytes={config.max_ws_frame_bytes}"
     )
     return config
 
@@ -309,12 +312,15 @@ class Scanner:
         self.requests = []
         self.bytes_downloaded = 0
         self.domain_stats = {}  # domain -> {bytes_downloaded, request_count, response_count, first_request_time, last_finished_time}
+        # request_id -> per-socket record aggregated from WebSocket* CDP events
+        self.websockets = {}
 
         config = _load_config(config_path)
         self.SKIP_BODY_EXT = config.skip_body_ext
         self.SKIP_BODY_URL_PATTERNS = config.skip_body_url_patterns
         self.HANDLERS = config.handlers
         self.BYPASSES = config.bypasses
+        self.MAX_WS_FRAME_BYTES = config.max_ws_frame_bytes
 
         self._bypass_handlers = {
             "visual_checkbox_bypass": self.visual_checkbox_bypass,
@@ -355,6 +361,32 @@ class Scanner:
             "scan_duration_seconds": round(scan_duration, 2),
             "domain_stats": domain_metrics,
         }
+
+    def _format_websocket_block(self, ws: dict) -> str:
+        """Render a WebSocket record as a dom.html block.
+
+        Starts with 'MARKER URL: <ws_url>' so the existing PhishkitAnalyzer
+        URL extractor promotes the ws/wss target to an F_URL observable.
+        """
+        url = ws.get("url") or "<unknown>"
+        lines = ["", "", f"MARKER URL: {url}", ""]
+        lines.append(f"WebSocket: {url}")
+        if ws.get("created_at"):
+            lines.append(f"created_at: {ws['created_at']}")
+        status = ws.get("handshake_response_status")
+        if status is not None:
+            lines.append(f"handshake_response_status: {status}")
+        for frame in ws.get("frames", []):
+            direction = "SENT" if frame.get("direction") == "sent" else "RECV"
+            marker = " [truncated]" if frame.get("payload_truncated") else ""
+            lines.append(
+                f"[{frame.get('date')}] {direction} op={frame.get('opcode')}{marker} "
+                f"{frame.get('payload_data') or ''}"
+            )
+        if ws.get("closed_at"):
+            lines.append(f"closed_at: {ws['closed_at']}")
+        lines.append("")
+        return "\n".join(lines)
 
     def check_dom_filter(self, url: str) -> bool:
         """Returns True if the URL's response body should be skipped when
@@ -506,6 +538,162 @@ class Scanner:
         except Exception as e:
             print(f"exception parsing network.ResponseReceived event: {event}: {e}")
 
+    def _get_websocket_record(self, request_id: str) -> dict:
+        """Return the aggregated record for a socket, creating it if missing.
+
+        Some phishing kits open a socket without a prior WebSocketCreated event
+        reaching us (e.g. created in a worker context before the handler attached),
+        so every handler tolerates a missing record by creating one on demand.
+        """
+        record = self.websockets.get(request_id)
+        if record is None:
+            record = {
+                "requestId": request_id,
+                "url": None,
+                "created_at": None,
+                "handshake_request_headers": None,
+                "handshake_response_status": None,
+                "handshake_response_headers": None,
+                "frames": [],
+                "closed_at": None,
+            }
+            self.websockets[request_id] = record
+        return record
+
+    def _truncate_ws_payload(self, payload: str) -> tuple[str, bool]:
+        """Cap frame payload length. Returns (payload, truncated)."""
+        if payload is None:
+            return "", False
+        if len(payload) > self.MAX_WS_FRAME_BYTES:
+            return payload[: self.MAX_WS_FRAME_BYTES], True
+        return payload, False
+
+    async def websocket_created_handler(self, event: mycdp.network.WebSocketCreated):
+        try:
+            record = self._get_websocket_record(str(event.request_id))
+            record["url"] = event.url
+            record["created_at"] = datetime.now().isoformat()
+            self.requests.append({
+                "date": record["created_at"],
+                "type": "websocket_created",
+                "requestId": str(event.request_id),
+                "url": event.url,
+            })
+        except Exception as e:
+            print(f"exception parsing network.WebSocketCreated event: {event}: {e}")
+
+    async def websocket_will_send_handshake_handler(
+        self, event: mycdp.network.WebSocketWillSendHandshakeRequest
+    ):
+        try:
+            record = self._get_websocket_record(str(event.request_id))
+            headers = getattr(event.request, "headers", None) or {}
+            record["handshake_request_headers"] = headers
+            self.requests.append({
+                "date": datetime.now().isoformat(),
+                "type": "websocket_handshake_request",
+                "requestId": str(event.request_id),
+                "url": record.get("url"),
+                "headers": headers,
+            })
+        except Exception as e:
+            print(
+                f"exception parsing network.WebSocketWillSendHandshakeRequest event: {event}: {e}"
+            )
+
+    async def websocket_handshake_response_handler(
+        self, event: mycdp.network.WebSocketHandshakeResponseReceived
+    ):
+        try:
+            record = self._get_websocket_record(str(event.request_id))
+            status = getattr(event.response, "status", None)
+            headers = getattr(event.response, "headers", None) or {}
+            record["handshake_response_status"] = status
+            record["handshake_response_headers"] = headers
+            self.requests.append({
+                "date": datetime.now().isoformat(),
+                "type": "websocket_handshake_response",
+                "requestId": str(event.request_id),
+                "url": record.get("url"),
+                "status_code": status,
+                "headers": headers,
+            })
+        except Exception as e:
+            print(
+                f"exception parsing network.WebSocketHandshakeResponseReceived event: {event}: {e}"
+            )
+
+    def _append_ws_frame(self, record: dict, direction: str, frame) -> dict:
+        opcode = getattr(frame, "opcode", None)
+        payload_raw = getattr(frame, "payload_data", None)
+        payload, truncated = self._truncate_ws_payload(payload_raw)
+        entry = {
+            "date": datetime.now().isoformat(),
+            "direction": direction,
+            "opcode": opcode,
+            "payload_data": payload,
+            "payload_truncated": truncated,
+        }
+        record["frames"].append(entry)
+        return entry
+
+    async def websocket_frame_sent_handler(self, event: mycdp.network.WebSocketFrameSent):
+        try:
+            record = self._get_websocket_record(str(event.request_id))
+            frame_entry = self._append_ws_frame(record, "sent", event.response)
+            self.requests.append({
+                **frame_entry,
+                "type": "websocket_frame_sent",
+                "requestId": str(event.request_id),
+                "url": record.get("url"),
+            })
+        except Exception as e:
+            print(f"exception parsing network.WebSocketFrameSent event: {event}: {e}")
+
+    async def websocket_frame_received_handler(
+        self, event: mycdp.network.WebSocketFrameReceived
+    ):
+        try:
+            record = self._get_websocket_record(str(event.request_id))
+            frame_entry = self._append_ws_frame(record, "received", event.response)
+            self.requests.append({
+                **frame_entry,
+                "type": "websocket_frame_received",
+                "requestId": str(event.request_id),
+                "url": record.get("url"),
+            })
+        except Exception as e:
+            print(f"exception parsing network.WebSocketFrameReceived event: {event}: {e}")
+
+    async def websocket_frame_error_handler(
+        self, event: mycdp.network.WebSocketFrameError
+    ):
+        try:
+            record = self._get_websocket_record(str(event.request_id))
+            error_message = getattr(event, "error_message", None)
+            self.requests.append({
+                "date": datetime.now().isoformat(),
+                "type": "websocket_frame_error",
+                "requestId": str(event.request_id),
+                "url": record.get("url"),
+                "error_message": error_message,
+            })
+        except Exception as e:
+            print(f"exception parsing network.WebSocketFrameError event: {event}: {e}")
+
+    async def websocket_closed_handler(self, event: mycdp.network.WebSocketClosed):
+        try:
+            record = self._get_websocket_record(str(event.request_id))
+            record["closed_at"] = datetime.now().isoformat()
+            self.requests.append({
+                "date": record["closed_at"],
+                "type": "websocket_closed",
+                "requestId": str(event.request_id),
+                "url": record.get("url"),
+            })
+        except Exception as e:
+            print(f"exception parsing network.WebSocketClosed event: {event}: {e}")
+
     def bypass_recaptcha(self, sb: SB):
         searches = ["Please complete the security check to access the website."]
         recaptcha_detected = False
@@ -646,11 +834,12 @@ class Scanner:
         match_size = None
         confidence = 0.88
         for checkbox in checkboxes:
-            # Convert needle to grayscale numpy array
-            if checkbox.mode == "RGBA":
-                needle_gray = cv2.cvtColor(np.array(checkbox.convert("RGB")), cv2.COLOR_RGB2GRAY)
-            else:
-                needle_gray = cv2.cvtColor(np.array(checkbox), cv2.COLOR_RGB2GRAY)
+            # Convert needle to grayscale numpy array. Normalize to RGB first
+            # so PNGs saved in modes PIL uses for smaller files (P, L, LA,
+            # RGBA) don't crash cv2.cvtColor, which only accepts 3- or
+            # 4-channel arrays.
+            needle_rgb = checkbox if checkbox.mode == "RGB" else checkbox.convert("RGB")
+            needle_gray = cv2.cvtColor(np.array(needle_rgb), cv2.COLOR_RGB2GRAY)
 
             if needle_gray.shape[0] > screenshot_gray.shape[0] or needle_gray.shape[1] > screenshot_gray.shape[1]:
                 print(f"skipping {checkbox.size}: larger than screenshot")
@@ -698,8 +887,12 @@ class Scanner:
                 })
             # Wait for the page to navigate after the click (some phishing
             # pages show a "verifying" animation for 10+ seconds before
-            # redirecting to the credential-harvesting page).
-            max_wait = 60
+            # redirecting to the credential-harvesting page). A 15s ceiling
+            # keeps total scan time within ACE's delay_analysis budget — if
+            # no navigation has happened by then, the site is almost always
+            # showing a second challenge on the same origin, so waiting
+            # longer burns budget without gaining anything.
+            max_wait = 15
             poll_interval = 0.5
             waited = 0.0
             print(f"waiting up to {max_wait}s for navigation after click")
@@ -723,7 +916,7 @@ class Scanner:
         self,
         url: str,
         output_dir: str,
-        additional_wait: Optional[float] = None,
+        additional_wait: Optional[float] = 3.0,
         proxy: Optional[str] = None,
     ) -> ScanResult:
 
@@ -774,6 +967,34 @@ class Scanner:
                 mycdp.network.LoadingFinished, self.loading_finished_handler
             )
             sb.cdp.add_handler(mycdp.network.LoadingFailed, self.loading_failed_handler)
+
+            # WebSocket lifecycle capture. Chrome emits WebSocket events under the
+            # Network domain but on separate event classes — without these, ws/wss
+            # traffic is invisible to the scanner and never shows up in requests.json.
+            sb.cdp.add_handler(
+                mycdp.network.WebSocketCreated, self.websocket_created_handler
+            )
+            sb.cdp.add_handler(
+                mycdp.network.WebSocketWillSendHandshakeRequest,
+                self.websocket_will_send_handshake_handler,
+            )
+            sb.cdp.add_handler(
+                mycdp.network.WebSocketHandshakeResponseReceived,
+                self.websocket_handshake_response_handler,
+            )
+            sb.cdp.add_handler(
+                mycdp.network.WebSocketFrameSent, self.websocket_frame_sent_handler
+            )
+            sb.cdp.add_handler(
+                mycdp.network.WebSocketFrameReceived,
+                self.websocket_frame_received_handler,
+            )
+            sb.cdp.add_handler(
+                mycdp.network.WebSocketFrameError, self.websocket_frame_error_handler
+            )
+            sb.cdp.add_handler(
+                mycdp.network.WebSocketClosed, self.websocket_closed_handler
+            )
 
             # Auto-attach to Worker/ServiceWorker targets to inject stealth code.
             # NOTE: waitForDebuggerOnStart must be False. When True, Chrome pauses
@@ -867,15 +1088,23 @@ class Scanner:
             print(f"waiting for {url} to load")
             sb.wait_for_ready_state_complete(timeout=3)
 
+            # First pass — catches challenges that are already rendered.
             self.bypass_recaptcha(sb)
-            self.bypass_warnings(sb)
+            bypassed = self.bypass_warnings(sb)
 
-            # NOTE for local files we need to wait a little longer
-
+            # Many phishing kits defer challenge rendering: an inline stager
+            # uses setTimeout(...) to inject a second-stage script that
+            # fetches/decodes the real challenge UI over the next 1-3s.
+            # readyState="complete" fires before that chain finishes, so the
+            # first bypass pass sees a page with no challenge on it. After
+            # the additional_wait we retry so the deferred UI can be matched.
             if additional_wait:
-                # give the file time to load
                 print(f"waiting for additional {additional_wait} seconds")
                 time.sleep(additional_wait)
+
+            if not bypassed:
+                self.bypass_recaptcha(sb)
+                self.bypass_warnings(sb)
 
             screenshot_path = os.path.join(output_dir, "screenshot.png")
 
@@ -914,6 +1143,11 @@ class Scanner:
 
             # append reponse content data to dom.html unless filtered out
             for request in self.requests:
+                # WebSocket entries have requestId + url but are not fetchable
+                # via Network.getResponseBody; they're handled in a separate
+                # pass below.
+                if request.get("type", "").startswith("websocket_"):
+                    continue
                 if "requestId" in request and "url" in request:
                     if self.check_dom_filter(request["url"]):
                         continue
@@ -935,6 +1169,19 @@ class Scanner:
                         print(
                             f"failed to grab response body for requestId {request.get('requestId', -1)}: {e}"
                         )
+
+            # append WebSocket lifecycle + frame data to dom.html. One MARKER URL
+            # line per socket so PhishkitAnalyzer promotes ws/wss URLs to
+            # F_URL observables via the existing extraction path.
+            for ws in self.websockets.values():
+                try:
+                    block = self._format_websocket_block(ws)
+                    with open(dom_path, "ab") as fp:
+                        fp.write(block.encode("utf-8", errors="ignore"))
+                except Exception as e:
+                    print(
+                        f"failed to append websocket block for {ws.get('url')}: {e}"
+                    )
 
             downloads = []
             downloads_dir = os.path.join(output_dir, "downloads")
