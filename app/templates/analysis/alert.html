@@ -142,6 +142,7 @@
 <script type="text/javascript">
     var current_alert_owner_id = {{ alert.owner_id if alert.owner else "null" }};
     var current_alert_is_locked = {{ 'true' if alert.lock is not none else 'false' }};
+    var current_alert_status = {{ alert.status | tojson }};
     // set the title of the window
     document.title = atob("{{ alert.description | s64encode }}");
 </script>

@@ -22,46 +22,14 @@ function update_status_display(status, is_locked) {
     }
 }
 
-function update_lock_ui(is_locked, lock_owner) {
+function update_lock_ui(is_locked) {
     $(".lock-dependent").each(function() {
         var el = $(this);
+        el.prop("disabled", is_locked);
+        var tooltip = bootstrap.Tooltip.getInstance(el[0]);
+        if (tooltip) tooltip.dispose();
         if (is_locked) {
-            el.prop("disabled", true);
-            el.addClass("disabled");
-            // save and remove data-bs-toggle to prevent Bootstrap from opening modals
-            var toggle = el.attr("data-bs-toggle");
-            if (toggle) {
-                el.attr("data-lock-saved-toggle", toggle);
-                el.removeAttr("data-bs-toggle");
-            }
-            // save original onclick and remove it
-            var onclick = el.attr("onclick");
-            if (onclick) {
-                el.attr("data-lock-saved-onclick", onclick);
-                el.removeAttr("onclick");
-            }
-            // set up tooltip
-            var tooltip = bootstrap.Tooltip.getInstance(el[0]);
-            if (tooltip) tooltip.dispose();
             new bootstrap.Tooltip(el[0], { title: "alert is currently locked" });
-        } else {
-            el.prop("disabled", false);
-            el.removeClass("disabled");
-            // restore data-bs-toggle
-            var savedToggle = el.attr("data-lock-saved-toggle");
-            if (savedToggle) {
-                el.attr("data-bs-toggle", savedToggle);
-                el.removeAttr("data-lock-saved-toggle");
-            }
-            // restore onclick
-            var savedOnclick = el.attr("data-lock-saved-onclick");
-            if (savedOnclick) {
-                el.attr("onclick", savedOnclick);
-                el.removeAttr("data-lock-saved-onclick");
-            }
-            // remove tooltip
-            var tooltip = bootstrap.Tooltip.getInstance(el[0]);
-            if (tooltip) tooltip.dispose();
         }
     });
 }
@@ -102,12 +70,17 @@ function check_alert_meta() {
 
             // update lock state and status field
             var is_locked = data["is_locked"] === true;
-            if (is_locked !== current_alert_is_locked) {
+            var new_status = data["status"] || current_alert_status;
+            var lock_changed = is_locked !== current_alert_is_locked;
+            var status_changed = new_status !== current_alert_status;
+
+            if (lock_changed) {
                 current_alert_is_locked = is_locked;
-                update_lock_ui(is_locked, data["lock_owner"]);
+                update_lock_ui(is_locked);
             }
-            if (data["status"]) {
-                update_status_display(data["status"], is_locked);
+            if (lock_changed || status_changed) {
+                current_alert_status = new_status;
+                update_status_display(new_status, is_locked);
             }
 
             var response_owner_id = data["owner_id"] != null ? Number(data["owner_id"]) : null;
@@ -149,8 +122,8 @@ $(document).ready(function() {
 
     // apply initial lock state
     if (typeof current_alert_is_locked !== "undefined" && current_alert_is_locked) {
-        update_lock_ui(true, null);
-        update_status_display($("#alert-status-value").text(), true);
+        update_lock_ui(true);
+        update_status_display(current_alert_status, true);
     }
 
     // Triggered when the modal is shown

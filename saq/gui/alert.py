@@ -35,7 +35,6 @@ class GUIAlert(Alert):
             "owner_name": self.owner.gui_display if self.owner_id is not None else None,
             "owner_time": self.owner_time.isoformat() + "Z" if self.owner_time is not None else None,
             "is_locked": lock is not None,
-            "lock_owner": lock.lock_owner if lock is not None else None,
             "status": self.status,
         }
 
