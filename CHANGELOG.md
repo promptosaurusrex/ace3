@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.37] - 2026-04-22
+
+- [Add resource limits configuration and implement container reaper in phishkit](https://github.com/ACE-Collective/ace3/pull/157)
+
 ## [3.0.36] - 2026-04-21
 
 - [Adds 'Needs Research' functionality](https://github.com/ACE-Collective/ace3/pull/150)
