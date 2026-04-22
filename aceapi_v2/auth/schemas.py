@@ -35,3 +35,9 @@ class ApiAuthResult:
     auth_type: Optional[str] = None
     auth_name: Optional[str] = None
     auth_user_id: Optional[int] = None
+
+    def __bool__(self) -> bool:
+        # Empty sentinel (returned for unmatched credentials) must be falsy so
+        # that `if result:` checks in get_current_auth fall through to the next
+        # auth method instead of treating an unverified request as authenticated.
+        return self.auth_type is not None

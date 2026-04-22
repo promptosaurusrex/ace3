@@ -245,11 +245,11 @@ def _execute_api_call(command,
 
 def get_supported_api_version(*args, **kwargs):
     """Get the API version for the ACE ecosystem you're working with.
-    
+
     :return: Result dictionary containing the version string.
     :rtype: dict
     """
-    return _execute_api_call('common/get_supported_api_version', *args, **kwargs).json()
+    return _execute_api_call('v2/common/supported_api_version', *args, **kwargs).json()
 
 def _cli_get_supported_api_version(args):
     return get_supported_api_version(remote_host=args.remote_host, ssl_verification=args.ssl_verification, api_key=args.api_key)
@@ -260,11 +260,12 @@ get_supported_command_parser.set_defaults(func=_cli_get_supported_api_version)
 
 def get_valid_companies(*args, **kwargs):
     """Get a list of the companies supported by this ACE ecosystem.
-    
+
     :return: Result dictionary containing a list of companies.
     :rtype: dict
     """
-    return _execute_api_call('common/get_valid_companies', *args, **kwargs).json()
+    response = _execute_api_call('v2/common/valid_companies', *args, **kwargs).json()
+    return {'result': response['data']}
 
 def _cli_get_valid_companies(args):
     return get_valid_companies(remote_host=args.remote_host, ssl_verification=args.ssl_verification, api_key=args.api_key)
@@ -279,7 +280,8 @@ def get_valid_observables(*args, **kwargs):
     :return: result dictionary containing observables names and discription.
     :rtype: dict
     """
-    return _execute_api_call('common/get_valid_observables', *args, **kwargs).json()
+    response = _execute_api_call('v2/common/valid_observables', *args, **kwargs).json()
+    return {'result': response['data']}
 
 def _cli_get_valid_observables(args):
     return get_valid_observables(remote_host=args.remote_host, ssl_verification=args.ssl_verification, api_key=args.api_key)
@@ -289,7 +291,8 @@ get_valid_observables_command_parser = _api_command(subparsers.add_parser('get-v
 get_valid_observables_command_parser.set_defaults(func=_cli_get_valid_observables)
 
 def get_valid_directives(*args, **kwargs):
-    return _execute_api_call('common/get_valid_directives', *args, **kwargs).json()
+    response = _execute_api_call('v2/common/valid_directives', *args, **kwargs).json()
+    return {'result': response['data']}
 
 def _cli_get_valid_directives(args):
     return get_valid_directives(remote_host=args.remote_host, ssl_verification=args.ssl_verification, api_key=args.api_key)
@@ -300,7 +303,7 @@ get_valid_directives_command_parser.set_defaults(func=_cli_get_valid_directives)
 
 def ping(*args, **kwargs):
     """Connectivity check to the ACE ecosystem."""
-    return _execute_api_call('common/ping', *args, **kwargs).json()
+    return _execute_api_call('v2/common/ping', *args, **kwargs).json()
 
 def _cli_ping(args):
     return ping(remote_host=args.remote_host, ssl_verification=args.ssl_verification, api_key=args.api_key)
