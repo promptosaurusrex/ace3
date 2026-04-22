@@ -3,7 +3,7 @@ import socket
 from typing import Optional
 
 from saq.analysis import Analysis
-from saq.constants import F_FQDN, F_IPV4, AnalysisExecutionResult
+from saq.constants import F_FQDN, F_IP, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.util.strings import format_item_list_for_summary 
 
@@ -97,7 +97,7 @@ class FQDNAnalyzer(AnalysisModule):
                 analysis.aliaslist = _aliaslist
                 # for now, just add the first ip address
                 analysis.ip_address = ipaddrlist[0]
-                analysis.add_observable_by_spec(F_IPV4, ipaddrlist[0])
+                analysis.add_observable_by_spec(F_IP, ipaddrlist[0])
 
             return AnalysisExecutionResult.COMPLETED
 
