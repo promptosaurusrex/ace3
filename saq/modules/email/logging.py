@@ -263,7 +263,7 @@ class EmailLoggingAnalyzer(AnalysisModule):
                         "timestamp": entry["timestamp"],
                         "message_id": entry["message_id"],
                         "header": header,
-                        "index": index,
+                        "header_index": index,
                     }
                     self.fluent_bit_headers_sender.emit(None, header_entry)
 
