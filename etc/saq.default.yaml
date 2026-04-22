@@ -1935,6 +1935,7 @@ module_group_correlation:
   name: correlation
   modules:
     - active_directory_analyzer
+    - fqdn_analyzer
     - idna_analyzer
     - message_id_analyzer_v2
     - netbios_analyzer
