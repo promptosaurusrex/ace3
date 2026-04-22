@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.38] - 2026-04-22
+
+- [Fixes bug when using field_lookup_type: dot](https://github.com/ACE-Collective/ace3/pull/160)
+- [Moves signatures to bind mount for local dev](https://github.com/ACE-Collective/ace3/pull/161)
+- [Enables fqdn_analyzer by default in correlation mode](https://github.com/ACE-Collective/ace3/pull/162)
+
 ## [3.0.37] - 2026-04-22
 
 - [Add resource limits configuration and implement container reaper in phishkit](https://github.com/ACE-Collective/ace3/pull/157)
