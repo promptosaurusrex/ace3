@@ -1,0 +1,59 @@
+Return-Path: <reporter@reporting-service.example>
+Delivered-To: journal@victim-company.example
+Received: from mx.example.com (mx.example.com [192.0.2.25])
+	by smtp.victim-company.example (Postfix) with ESMTPS id 1234567890
+	for <journal@victim-company.example>; Fri, 17 Apr 2026 09:05:00 +0000 (UTC)
+From: "Reporter" <reporter@reporting-service.example>
+To: journal@victim-company.example
+Subject: Fwd: Payroll adjustment
+Message-ID: <outer-wrapper@example.com>
+Date: Fri, 17 Apr 2026 09:05:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="outer-boundary-cccc"
+X-MS-Exchange-Parent-Message-Id: <inner-fwd@example.com>
+
+--outer-boundary-cccc
+Content-Type: text/plain; charset="us-ascii"
+Content-Transfer-Encoding: 7bit
+
+Sender: hr@victim-company.example
+Subject: Fwd: Payroll adjustment
+Message-Id: <inner-fwd@example.com>
+Recipient: victim@example.com
+
+--outer-boundary-cccc
+Content-Type: message/rfc822
+
+From: "HR Director" <hr@victim-company.example>
+To: victim@example.com
+Subject: Fwd: Payroll adjustment
+Message-ID: <inner-fwd@example.com>
+Date: Fri, 17 Apr 2026 09:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="inner-boundary-bbbb"
+
+--inner-boundary-bbbb
+Content-Type: text/plain; charset="us-ascii"
+Content-Transfer-Encoding: 7bit
+
+Caution - External Email: This email originated outside the organization.
+
+--inner-boundary-bbbb
+Content-Type: message/rfc822; name="payload.eml"
+Content-Disposition: attachment; filename="payload.eml"
+
+From: attacker@example.com
+To: victim@example.com
+Subject: Payroll adjustment - action required
+Message-ID: <payload-inner@example.com>
+Date: Fri, 17 Apr 2026 08:15:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="payload-boundary-aaaa"
+
+--payload-boundary-aaaa
+Content-Type: text/html; charset=UTF-8
+
+﻿<html><body><p>Please review the attached payroll adjustment.</p></body></html>
+--payload-boundary-aaaa--
+--inner-boundary-bbbb--
+--outer-boundary-cccc--

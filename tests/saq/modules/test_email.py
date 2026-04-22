@@ -1057,6 +1057,62 @@ def test_nested_rfc822_pdf_extraction(root_analysis, datadir):
     assert pdf_content.startswith(b'%PDF-'), "Extracted file should be a valid PDF"
 
 
+@pytest.mark.integration
+def test_nested_rfc822_bom_extraction(root_analysis, datadir):
+    """A nested message/rfc822 attachment whose inner body contains a raw UTF-8 BOM must
+    still be extracted as a child file observable.
+
+    Previously the analyzer read the email as text and parsed it with
+    `Parser().parsestr(...)`, so non-ASCII payload bytes (like a BOM) became `str` and
+    `Message.as_bytes()` crashed with UnicodeEncodeError when re-serializing an ancestor
+    message/rfc822 part. The wrapper's try/except swallowed the error, leaving no child
+    observable and no analyst-visible trace. Switching to `BytesParser().parse(fp)`
+    preserves the raw bytes so re-serialization succeeds.
+    """
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(str(datadir / 'emails/nested_rfc822_bom.email.rfc822'))
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+
+    file_observable = root_analysis.get_observable(file_observable.uuid)
+    assert file_observable
+    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    assert isinstance(email_analysis, EmailAnalysis)
+    email_analysis.load_details()
+    assert email_analysis.parsing_error is None
+    assert email_analysis.extraction_errors == [], (
+        f"expected no extraction errors, got {email_analysis.extraction_errors}"
+    )
+    assert 'email_parse_incomplete' not in (file_observable.tags or [])
+
+    # the inner nested email must be extracted as a child file observable
+    # (ACE names extracted nested message/rfc822 parts as "<original>.email.rfc822")
+    nested_email_observables = [
+        obs for obs in root_analysis.all_observables
+        if obs.type == F_FILE and obs.file_name and obs.file_name.endswith('.email.rfc822')
+        and obs.uuid != file_observable.uuid
+    ]
+    assert len(nested_email_observables) >= 1, (
+        "nested rfc822 email should be extracted as a child file observable"
+    )
+
+    # the extracted nested email should contain the payload.eml inner headers
+    with open(nested_email_observables[0].full_path, 'rb') as fp:
+        extracted = fp.read()
+    assert b'<payload-inner@example.com>' in extracted, (
+        "extracted nested email should contain the inner Message-ID"
+    )
+
+
 @pytest.mark.parametrize("whitelist_item", [
     "smtp_from:ap@someothercompany.com",
     "smtp_to:lulu.zingzing@company.com",
