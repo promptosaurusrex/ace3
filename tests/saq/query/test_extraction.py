@@ -43,6 +43,37 @@ def test_interpret_event_value_field_override():
 
 
 @pytest.mark.unit
+def test_interpret_event_value_dot_lookup():
+    """Dot-path lookup must walk nested dicts and list indices (glom)."""
+    mapping = ObservableMapping(
+        fields=["share_info.0.message_id"],
+        field_lookup_type="dot",
+        type=F_HOSTNAME,
+    )
+    event = {"share_info": [{"message_id": "abc123"}]}
+    result = interpret_event_value(mapping, event, field_override="share_info.0.message_id")
+    assert result == ["abc123"]
+
+
+@pytest.mark.unit
+def test_extract_observables_dot_lookup():
+    """Observables declared with field_lookup_type=dot resolve through nested structures."""
+    mappings = [
+        ObservableMapping(
+            fields=["share_info.0.sender"],
+            field_lookup_type="dot",
+            type=F_HOSTNAME,
+        )
+    ]
+    event = {"share_info": [{"sender": "alice.example.com"}]}
+
+    extracted, _, _ = extract_observables_from_event(event, mappings)
+
+    assert len(extracted) == 1
+    assert extracted[0].observable.value == "alice.example.com"
+
+
+@pytest.mark.unit
 def test_extract_observables_basic():
     """Test basic observable extraction."""
     mappings = [

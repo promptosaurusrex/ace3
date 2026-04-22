@@ -59,9 +59,13 @@ def interpret_event_value(observable_mapping: ObservableMapping, event: dict, fi
 
     # is the value for this mapping not computed?
     if observable_mapping.value is None:
-        # then we just take the value
+        # then we just take the value using the configured lookup type
         field_name = field_override if field_override is not None else observable_mapping.fields[0]
-        observed_value = event[field_name]
+        success, observed_value = extract_event_value(
+            event, observable_mapping.field_lookup_type, field_name
+        )
+        if not success:
+            raise KeyError(field_name)
     else:
         # otherwise we interpolate the value from the event
         observed_value = interpolate_event_value(observable_mapping.value, event)
