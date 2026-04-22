@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import subprocess
 from subprocess import TimeoutExpired
 from unittest.mock import MagicMock, patch
 
@@ -220,8 +221,9 @@ class TestRunScanner:
         return str(config_file)
 
     @pytest.mark.unit
+    @patch("phishkit._force_stop_container")
     @patch("phishkit._sync_config", return_value=None)
-    def test_run_scanner_successful(self, mock_sync, tmpdir):
+    def test_run_scanner_successful(self, mock_sync, mock_force_stop, tmpdir):
         from phishkit import _run_scanner
 
         config_path = self._write_config(tmpdir)
@@ -249,10 +251,14 @@ class TestRunScanner:
         with open(os.path.join(output_dir, "exit.code")) as f:
             assert f.read() == "0"
 
+        # finally-block cleanup always attempts to stop the container, even on success
+        mock_force_stop.assert_called_with("phishkit-scan-test-job")
+
     @pytest.mark.unit
+    @patch("phishkit._force_stop_container")
     @patch("phishkit._sync_config", return_value=None)
-    def test_run_scanner_timeout_no_proxy_raises(self, mock_sync, tmpdir):
-        """Timeout without proxy still raises TimeoutExpired."""
+    def test_run_scanner_timeout_no_proxy_raises(self, mock_sync, mock_force_stop, tmpdir):
+        """Timeout without proxy kills the container then raises TimeoutExpired."""
         from phishkit import _run_scanner
 
         config_path = self._write_config(tmpdir)
@@ -260,7 +266,11 @@ class TestRunScanner:
         os.makedirs(output_dir)
 
         proc = MagicMock()
-        proc.communicate.side_effect = TimeoutExpired(cmd="docker", timeout=10)
+        # first communicate call raises; second (post-kill) returns output
+        proc.communicate.side_effect = [
+            TimeoutExpired(cmd="docker", timeout=10),
+            ("", ""),
+        ]
         proc.kill = MagicMock()
         proc.wait = MagicMock()
 
@@ -275,11 +285,13 @@ class TestRunScanner:
                     proxy_fallback_to_direct=False,
                     config_path=config_path,
                 )
-        proc.kill.assert_called_once()
+        # the fix: container must be docker-killed on timeout
+        mock_force_stop.assert_any_call("phishkit-scan-test-job")
 
     @pytest.mark.unit
+    @patch("phishkit._force_stop_container")
     @patch("phishkit._sync_config", return_value=None)
-    def test_run_scanner_timeout_with_proxy_retries(self, mock_sync, tmpdir):
+    def test_run_scanner_timeout_with_proxy_retries(self, mock_sync, mock_force_stop, tmpdir):
         """Timeout with proxy + fallback enabled retries without proxy."""
         from phishkit import _run_scanner
 
@@ -296,7 +308,10 @@ class TestRunScanner:
             call_count += 1
             if call_count == 1:
                 proc = MagicMock()
-                proc.communicate.side_effect = TimeoutExpired(cmd="docker", timeout=10)
+                proc.communicate.side_effect = [
+                    TimeoutExpired(cmd="docker", timeout=10),
+                    ("", ""),
+                ]
                 proc.kill = MagicMock()
                 proc.wait = MagicMock()
                 return proc
@@ -319,8 +334,9 @@ class TestRunScanner:
         assert rc == 0
 
     @pytest.mark.unit
+    @patch("phishkit._force_stop_container")
     @patch("phishkit._sync_config", return_value=None)
-    def test_run_scanner_timeout_retry_disabled_raises(self, mock_sync, tmpdir):
+    def test_run_scanner_timeout_retry_disabled_raises(self, mock_sync, mock_force_stop, tmpdir):
         """Timeout with retry_on_timeout=False raises even with proxy."""
         from phishkit import _run_scanner
 
@@ -332,7 +348,10 @@ class TestRunScanner:
         os.makedirs(output_dir)
 
         proc = MagicMock()
-        proc.communicate.side_effect = TimeoutExpired(cmd="docker", timeout=10)
+        proc.communicate.side_effect = [
+            TimeoutExpired(cmd="docker", timeout=10),
+            ("", ""),
+        ]
         proc.kill = MagicMock()
         proc.wait = MagicMock()
 
@@ -349,8 +368,9 @@ class TestRunScanner:
                 )
 
     @pytest.mark.unit
+    @patch("phishkit._force_stop_container")
     @patch("phishkit._sync_config", return_value=None)
-    def test_run_scanner_proxy_fallback(self, mock_sync, tmpdir):
+    def test_run_scanner_proxy_fallback(self, mock_sync, mock_force_stop, tmpdir):
         from phishkit import _run_scanner
 
         config_path = self._write_config(tmpdir)
@@ -391,8 +411,9 @@ class TestRunScanner:
         assert rc == 0
 
     @pytest.mark.unit
+    @patch("phishkit._force_stop_container")
     @patch("phishkit._sync_config", return_value=None)
-    def test_run_scanner_proxy_status_code_fallback(self, mock_sync, tmpdir):
+    def test_run_scanner_proxy_status_code_fallback(self, mock_sync, mock_force_stop, tmpdir):
         """Proxy error status code in requests.json triggers retry."""
         from phishkit import _run_scanner
 
@@ -436,8 +457,9 @@ class TestRunScanner:
         assert rc == 0
 
     @pytest.mark.unit
+    @patch("phishkit._force_stop_container")
     @patch("phishkit._sync_config", return_value=None)
-    def test_run_scanner_proxy_no_fallback(self, mock_sync, tmpdir):
+    def test_run_scanner_proxy_no_fallback(self, mock_sync, mock_force_stop, tmpdir):
         from phishkit import _run_scanner
 
         config_path = self._write_config(tmpdir)
@@ -463,8 +485,9 @@ class TestRunScanner:
         assert mock_popen.call_count == 1
 
     @pytest.mark.unit
+    @patch("phishkit._force_stop_container")
     @patch("phishkit._sync_config", return_value="/phishkit/config/phishkit_config.yaml")
-    def test_run_scanner_with_config(self, mock_sync, tmpdir):
+    def test_run_scanner_with_config(self, mock_sync, mock_force_stop, tmpdir):
         from phishkit import _run_scanner
 
         config_path = self._write_config(tmpdir)
@@ -489,8 +512,9 @@ class TestRunScanner:
         assert "/phishkit/config/phishkit_config.yaml" in cmd
 
     @pytest.mark.unit
+    @patch("phishkit._force_stop_container")
     @patch("phishkit._sync_config", return_value=None)
-    def test_run_scanner_output_files_content(self, mock_sync, tmpdir):
+    def test_run_scanner_output_files_content(self, mock_sync, mock_force_stop, tmpdir):
         from phishkit import _run_scanner
 
         config_path = self._write_config(tmpdir)
@@ -587,6 +611,173 @@ class TestCorrectFileExtension:
 # ---------------------------------------------------------------------------
 # Celery tasks: scan_url, scan_file
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Container resource-limit / reaper helpers
+# ---------------------------------------------------------------------------
+
+class TestBuildCmdArgs:
+
+    @pytest.mark.unit
+    @patch("phishkit._force_stop_container")
+    @patch("phishkit._sync_config", return_value=None)
+    def test_docker_run_includes_resource_limits_and_labels(self, mock_sync, mock_force_stop, tmpdir):
+        """The docker run subprocess must include --memory, --init, --name, and labels."""
+        from phishkit import _run_scanner
+
+        config_data = {
+            "proxy_fallback": FULL_PROXY_FALLBACK,
+            "resource_limits": {
+                "container_memory": "1g",
+                "container_cpus": "1.5",
+                "reaper_max_age_seconds": 600,
+                "reaper_interval_seconds": 60,
+                "scanner_timeout_hint": 15,
+            },
+        }
+        config_file = tmpdir.join("phishkit_config.yaml")
+        config_file.write(yaml.dump(config_data))
+
+        output_dir = str(tmpdir.join("output"))
+        os.makedirs(output_dir)
+
+        proc = MagicMock()
+        proc.communicate.return_value = ("ok", "")
+        proc.returncode = 0
+
+        with patch("phishkit.Popen", return_value=proc) as mock_popen:
+            _run_scanner(
+                target_args=["https://example.com"],
+                output_dir=output_dir,
+                job_id="abc-123",
+                timeout=30,
+                proxy=None,
+                proxy_fallback_to_direct=False,
+                config_path=str(config_file),
+            )
+
+        cmd = mock_popen.call_args[0][0]
+        assert cmd[0] == "docker"
+        assert "--init" in cmd
+        assert "--rm" in cmd
+        assert "--name" in cmd
+        assert "phishkit-scan-abc-123" in cmd
+        assert "--memory" in cmd
+        # --memory and --memory-swap must both be 1g
+        mem_idx = cmd.index("--memory")
+        assert cmd[mem_idx + 1] == "1g"
+        memswap_idx = cmd.index("--memory-swap")
+        assert cmd[memswap_idx + 1] == "1g"
+        assert "--cpus" in cmd
+        assert cmd[cmd.index("--cpus") + 1] == "1.5"
+        # label with job_id must be present
+        label_vals = [cmd[i + 1] for i, v in enumerate(cmd) if v == "--label"]
+        assert any(lv == "phishkit.job_id=abc-123" for lv in label_vals)
+        assert any(lv.startswith("phishkit.worker=") for lv in label_vals)
+        assert any(lv.startswith("phishkit.started_at=") for lv in label_vals)
+
+
+class TestForceStopContainer:
+
+    @pytest.mark.unit
+    def test_force_stop_runs_docker_kill_and_rm(self):
+        from phishkit import _force_stop_container
+        with patch("phishkit.subprocess.run") as mock_run:
+            _force_stop_container("phishkit-scan-xyz")
+        cmds = [call.args[0] for call in mock_run.call_args_list]
+        assert ["docker", "kill", "phishkit-scan-xyz"] in cmds
+        assert ["docker", "rm", "-f", "phishkit-scan-xyz"] in cmds
+
+    @pytest.mark.unit
+    def test_force_stop_swallows_exceptions(self):
+        """Must not raise even if docker CLI is unavailable."""
+        from phishkit import _force_stop_container
+        with patch("phishkit.subprocess.run", side_effect=FileNotFoundError("no docker")):
+            _force_stop_container("phishkit-scan-xyz")  # should not raise
+
+
+class TestReapOrphans:
+
+    def _mock_docker_ps(self, containers):
+        """Build a fake `docker ps` stdout from a list of container dicts."""
+        lines = [
+            f"{c['id']}|{c['name']}|{c['started_at']}|{c['worker']}"
+            for c in containers
+        ]
+        result = MagicMock()
+        result.stdout = "\n".join(lines) + ("\n" if lines else "")
+        return result
+
+    @pytest.mark.unit
+    def test_reap_orphans_kills_old_containers(self):
+        import phishkit
+        from phishkit import _reap_orphans
+
+        old = {"id": "a", "name": "phishkit-scan-old", "started_at": 100, "worker": "h1"}
+        young = {"id": "b", "name": "phishkit-scan-young", "started_at": 9_999_999_999, "worker": "h1"}
+
+        with patch("phishkit.subprocess.run", return_value=self._mock_docker_ps([old, young])), \
+             patch("phishkit._force_stop_container") as mock_force, \
+             patch("phishkit.time.time", return_value=10_000):
+            killed = _reap_orphans(max_age_seconds=60)
+
+        assert killed == 1
+        mock_force.assert_called_once_with("phishkit-scan-old")
+
+    @pytest.mark.unit
+    def test_reap_orphans_only_this_worker_filters(self):
+        from phishkit import _reap_orphans
+        this_host = __import__("socket").gethostname()
+
+        mine = {"id": "a", "name": "phishkit-scan-mine", "started_at": 0, "worker": this_host}
+        theirs = {"id": "b", "name": "phishkit-scan-theirs", "started_at": 0, "worker": "other-host"}
+
+        with patch("phishkit.subprocess.run",
+                   return_value=TestReapOrphans()._mock_docker_ps([mine, theirs])), \
+             patch("phishkit._force_stop_container") as mock_force, \
+             patch("phishkit.time.time", return_value=1_000_000):
+            killed = _reap_orphans(max_age_seconds=0, only_this_worker=True)
+
+        assert killed == 1
+        mock_force.assert_called_once_with("phishkit-scan-mine")
+
+    @pytest.mark.unit
+    def test_reap_orphans_empty_ps(self):
+        from phishkit import _reap_orphans
+        result = MagicMock()
+        result.stdout = ""
+        with patch("phishkit.subprocess.run", return_value=result), \
+             patch("phishkit._force_stop_container") as mock_force:
+            killed = _reap_orphans(max_age_seconds=60)
+        assert killed == 0
+        mock_force.assert_not_called()
+
+
+class TestLoadResourceLimits:
+
+    @pytest.mark.unit
+    def test_load_resource_limits_uses_defaults_when_missing(self, tmpdir):
+        from phishkit import _load_resource_limits, DEFAULT_RESOURCE_LIMITS
+        cfg = _load_resource_limits(str(tmpdir.join("nonexistent.yaml")))
+        assert cfg == DEFAULT_RESOURCE_LIMITS
+
+    @pytest.mark.unit
+    def test_load_resource_limits_merges_user_values(self, tmpdir):
+        from phishkit import _load_resource_limits, DEFAULT_RESOURCE_LIMITS
+        path = tmpdir.join("c.yaml")
+        path.write(yaml.dump({"resource_limits": {"container_memory": "4g"}}))
+        cfg = _load_resource_limits(str(path))
+        assert cfg["container_memory"] == "4g"
+        assert cfg["container_cpus"] == DEFAULT_RESOURCE_LIMITS["container_cpus"]
+
+    @pytest.mark.unit
+    def test_load_resource_limits_ignores_unknown_keys(self, tmpdir):
+        from phishkit import _load_resource_limits
+        path = tmpdir.join("c.yaml")
+        path.write(yaml.dump({"resource_limits": {"bogus": "drop"}}))
+        cfg = _load_resource_limits(str(path))
+        assert "bogus" not in cfg
+
 
 class TestScanUrl:
 

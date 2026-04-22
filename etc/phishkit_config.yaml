@@ -140,3 +140,27 @@ proxy_fallback:
 
   # Whether to retry without proxy when the scanner process times out.
   retry_on_timeout: true
+
+# Resource limits applied to each scanner container spawned by the phishkit
+# manager, plus settings for the orphan-container reaper.
+# Only used by the Celery worker (phishkit.py), not by scanner.py.
+resource_limits:
+  # Per-container hard memory cap. --memory-swap is set equal to this value
+  # so a leaking Chrome cannot escape the cap via swap.
+  container_memory: "2g"
+
+  # Per-container CPU cap (fractional values are allowed).
+  container_cpus: "2.0"
+
+  # Maximum age (seconds) a scanner container may live before the reaper
+  # kills it. Must be substantially larger than scanner_timeout so a job
+  # that just barely finishes in time is never race-killed. The code
+  # enforces a floor of (scanner_timeout_hint * 4 + 120).
+  reaper_max_age_seconds: 600
+
+  # How often (seconds) the reaper sweeps for orphans.
+  reaper_interval_seconds: 60
+
+  # Hint used only by the reaper's max-age floor calculation. Keep in sync
+  # with PhishkitAnalyzerConfig.scanner_timeout default.
+  scanner_timeout_hint: 15
