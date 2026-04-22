@@ -79,7 +79,7 @@ x-common-volumes: &common-volumes
   - ./ssl:/opt/ace/ssl
   - ace-phishkit:/phishkit
   - ace-js-deobfuscator:/js-deobfuscator
-  - ace-signatures:/opt/ace/signatures
+  - ./signatures:/opt/ace/signatures
   - type: tmpfs
     target: /tmp
 
@@ -108,7 +108,7 @@ services:
       - ace-auth:/auth
       - ace-phishkit:/phishkit
       - ace-js-deobfuscator:/js-deobfuscator
-      - ace-signatures:/opt/ace/signatures
+      - ./signatures:/opt/ace/signatures
     cap_add:
       - SYS_PTRACE
     networks:
@@ -696,7 +696,7 @@ services:
       - ace-auth:/auth
       - ./etc:/opt/ace/etc:ro
       # signatures volume so phishkit manager can read analyst-data config files
-      - ace-signatures:/opt/ace/signatures:ro
+      - ./signatures:/opt/ace/signatures:ro
     networks:
       - ace
 
@@ -749,8 +749,6 @@ services:
 volumes:
   ace-data:
     name: ace-data
-  ace-signatures:
-    name: ace-signatures
   ace-db:
     name: ace-db
   ace-db-readonly:
