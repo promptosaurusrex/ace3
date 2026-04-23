@@ -1658,6 +1658,263 @@ def test_tree_condition_negate_parsed_from_yaml():
 
 
 # ============================================================
+# TreeCondition match_count tests
+# ============================================================
+
+
+@pytest.mark.unit
+def test_tree_condition_match_count_exact():
+    """match_count=N requires exactly N matching analyses in the resolved scope."""
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    # Chain: root -> obs_a -> DeobfAnalysis -> obs_b -> DeobfAnalysis -> target
+    # target has two DeobfAnalysis ancestors (simulates the nested-deobf explosion).
+    obs_a = root.add_observable_by_spec(F_FQDN, "outer.example.com")
+
+    class DeobfAnalysis(Analysis):
+        pass
+
+    outer = DeobfAnalysis()
+    outer.details = {}
+    outer.details_modified = True
+    obs_a.add_analysis(outer)
+
+    obs_b = outer.add_observable_by_spec(F_URL, "https://example.com/intermediate")
+    inner = DeobfAnalysis()
+    inner.details = {}
+    inner.details_modified = True
+    obs_b.add_analysis(inner)
+
+    target = inner.add_observable_by_spec(F_URL, "https://example.com/nested")
+
+    module_path = f"{DeobfAnalysis.__module__}:{DeobfAnalysis.__name__}"
+
+    tc_top_level = TreeCondition(analysis_type=module_path, match_count=1)
+    assert tc_top_level.evaluate(target, root) is False  # two ancestors, not one
+
+    tc_nested = TreeCondition(analysis_type=module_path, match_count=2)
+    assert tc_nested.evaluate(target, root) is True
+
+    # sibling URL directly under the outer analysis: exactly one ancestor
+    top_level_target = outer.add_observable_by_spec(F_URL, "https://example.com/top")
+    assert tc_top_level.evaluate(top_level_target, root) is True
+    assert tc_nested.evaluate(top_level_target, root) is False
+
+
+@pytest.mark.unit
+def test_tree_condition_match_count_zero_when_absent():
+    """match_count=0 matches observables whose chain contains none of the target analyses."""
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    target = root.add_observable_by_spec(F_URL, "https://example.com/orphan")
+
+    tc = TreeCondition(
+        analysis_type="nonexistent.module:NonexistentAnalysis",
+        match_count=0,
+    )
+    assert tc.evaluate(target, root) is True
+
+
+@pytest.mark.unit
+def test_tree_condition_match_count_default_at_least_one():
+    """With match_count unset, the historical 'at least one match' semantic is preserved."""
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    parent = root.add_observable_by_spec(F_FQDN, "example.com")
+
+    class SomeAnalysis(Analysis):
+        pass
+
+    a = SomeAnalysis()
+    a.details = {}
+    a.details_modified = True
+    parent.add_analysis(a)
+
+    target = a.add_observable_by_spec(F_URL, "https://example.com/page")
+    module_path = f"{SomeAnalysis.__module__}:{SomeAnalysis.__name__}"
+
+    # Adding a second ancestor of the same type — default semantic should still match
+    mid = a.add_observable_by_spec(F_URL, "https://example.com/mid")
+    a2 = SomeAnalysis()
+    a2.details = {}
+    a2.details_modified = True
+    mid.add_analysis(a2)
+    deep_target = a2.add_observable_by_spec(F_URL, "https://example.com/deep")
+
+    tc = TreeCondition(analysis_type=module_path)
+    assert tc.evaluate(target, root) is True
+    assert tc.evaluate(deep_target, root) is True
+
+
+@pytest.mark.unit
+def test_tree_condition_match_count_parsed_from_yaml():
+    """match_count should be read correctly from YAML rule config."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    # two nested DeobfAnalysis ancestors, same chain as test_tree_condition_match_count_exact
+    obs_a = root.add_observable_by_spec(F_FQDN, "outer.example.com")
+
+    class DeobfAnalysis(Analysis):
+        pass
+
+    outer = DeobfAnalysis()
+    outer.details = {}
+    outer.details_modified = True
+    obs_a.add_analysis(outer)
+
+    obs_b = outer.add_observable_by_spec(F_URL, "https://example.com/intermediate")
+    inner = DeobfAnalysis()
+    inner.details = {}
+    inner.details_modified = True
+    obs_b.add_analysis(inner)
+
+    nested_target = inner.add_observable_by_spec(F_URL, "https://example.com/nested")
+    top_level_target = outer.add_observable_by_spec(F_URL, "https://example.com/top")
+
+    module_path = f"{DeobfAnalysis.__module__}:{DeobfAnalysis.__name__}"
+    rules = [{
+        "name": "crawl only top-level deobf urls",
+        "phase": "pre",
+        "conditions": {
+            "observable_types": ["url"],
+            "tree_conditions": [{
+                "analysis_type": module_path,
+                "scope": "ancestors",
+                "match_count": 1,
+            }],
+        },
+        "actions": {
+            "add_directives": ["crawl"],
+        },
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(top_level_target)
+    adapter.execute_analysis(nested_target)
+
+    assert top_level_target.has_directive("crawl")
+    assert not nested_target.has_directive("crawl")
+
+
+@pytest.mark.unit
+def test_tree_condition_ancestor_plus_negated_ancestor_scopes_top_level_deobf_urls():
+    """The production "Crawl URLs from top-level JavaScript deobfuscation"
+    rule combines a positive JS-deobf ancestor check with a negated
+    Phishkit-ancestor check. A URL extracted directly from the top-level
+    deobfuscation output has a JS-deobf ancestor but no Phishkit ancestor
+    and matches. A URL extracted from Phishkit-downloaded content has both
+    ancestors and is excluded by the negate condition."""
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    original_js = _add_file_observable(root, "original.js", content="//js")
+
+    class DeobfAnalysis(Analysis):
+        pass
+
+    class PhishkitLikeAnalysis(Analysis):
+        pass
+
+    class URLExtractAnalysis(Analysis):
+        pass
+
+    deobf = DeobfAnalysis()
+    deobf.details = {}
+    deobf.details_modified = True
+    original_js.add_analysis(deobf)
+
+    deobf_file = _add_file_observable(root, "deobfuscated-original.js", content="//deobf")
+    deobf.add_observable(deobf_file)
+
+    # URL extraction on the deobf file produces the top-level URL.
+    extract_top = URLExtractAnalysis()
+    extract_top.details = {}
+    extract_top.details_modified = True
+    deobf_file.add_analysis(extract_top)
+
+    top_level_url = extract_top.add_observable_by_spec(F_URL, "https://example.com/top")
+
+    # Phishkit runs on the top-level URL and downloads an HTML file.
+    phishkit = PhishkitLikeAnalysis()
+    phishkit.details = {}
+    phishkit.details_modified = True
+    top_level_url.add_analysis(phishkit)
+
+    downloaded_html = _add_file_observable(root, "payload.html", content="<html/>")
+    phishkit.add_observable(downloaded_html)
+
+    # URL extraction on the downloaded HTML produces a nested URL whose
+    # ancestors include both JS-deobf and Phishkit.
+    extract_nested = URLExtractAnalysis()
+    extract_nested.details = {}
+    extract_nested.details_modified = True
+    downloaded_html.add_analysis(extract_nested)
+
+    nested_url = extract_nested.add_observable_by_spec(F_URL, "https://cdn.example.com/jquery.js")
+
+    deobf_path = f"{DeobfAnalysis.__module__}:{DeobfAnalysis.__name__}"
+    phishkit_path = f"{PhishkitLikeAnalysis.__module__}:{PhishkitLikeAnalysis.__name__}"
+
+    rules = [{
+        "name": "crawl top-level deobf urls only",
+        "phase": "pre",
+        "conditions": {
+            "observable_types": ["url"],
+            "tree_conditions": [
+                {"analysis_type": deobf_path, "scope": "ancestors"},
+                {"analysis_type": phishkit_path, "scope": "ancestors", "negate": True},
+            ],
+        },
+        "actions": {"add_directives": ["crawl"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(top_level_url)
+    adapter.execute_analysis(nested_url)
+
+    assert top_level_url.has_directive("crawl")
+    # Nested URL has a Phishkit ancestor, so the negate condition rejects it.
+    assert not nested_url.has_directive("crawl")
+
+
+@pytest.mark.unit
+def test_tree_condition_match_count_invalid_in_yaml(caplog):
+    """Invalid match_count values in YAML should cause the rule to be dropped."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    rules = [{
+        "name": "invalid match_count",
+        "conditions": {
+            "tree_conditions": [{
+                "analysis_type": "some.module:SomeAnalysis",
+                "match_count": "not-a-number",
+            }],
+        },
+        "actions": {"add_tags": ["should_not_apply"]},
+    }]
+    with caplog.at_level(logging.WARNING):
+        adapter = _create_analyzer_with_rules(root, rules)
+
+    # The rule should have been skipped entirely during parsing, so no tag
+    # is added even to an observable that would otherwise satisfy the
+    # observable-type/analysis-type filters.
+    target = root.add_observable_by_spec(F_URL, "https://example.com")
+    adapter.execute_analysis(target)
+    adapter.analyze(target, final_analysis=True)
+    assert not target.has_tag("should_not_apply")
+    assert "invalid match_count" in caplog.text
+
+
+# ============================================================
 # TreeCondition observable_match tests
 # ============================================================
 
