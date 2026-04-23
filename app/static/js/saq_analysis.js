@@ -830,3 +830,48 @@ function collapseTree(element) {
         last.toggle();
     }
 }
+
+const INDENT_GUIDE_STORAGE_KEY = 'ace.analysisIndentGuide';
+
+function toggleIndentGuide(button) {
+    var card = document.getElementById('analysis-overview-card');
+    if (!card) return;
+    var enabled = card.classList.toggle('indent-rainbow');
+    $(button).toggleClass('active', enabled);
+    window.localStorage.setItem(INDENT_GUIDE_STORAGE_KEY, JSON.stringify(enabled));
+}
+
+$(function() {
+    var card = document.getElementById('analysis-overview-card');
+    if (!card) return;
+
+    card.querySelectorAll('ul').forEach(function(ul) {
+        var depth = 0;
+        var ancestor = ul.parentElement;
+        while (ancestor && ancestor !== card) {
+            if (ancestor.tagName === 'UL') depth++;
+            ancestor = ancestor.parentElement;
+        }
+        ul.dataset.indentDepth = depth % 7;
+    });
+
+    var stored = window.localStorage.getItem(INDENT_GUIDE_STORAGE_KEY);
+    if (stored && JSON.parse(stored) === true) {
+        card.classList.add('indent-rainbow');
+        $('#btn-toggle-indent-guide').addClass('active');
+    }
+
+    var breadcrumbBar = document.getElementById('breadcrumb_bar');
+    function updateAnalysisOverviewStickyTop() {
+        var top = (breadcrumbBar && breadcrumbBar.offsetParent !== null) ? breadcrumbBar.offsetHeight : 0;
+        card.style.setProperty('--analysis-overview-sticky-top', top + 'px');
+    }
+    updateAnalysisOverviewStickyTop();
+    if (breadcrumbBar) {
+        new MutationObserver(updateAnalysisOverviewStickyTop).observe(breadcrumbBar, {
+            attributes: true,
+            attributeFilter: ['style']
+        });
+        window.addEventListener('resize', updateAnalysisOverviewStickyTop);
+    }
+});
