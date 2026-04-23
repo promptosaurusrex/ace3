@@ -588,3 +588,7 @@ nav[data-toggle="toc"] {
     cursor: not-allowed;
     pointer-events: auto;
 }
+
+.alert-description-cell {
+    overflow-wrap: anywhere;
+}

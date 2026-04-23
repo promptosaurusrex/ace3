@@ -88,7 +88,7 @@
                             </div>
                         </td>
                         <td style="white-space: nowrap;" title="{{alert.insert_date}}" id="alert_date_{{ alert.uuid }}">{{alert.display_insert_date}}</td>
-                        <td>
+                        <td class="alert-description-cell">
                             <img src="{{alert.icon}}" width="24" height="24">
                             <a href="{{ url_for('analysis.index', direct=alert.uuid) }}">({{alert.detection_count}}) {{alert.description}}</a>
                             {% if alert.event_mapping %}
