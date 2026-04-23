@@ -8,6 +8,11 @@
 #
 # rules:
 #   - name: "Human-readable rule name"
+#     uuid: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  # REQUIRED. Stable UUID for this
+#                    # rule. Emitted as a `signature_id` observable whenever the rule
+#                    # matches, so analysts can filter in the GUI for any alert where
+#                    # this specific rule fired. Generate with `uuidgen` or
+#                    # `python -c "import uuid; print(uuid.uuid4())"`.
 #     description: "Optional description"
 #     enabled: true  # default true; set false to disable without removing
 #     phase: post    # "pre" runs before other modules; "post" (default) runs after all
@@ -20,20 +25,26 @@
 #       queue: "external"                  # Alert queue must match (exact string)
 #
 #       # Observable-level conditions
-#       observable_types: [file]           # Observable type must be one of these
-#       value_pattern: ".*\\.html$"        # Regex match on observable value
-#       file_name_pattern: ".*\\.html$"    # Regex match on file name (file observables only)
-#       display_type_pattern: "Recipient"  # Regex match on observable display_type
-#       display_value_pattern: "decoded"   # Regex match on observable display_value
-#       has_tags: [some_tag]               # Observable must have ALL of these tags
-#       has_directives: [some_directive]   # Observable must have ALL of these directives
-#       has_yara_meta_tags: [type=document.text.qrcode]  # Observable must have ALL of these yara meta tags (auto-prefixed with "yara_meta:")
+#       observable_types: [file]                # Observable type must be one of these
+#       value_pattern: ".*\\.html$"             # Regex match on observable value
+#       file_name_pattern: ".*\\.html$"         # Regex match on file name (file observables only)
+#       display_type_pattern: "Recipient"       # Regex match on observable display_type
+#       display_value_pattern: "decoded"        # Regex match on observable display_value
+#       has_tags: [some_tag]                    # Observable must have ALL of these tags
+#       has_yara_meta_tags: ["type=some_type"]  # Observable must have ALL of these yara meta tags
+#       has_directives: [some_directive]        # Observable must have ALL of these directives
 #
 #       # Analysis tree conditions
 #       tree_conditions:
 #         - analysis_type: "saq.modules.email.rfc822:EmailAnalysis"
-#           scope: ancestors  # "ancestors" (default), "global" (searches entire tree), or "self" (analyses on this observable)
+#           scope: ancestors  # "ancestors" (default), "descendants" (analyses on observables produced transitively below this one), "global" (searches entire tree), "self" (analyses on this observable), or "parent" (direct parent analyses only)
 #           negate: false     # invert the result of this condition (default false)
+#           match_count: 1    # optional: require exactly this many matching analyses.
+#                             # Omitted (default) means "at least one". Useful for
+#                             # scoping to top-level contexts — e.g. match_count: 1
+#                             # on an ancestors scope identifies an observable whose
+#                             # analysis chain contains exactly one instance of the
+#                             # analysis type.
 #           details_match:
 #             email.from_address: "soc@third-party.com"  # dot-notation, regex values
 #           observable_match:
@@ -46,8 +57,13 @@
 #       add_detection_points: ["Matched observable modifier rule: suspicious file"]
 #       exclude_analysis: ["saq.modules.sandbox:SandboxAnalyzer"]
 #       limit_analysis: ["saq.modules.file_analysis.ioc_extraction:IOCExtractionAnalyzer"]
-#       set_display_type: "Phishing URL"   # Override observable display_type
-#       set_display_value: "decoded payload" # Override observable display_value
+#       reset_analysis: ["saq.modules.phishkit:PhishkitAnalysis"]  # clear "no analysis" sentinel for
+#                                                                  # these modules so they get a second
+#                                                                  # pass (useful when also adding a
+#                                                                  # directive they were gated on)
+#       set_display_type: "Phishing URL"      # Override observable display_type
+#       set_display_value: "decoded payload"  # Override observable display_value
+#       ignore: true  # remove observable from matching parent analyses (and from DB if no parents remain)
 #
 # All condition fields are optional. Multiple conditions within a rule use AND logic.
 # Multiple rules are evaluated independently.

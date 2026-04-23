@@ -63,6 +63,11 @@ class TreeCondition:
     details_match: dict[str, re.Pattern] = field(default_factory=dict)
     observable_match: dict[str, re.Pattern] = field(default_factory=dict)
     negate: bool = False
+    # if set, require exactly this many matching analyses. None means "at least one"
+    # (the historical default). Used to scope rules to top-level contexts — e.g.
+    # match_count: 1 on an ancestors scope identifies an observable whose chain
+    # contains exactly one instance of the analysis type.
+    match_count: Optional[int] = None
 
     def evaluate(self, observable: Observable, root: RootAnalysis) -> bool:
         result = self._evaluate_inner(observable, root)
@@ -80,6 +85,7 @@ class TreeCondition:
         else:  # global
             analyses = (a for a in root.all_analysis if a)
 
+        matches = 0
         for analysis in analyses:
             if self.analysis_type and analysis.module_path != self.analysis_type:
                 continue
@@ -90,8 +96,12 @@ class TreeCondition:
             if self.observable_match:
                 if not self._check_observable(analysis.observable):
                     continue
-            return True
-        return False
+            matches += 1
+            if self.match_count is None:
+                return True
+        if self.match_count is None:
+            return False
+        return matches == self.match_count
 
     def _check_observable(self, obs) -> bool:
         if obs is None:
@@ -511,12 +521,28 @@ class ObservableModifierAnalyzer(AnalysisModule):
 
         negate = bool(tc_data.get("negate", False))
 
+        match_count = tc_data.get("match_count")
+        if match_count is not None:
+            try:
+                match_count = int(match_count)
+            except (TypeError, ValueError):
+                logging.warning(
+                    f"invalid match_count '{match_count}' in tree_condition for rule '{rule_name}': must be int"
+                )
+                return None
+            if match_count < 0:
+                logging.warning(
+                    f"invalid match_count {match_count} in tree_condition for rule '{rule_name}': must be >= 0"
+                )
+                return None
+
         return TreeCondition(
             analysis_type=analysis_type,
             scope=scope,
             details_match=compiled_details_match,
             observable_match=compiled_observable_match,
             negate=negate,
+            match_count=match_count,
         )
 
     def _ensure_initialized(self):

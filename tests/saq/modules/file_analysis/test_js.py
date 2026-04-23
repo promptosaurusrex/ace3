@@ -98,7 +98,9 @@ def _build_analyzer(root):
 @pytest.mark.unit
 def test_obfuscated_sample_is_deobfuscated(datadir, monkeypatch, patched_deobfuscate):
     """Feeding the canonical obfuscator.io sample should produce a
-    deobfuscated sibling file marked for URL extraction and crawling."""
+    deobfuscated sibling file marked for URL extraction. The crawl-scope
+    directive is applied downstream by the observable_modifier rule, not by
+    this analyzer, so we assert that the analyzer does NOT add it here."""
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     observable = root.add_file_observable(datadir / "sample_obsfucated_javascript.js")
@@ -120,7 +122,7 @@ def test_obfuscated_sample_is_deobfuscated(datadir, monkeypatch, patched_deobfus
     assert len(file_observables) == 1
     emitted_obs = file_observables[0]
     assert emitted_obs.has_directive(DIRECTIVE_EXTRACT_URLS)
-    assert emitted_obs.has_directive(DIRECTIVE_CRAWL_EXTRACTED_URLS)
+    assert not emitted_obs.has_directive(DIRECTIVE_CRAWL_EXTRACTED_URLS)
     assert emitted_obs.has_relationship(R_EXTRACTED_FROM)
     assert observable.has_tag("js")
 
@@ -150,7 +152,7 @@ def test_plain_js_emits_url_to_extracted_file(datadir, monkeypatch, patched_deob
     assert len(file_observables) == 1
     emitted_obs = file_observables[0]
     assert emitted_obs.has_directive(DIRECTIVE_EXTRACT_URLS)
-    assert emitted_obs.has_directive(DIRECTIVE_CRAWL_EXTRACTED_URLS)
+    assert not emitted_obs.has_directive(DIRECTIVE_CRAWL_EXTRACTED_URLS)
     with open(emitted_obs.full_path, "r", encoding="utf-8") as fp:
         body = fp.read()
     assert "https://example.com/plain-target" in body

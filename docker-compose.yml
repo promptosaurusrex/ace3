@@ -646,6 +646,7 @@ services:
         condition: service_started
     volumes:
       - ./etc/rabbitmq/conf.d/20-logging.conf:/etc/rabbitmq/conf.d/20-logging.conf:ro
+      - ./etc/rabbitmq/conf.d/30-deprecated-features.conf:/etc/rabbitmq/conf.d/30-deprecated-features.conf:ro
       - ace-auth:/auth
     networks:
       - ace
