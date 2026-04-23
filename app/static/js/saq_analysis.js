@@ -852,7 +852,9 @@ $(function() {
             if (ancestor.tagName === 'UL') depth++;
             ancestor = ancestor.parentElement;
         }
-        ul.dataset.indentDepth = depth % 7;
+        if (depth > 0) {
+            ul.dataset.indentDepth = (depth - 1) % 7;
+        }
     });
 
     var stored = window.localStorage.getItem(INDENT_GUIDE_STORAGE_KEY);
@@ -860,6 +862,18 @@ $(function() {
         card.classList.add('indent-rainbow');
         $('#btn-toggle-indent-guide').addClass('active');
     }
+
+    $(card).on('click', 'ul[data-indent-depth]', function(event) {
+        if (!card.classList.contains('indent-rainbow')) return;
+        if (event.target !== this) return;
+        var rect = this.getBoundingClientRect();
+        var relativeX = event.clientX - rect.left;
+        if (relativeX < -4 || relativeX > 6) return;
+        var prevLi = this.previousElementSibling;
+        if (!prevLi || prevLi.tagName !== 'LI') return;
+        var toggleIcon = prevLi.querySelector(':scope > .toggle-icon');
+        if (toggleIcon) collapseTree(toggleIcon);
+    });
 
     var breadcrumbBar = document.getElementById('breadcrumb_bar');
     function updateAnalysisOverviewStickyTop() {
