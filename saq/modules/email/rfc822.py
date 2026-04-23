@@ -20,13 +20,14 @@ from saq.environment import get_base_dir, get_data_dir, get_local_timezone
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
-from saq.modules.email.constants import KEY_CC, KEY_DECODED_SUBJECT, KEY_EMAIL, KEY_ENV_MAIL_FROM, KEY_ENV_RCPT_TO, KEY_FROM, KEY_FROM_ADDRESS, KEY_HEADERS, KEY_LOG_ENTRY, KEY_MESSAGE_ID, KEY_ORIGINATING_IP, KEY_PARSING_ERROR, KEY_REPLY_TO, KEY_REPLY_TO_ADDRESS, KEY_RETURN_PATH, KEY_SUBJECT, KEY_TO, KEY_TO_ADDRESSES, KEY_USER_AGENT, KEY_X_AUTH_ID, KEY_X_MAILER, KEY_X_ORIGINAL_SENDER, KEY_X_SENDER, KEY_X_SENDER_ID, KEY_X_SENDER_IP
+from saq.modules.email.constants import KEY_CC, KEY_DECODED_SUBJECT, KEY_EMAIL, KEY_ENV_MAIL_FROM, KEY_ENV_RCPT_TO, KEY_EXTRACTION_ERRORS, KEY_FROM, KEY_FROM_ADDRESS, KEY_HEADERS, KEY_LOG_ENTRY, KEY_MESSAGE_ID, KEY_ORIGINATING_IP, KEY_PARSING_ERROR, KEY_REPLY_TO, KEY_REPLY_TO_ADDRESS, KEY_RETURN_PATH, KEY_SUBJECT, KEY_TO, KEY_TO_ADDRESSES, KEY_USER_AGENT, KEY_X_AUTH_ID, KEY_X_MAILER, KEY_X_ORIGINAL_SENDER, KEY_X_SENDER, KEY_X_SENDER_ID, KEY_X_SENDER_IP
 from saq.observables.file import FileObservable
 from saq.whitelist import WHITELIST_TYPE_SMTP_FROM, WHITELIST_TYPE_SMTP_TO, BrotexWhitelist
 from pydantic import Field
 
 TAG_OUTBOUND_EMAIL = 'outbound_email'
 TAG_OUTBOUND_EXCEPTION_EMAIL = 'outbound_email_exception'
+TAG_EMAIL_PARSE_INCOMPLETE = 'email_parse_incomplete'
 
 # regex to match Received date
 RE_EMAIL_RECEIVED_DATE = re.compile(r';\s?(.+)$')
@@ -53,6 +54,7 @@ class EmailAnalysis(Analysis):
         super().__init__(*args, **kwargs)
         self.details = {
             KEY_PARSING_ERROR: None,
+            KEY_EXTRACTION_ERRORS: [],
             KEY_EMAIL: None
         }
 
@@ -68,6 +70,12 @@ class EmailAnalysis(Analysis):
     @parsing_error.setter
     def parsing_error(self, value):
         self.details[KEY_PARSING_ERROR] = value
+
+    @property
+    def extraction_errors(self):
+        if not self.details:
+            return []
+        return self.details.get(KEY_EXTRACTION_ERRORS, []) or []
 
     @property
     def email(self):
@@ -408,6 +416,8 @@ class EmailAnalysis(Analysis):
 
         if self.email:
             result = "Email Analysis:"
+            if self.extraction_errors:
+                result = "Email Analysis [partial extraction: {} error(s)]:".format(len(self.extraction_errors))
             if KEY_FROM in self.email:
                 result = "{} From {}".format(result, self.email[KEY_FROM])
             if KEY_ENV_RCPT_TO in self.email and self.email[KEY_ENV_RCPT_TO]:
@@ -485,7 +495,6 @@ class EmailAnalyzer(AnalysisModule):
             return False
 
         # parse the email
-        unparsed_email = None
         parsed_email = None
 
         # sometimes the actual email we want will be an attachment
@@ -529,13 +538,10 @@ class EmailAnalyzer(AnalysisModule):
 
         try:
             logging.debug("parsing email file {}".format(_file))
-            with open(_file.full_path, 'r', errors='ignore') as fp:
-                # we ignore any leading and/or trailing whitespace
-                # this isn't technically "correct" but some systems make mistakes
-                unparsed_email = fp.read().strip()
-            
-            # by default we target the parsed email (see NOTE A)
-            target_email = parsed_email = email.parser.Parser().parsestr(unparsed_email)
+            # parse as bytes so non-ASCII payloads (e.g. UTF-8 BOMs in nested HTML parts)
+            # can later be re-serialized via Message.as_bytes() during recursive extraction
+            with open(_file.full_path, 'rb') as fp:
+                target_email = parsed_email = email.parser.BytesParser().parse(fp)
 
         except Exception as e:
             logging.error("unable to parse email {}: {}".format(_file, e))
@@ -546,9 +552,6 @@ class EmailAnalyzer(AnalysisModule):
                 src_path = _file.full_path
                 dst_path = os.path.join(get_data_dir(), 'review', 'rfc822', str(uuid.uuid4()))
                 shutil.copy(src_path, dst_path)
-
-                with open('{}.unparsed'.format(dst_path), 'w') as fp:
-                    fp.write(unparsed_email)
 
             except Exception as e:
                 logging.error("unable to save file for review: {}".format(e))
@@ -1088,12 +1091,24 @@ class EmailAnalyzer(AnalysisModule):
             else:
                 raise RuntimeError("parsing logic error: {}".format(_file))
 
-        def _recursive_parser(*args, **kwargs):
+        def _recursive_parser(target, *args, **kwargs):
             try:
-                return __recursive_parser(*args, **kwargs)
+                return __recursive_parser(target, *args, **kwargs)
             except Exception as e:
-                logging.warning("recursive parsing failed on {}: {}".format(_file, e))
-                #report_exception()
+                logging.error("recursive parsing failed on %s (part content-type=%s): %s",
+                              _file, target.get_content_type() if target is not None else None, e,
+                              exc_info=True)
+                report_exception()
+
+                # record the failure on the analysis so the analyst can see that
+                # part of the email was not fully extracted
+                analysis.details[KEY_EXTRACTION_ERRORS].append({
+                    'content_type': target.get_content_type() if target is not None else None,
+                    'filename': target.get_filename() if target is not None else None,
+                    'exception': '{}: {}'.format(type(e).__name__, e),
+                })
+                _file.add_tag(TAG_EMAIL_PARSE_INCOMPLETE)
+
                 target_path = os.path.join(get_data_dir(), 'review', 'rfc822', '{}.{}'.format(
                                            _file.file_path, datetime.now().strftime('%Y%m%d%H%M%S')))
                 shutil.copy(_file.full_path, target_path)
