@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.40] - 2026-04-24
+
+- [Indent guide refinement](https://github.com/ACE-Collective/ace3/pull/170)
+- [Adds Detection Chains visualization](https://github.com/ACE-Collective/ace3/pull/172)
+- [Phishkit dynamic wait](https://github.com/ACE-Collective/ace3/pull/173)
+- [Fixes the "Add" button on Manual Analysis page](https://github.com/ACE-Collective/ace3/pull/174)
+
 ## [3.0.39] - 2026-04-23
 
 - [Fixes manage alerts page horizontal scrolling](https://github.com/ACE-Collective/ace3/pull/166)

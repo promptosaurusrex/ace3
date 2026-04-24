@@ -199,7 +199,7 @@ def test_observable_display_value_uses_file_name_for_file_observables():
 def test_observable_display_value_falls_back_to_hash_when_no_file_name():
     file_obs = _FakeObservable(F_FILE, "a" * 64)
     # no file_name attribute → fall back to value and truncate
-    assert observable_display_value(file_obs, max_len=10) == "a" * 10 + "…"
+    assert observable_display_value(file_obs, max_len=10) == "a" * 10 + "..."
 
 
 
@@ -215,5 +215,5 @@ def test_observable_display_value_truncates_long_non_file_values():
     long_url = "https://example.com/" + "x" * 100
     url_obs = _FakeObservable(F_URL, long_url)
     displayed = observable_display_value(url_obs, max_len=60)
-    assert displayed.endswith("…")
-    assert len(displayed) == 61
+    assert displayed.endswith("...")
+    assert len(displayed) == 63
