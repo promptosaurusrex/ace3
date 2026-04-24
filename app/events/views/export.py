@@ -89,8 +89,8 @@ def export_events_to_csv():
             event.disposition_time,
             event.contain_time,
             event.remediation_time,
-            event.alert_time.year,
-            event.alert_time.strftime("%b"),
+            event.alert_time.year if event.alert_time else "",
+            event.alert_time.strftime("%b") if event.alert_time else "",
             event.disposition,
             tags
         )
