@@ -795,3 +795,269 @@ class TestScannerInitWebSockets:
     def test_init_includes_websockets_and_frame_cap(self, scanner):
         assert scanner.websockets == {}
         assert scanner.MAX_WS_FRAME_BYTES == 65536
+
+
+# ---------------------------------------------------------------------------
+# Scanner._count_inflight_requests
+# ---------------------------------------------------------------------------
+
+class TestCountInflightRequests:
+
+    @pytest.mark.unit
+    def test_empty_requests(self, scanner):
+        assert scanner._count_inflight_requests() == 0
+
+    @pytest.mark.unit
+    def test_single_unsettled_request(self, scanner):
+        scanner.requests = [
+            {"type": "request", "requestId": "r1", "url": "https://x"},
+        ]
+        assert scanner._count_inflight_requests() == 1
+
+    @pytest.mark.unit
+    def test_request_with_response(self, scanner):
+        scanner.requests = [
+            {"type": "request", "requestId": "r1", "url": "https://x"},
+            {"type": "response", "requestId": "r1", "url": "https://x"},
+        ]
+        assert scanner._count_inflight_requests() == 0
+
+    @pytest.mark.unit
+    def test_request_with_error(self, scanner):
+        scanner.requests = [
+            {"type": "request", "requestId": "r1", "url": "https://x"},
+            {"type": "error", "requestId": "r1", "error_text": "net::ERR_FAILED"},
+        ]
+        assert scanner._count_inflight_requests() == 0
+
+    @pytest.mark.unit
+    def test_two_requests_one_responded(self, scanner):
+        scanner.requests = [
+            {"type": "request", "requestId": "r1", "url": "https://x"},
+            {"type": "request", "requestId": "r2", "url": "https://y"},
+            {"type": "response", "requestId": "r1", "url": "https://x"},
+        ]
+        assert scanner._count_inflight_requests() == 1
+
+    @pytest.mark.unit
+    def test_websocket_entries_ignored(self, scanner):
+        scanner.requests = [
+            {"type": "websocket_created", "requestId": "ws1", "url": "wss://x"},
+            {"type": "websocket_frame_sent", "requestId": "ws1"},
+            {"type": "websocket_frame_received", "requestId": "ws1"},
+        ]
+        assert scanner._count_inflight_requests() == 0
+
+    @pytest.mark.unit
+    def test_missing_request_id_skipped(self, scanner):
+        scanner.requests = [
+            {"type": "request"},                         # no requestId
+            {"type": "request", "requestId": "r1"},      # valid, unsettled
+            {"type": "response"},                         # no requestId
+        ]
+        assert scanner._count_inflight_requests() == 1
+
+
+# ---------------------------------------------------------------------------
+# last_network_event_ts tracking across CDP handlers
+# ---------------------------------------------------------------------------
+
+class TestLastNetworkEventTsUpdated:
+
+    @pytest.mark.unit
+    def test_init_starts_at_zero(self, scanner):
+        assert scanner.last_network_event_ts == 0.0
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_send_handler_updates_ts(self, scanner):
+        with patch("scanner.time.monotonic", return_value=1234.5):
+            await scanner.send_handler(_make_request_event())
+        assert scanner.last_network_event_ts == 1234.5
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_receive_handler_updates_ts(self, scanner):
+        with patch("scanner.time.monotonic", return_value=2345.6):
+            await scanner.receive_handler(_make_response_event())
+        assert scanner.last_network_event_ts == 2345.6
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_loading_finished_updates_ts(self, scanner):
+        scanner.requests.append({
+            "requestId": "req-1", "type": "response", "url": "https://example.com/",
+        })
+        with patch("scanner.time.monotonic", return_value=3456.7):
+            await scanner.loading_finished_handler(
+                _make_loading_finished_event(request_id="req-1", encoded_data_length=10)
+            )
+        assert scanner.last_network_event_ts == 3456.7
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_loading_failed_updates_ts(self, scanner):
+        with patch("scanner.time.monotonic", return_value=4567.8):
+            await scanner.loading_failed_handler(_make_loading_failed_event())
+        assert scanner.last_network_event_ts == 4567.8
+
+
+# ---------------------------------------------------------------------------
+# Scanner._wait_for_network_quiescence
+# ---------------------------------------------------------------------------
+
+class TestWaitForNetworkQuiescence:
+
+    def _mock_sb(self, urls):
+        """Build a mock SB whose cdp.get_current_url returns each value in ``urls``
+        in sequence, repeating the final value forever."""
+        sb = MagicMock()
+        iterator = iter(urls)
+        last = [urls[-1]] if urls else [None]
+
+        def get_url():
+            try:
+                cur = next(iterator)
+                last[0] = cur
+                return cur
+            except StopIteration:
+                return last[0]
+
+        sb.cdp.get_current_url.side_effect = get_url
+        return sb
+
+    @pytest.mark.unit
+    def test_zero_cap_returns_immediately(self, scanner):
+        sb = MagicMock()
+        with patch("scanner.time.sleep") as mock_sleep:
+            scanner._wait_for_network_quiescence(sb, max_extra_wait=0)
+        mock_sleep.assert_not_called()
+        sb.cdp.get_current_url.assert_not_called()
+
+    @pytest.mark.unit
+    def test_quiet_from_start_returns_early(self, scanner):
+        # No in-flight requests, last_network_event_ts well in the past, URL
+        # never changes. Exits as soon as url_idle >= quiet_window. The loop
+        # always runs at least one poll because url_last_change is seeded to
+        # ``start`` — so url_idle needs quiet_window seconds of fake clock to
+        # accumulate before exit.
+        scanner.last_network_event_ts = 100.0
+        # start=200.0; then now ticks forward by poll_interval each iteration.
+        # With quiet_window=1.0 and poll_interval=0.25, expect ~4 polls.
+        clock = iter([200.0] + [200.0 + 0.25 * i for i in range(1, 20)])
+        sb = self._mock_sb(["https://fixed.example/"])
+        with patch("scanner.time.monotonic", side_effect=lambda: next(clock)), \
+             patch("scanner.time.sleep") as mock_sleep:
+            scanner._wait_for_network_quiescence(
+                sb, max_extra_wait=5.0, quiet_window=1.0, poll_interval=0.25
+            )
+        # well short of the 5s cap — exit fires as soon as url_idle crosses 1s
+        assert mock_sleep.call_count < 10
+
+    @pytest.mark.unit
+    def test_inflight_forces_cap(self, scanner):
+        # A request sits in-flight forever → loop runs until max_extra_wait.
+        scanner.requests = [
+            {"type": "request", "requestId": "r1", "url": "https://x"},
+        ]
+        scanner.last_network_event_ts = 0.0  # treated as "no events yet"
+        # Generate a clock that eventually exceeds the cap. We need enough
+        # values for: initial `start`, plus per-iteration `now`, until elapsed
+        # >= max_extra_wait.
+        clock = iter([100.0] + [100.0 + i * 0.25 for i in range(1, 50)])
+        sb = self._mock_sb(["https://fixed.example/"])
+        with patch("scanner.time.monotonic", side_effect=lambda: next(clock)), \
+             patch("scanner.time.sleep") as mock_sleep:
+            scanner._wait_for_network_quiescence(
+                sb, max_extra_wait=2.0, quiet_window=0.5, poll_interval=0.25
+            )
+        # inflight != 0 means no early exit, so we hit the cap after several polls
+        assert mock_sleep.call_count >= 1
+
+    @pytest.mark.unit
+    def test_url_change_resets_idle_clock(self, scanner):
+        # No in-flight requests, last_network_event_ts safely in the past,
+        # but URL changes on the second poll. The change resets url_last_change
+        # and must delay the exit relative to the no-change case.
+        scanner.last_network_event_ts = 100.0
+        # monotonic returns: start=200.0, then per-iteration now values
+        clock_vals = [200.0, 200.1, 200.3, 200.6, 201.0, 201.5, 202.0, 203.0, 204.0]
+        clock = iter(clock_vals)
+        sb = self._mock_sb([
+            "https://a.example/",   # initial (start)
+            "https://a.example/",   # iter 1: same
+            "https://b.example/",   # iter 2: changes — resets url_idle
+            "https://b.example/",   # iter 3
+            "https://b.example/",   # iter 4
+            "https://b.example/",   # iter 5
+            "https://b.example/",   # iter 6
+        ])
+        with patch("scanner.time.monotonic", side_effect=lambda: next(clock)), \
+             patch("scanner.time.sleep"):
+            scanner._wait_for_network_quiescence(
+                sb, max_extra_wait=10.0, quiet_window=1.0, poll_interval=0.25
+            )
+        # URL change on iter 2 should have forced at least one more poll
+        assert sb.cdp.get_current_url.call_count >= 3
+
+    @pytest.mark.unit
+    def test_get_current_url_exception_is_tolerated(self, scanner):
+        # First get_current_url call (at start) raises. Loop should not crash;
+        # subsequent calls return a stable URL and loop exits cleanly once
+        # url_idle >= quiet_window.
+        scanner.last_network_event_ts = 100.0
+        sb = MagicMock()
+        call_count = [0]
+
+        def get_url():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("cdp disconnected")
+            return "https://x/"
+
+        sb.cdp.get_current_url.side_effect = get_url
+        clock = iter([200.0] + [200.0 + 0.25 * i for i in range(1, 20)])
+        with patch("scanner.time.monotonic", side_effect=lambda: next(clock)), \
+             patch("scanner.time.sleep"):
+            scanner._wait_for_network_quiescence(
+                sb, max_extra_wait=5.0, quiet_window=1.0, poll_interval=0.25
+            )
+        # didn't raise; called get_current_url at least twice (once raised, then success)
+        assert call_count[0] >= 2
+
+
+# ---------------------------------------------------------------------------
+# PhishkitConfig scan_waits loading
+# ---------------------------------------------------------------------------
+
+class TestLoadConfigScanWaits:
+
+    @pytest.mark.unit
+    def test_scan_waits_defaults_when_missing(self, tmpdir):
+        from scanner import _load_config
+
+        path = str(tmpdir.join("minimal.yaml"))
+        with open(path, "w") as f:
+            yaml.dump({}, f)
+
+        config = _load_config(path)
+        assert config.additional_wait == 3
+        assert config.max_network_wait == 10.0
+
+    @pytest.mark.unit
+    def test_scan_waits_overrides(self, tmpdir):
+        from scanner import _load_config
+
+        path = str(tmpdir.join("override.yaml"))
+        with open(path, "w") as f:
+            yaml.dump({"scan_waits": {"additional_wait": 5, "max_network_wait": 22.5}}, f)
+
+        config = _load_config(path)
+        assert config.additional_wait == 5
+        assert config.max_network_wait == 22.5
+
+    @pytest.mark.unit
+    def test_scanner_exposes_scan_waits_attrs(self, scanner):
+        # sample_config_data in conftest does NOT set scan_waits → defaults apply
+        assert scanner.ADDITIONAL_WAIT == 3
+        assert scanner.MAX_NETWORK_WAIT == 10.0

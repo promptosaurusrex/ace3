@@ -261,13 +261,19 @@ class PhishkitConfig:
     handlers: dict
     bypasses: list
     max_ws_frame_bytes: int = 65536
+    # scan_waits.additional_wait: fixed minimum sleep after readyState=complete
+    additional_wait: int = 3
+    # scan_waits.max_network_wait: additional cap on top of additional_wait
+    # during which the scanner keeps waiting for network/URL quiescence
+    max_network_wait: float = 10.0
 
 
 def _load_config(config_path: str) -> PhishkitConfig:
     """Load phishkit config from a YAML file.
 
     Returns a PhishkitConfig with skip_body_ext, skip_body_url_patterns,
-    handlers, bypasses, and max_ws_frame_bytes. Raises on missing or invalid config.
+    handlers, bypasses, max_ws_frame_bytes, and scan_waits. Raises on missing
+    or invalid config.
     """
     with open(config_path, "r") as f:
         data = safe_load(f)
@@ -275,12 +281,18 @@ def _load_config(config_path: str) -> PhishkitConfig:
     if not isinstance(data, dict):
         raise ValueError(f"config at {config_path} is not a YAML mapping")
 
+    scan_waits = data.get("scan_waits") or {}
+    if not isinstance(scan_waits, dict):
+        scan_waits = {}
+
     config = PhishkitConfig(
         skip_body_ext=data.get("skip_body_extensions", []),
         skip_body_url_patterns=data.get("skip_body_url_patterns", []),
         handlers=data.get("handlers", {}),
         bypasses=data.get("bypasses", []),
         max_ws_frame_bytes=int(data.get("max_ws_frame_bytes", 65536)),
+        additional_wait=int(scan_waits.get("additional_wait", 3)),
+        max_network_wait=float(scan_waits.get("max_network_wait", 10.0)),
     )
 
     print(
@@ -288,7 +300,9 @@ def _load_config(config_path: str) -> PhishkitConfig:
         f"{len(config.skip_body_url_patterns)} URL patterns, "
         f"{len(config.handlers)} handlers, "
         f"{len(config.bypasses)} bypasses, "
-        f"max_ws_frame_bytes={config.max_ws_frame_bytes}"
+        f"max_ws_frame_bytes={config.max_ws_frame_bytes}, "
+        f"additional_wait={config.additional_wait}s, "
+        f"max_network_wait={config.max_network_wait}s"
     )
     return config
 
@@ -314,6 +328,9 @@ class Scanner:
         self.domain_stats = {}  # domain -> {bytes_downloaded, request_count, response_count, first_request_time, last_finished_time}
         # request_id -> per-socket record aggregated from WebSocket* CDP events
         self.websockets = {}
+        # monotonic ts of the most recent Network.* CDP event; 0.0 until the
+        # first event arrives. Read by _wait_for_network_quiescence.
+        self.last_network_event_ts: float = 0.0
 
         config = _load_config(config_path)
         self.SKIP_BODY_EXT = config.skip_body_ext
@@ -321,6 +338,8 @@ class Scanner:
         self.HANDLERS = config.handlers
         self.BYPASSES = config.bypasses
         self.MAX_WS_FRAME_BYTES = config.max_ws_frame_bytes
+        self.ADDITIONAL_WAIT = config.additional_wait
+        self.MAX_NETWORK_WAIT = config.max_network_wait
 
         self._bypass_handlers = {
             "visual_checkbox_bypass": self.visual_checkbox_bypass,
@@ -361,6 +380,27 @@ class Scanner:
             "scan_duration_seconds": round(scan_duration, 2),
             "domain_stats": domain_metrics,
         }
+
+    def _count_inflight_requests(self) -> int:
+        """Return the number of unique requestIds with a 'request' event but
+        no matching 'response' or 'error' event.
+
+        WebSocket entries (type="websocket_*") are ignored — sockets are
+        long-lived streams and not a navigation signal; waiting on them would
+        hang the scanner forever.
+        """
+        seen: set = set()
+        settled: set = set()
+        for entry in self.requests:
+            rid = entry.get("requestId")
+            if not rid:
+                continue
+            t = entry.get("type")
+            if t == "request":
+                seen.add(rid)
+            elif t == "response" or t == "error":
+                settled.add(rid)
+        return len(seen - settled)
 
     def _format_websocket_block(self, ws: dict) -> str:
         """Render a WebSocket record as a dom.html block.
@@ -410,6 +450,7 @@ class Scanner:
     async def receive_handler(self, event: mycdp.network.ResponseReceived):
         # print(f"receive handler callback received event {event}")
         try:
+            self.last_network_event_ts = time.monotonic()
             request = {
                 "date": datetime.now().isoformat(),
                 "type": "response",
@@ -429,6 +470,7 @@ class Scanner:
 
     async def loading_finished_handler(self, event: mycdp.network.LoadingFinished):
         try:
+            self.last_network_event_ts = time.monotonic()
             encoded_bytes = int(event.encoded_data_length)
             self.bytes_downloaded += encoded_bytes
             now = time.time()
@@ -450,6 +492,7 @@ class Scanner:
 
     async def loading_failed_handler(self, event: mycdp.network.LoadingFailed):
         try:
+            self.last_network_event_ts = time.monotonic()
             error_text = str(event.error_text) if event.error_text else "unknown"
             canceled = bool(event.canceled) if event.canceled is not None else False
             blocked_reason = str(event.blocked_reason) if event.blocked_reason else None
@@ -519,6 +562,7 @@ class Scanner:
     async def send_handler(self, event: mycdp.network.RequestWillBeSent):
         # print(f"send handler callback received event {event}")
         try:
+            self.last_network_event_ts = time.monotonic()
             request = {
                 "date": datetime.now().isoformat(),
                 "type": "request",
@@ -806,6 +850,66 @@ class Scanner:
                 return
         print(f"page settle timeout after {timeout}s, proceeding anyway")
 
+    def _wait_for_network_quiescence(
+        self,
+        sb,
+        max_extra_wait: float,
+        quiet_window: float = 1.0,
+        poll_interval: float = 0.25,
+    ) -> None:
+        """Extend the post-load wait while the page is still fetching or
+        navigating. Runs *after* the fixed ``additional_wait`` sleep.
+
+        Exits as soon as all three hold for at least ``quiet_window`` seconds:
+          - no in-flight requests (see _count_inflight_requests)
+          - no send/receive/loading_finished/loading_failed events fired
+          - document.location URL hasn't changed
+
+        Bounded by ``max_extra_wait`` total seconds. Addresses tarpit origins
+        and post-readyState redirects (e.g. a <script> that fires
+        window.location=... after its body finishes downloading). Does not
+        replace the minimum ``additional_wait`` — it runs after it.
+        """
+        if max_extra_wait <= 0:
+            return
+        start = time.monotonic()
+        try:
+            last_url = sb.cdp.get_current_url()
+        except Exception:
+            last_url = None
+        url_last_change = start
+        while True:
+            now = time.monotonic()
+            elapsed = now - start
+            if elapsed >= max_extra_wait:
+                print(
+                    f"network wait: cap reached after {elapsed:.1f}s "
+                    f"(inflight={self._count_inflight_requests()})"
+                )
+                return
+            try:
+                cur_url = sb.cdp.get_current_url()
+            except Exception:
+                cur_url = last_url
+            if cur_url != last_url:
+                print(f"network wait: url changed -> {cur_url}")
+                url_last_change = now
+                last_url = cur_url
+            inflight = self._count_inflight_requests()
+            net_idle = (
+                now - self.last_network_event_ts
+                if self.last_network_event_ts
+                else float("inf")
+            )
+            url_idle = now - url_last_change
+            if inflight == 0 and net_idle >= quiet_window and url_idle >= quiet_window:
+                print(
+                    f"network wait: quiet after {elapsed:.1f}s "
+                    f"(net_idle={net_idle:.1f}s, url_idle={url_idle:.1f}s)"
+                )
+                return
+            time.sleep(poll_interval)
+
     def visual_checkbox_bypass(self, sb: SB, config: dict):
         # This one is always changing and requires special handling: https://github.com/seleniumbase/SeleniumBase/issues/2842
         print("visual checkbox bypass handler")
@@ -918,6 +1022,7 @@ class Scanner:
         output_dir: str,
         additional_wait: Optional[float] = 3.0,
         proxy: Optional[str] = None,
+        max_network_wait: Optional[float] = 10.0,
     ) -> ScanResult:
 
         # output directory must already exist
@@ -1102,6 +1207,15 @@ class Scanner:
                 print(f"waiting for additional {additional_wait} seconds")
                 time.sleep(additional_wait)
 
+            # Extend the wait adaptively while the page is still fetching or
+            # navigating — tarpitted origins (e.g. a 6s cfOrigin delay before
+            # the HTML arrives) and post-readyState redirects fired by
+            # downloaded <script> elements both miss the fixed additional_wait
+            # above. Bounded by max_network_wait so long-poll XHRs don't hang
+            # the scanner forever.
+            if max_network_wait and max_network_wait > 0:
+                self._wait_for_network_quiescence(sb, max_extra_wait=max_network_wait)
+
             if not bypassed:
                 self.bypass_recaptcha(sb)
                 self.bypass_warnings(sb)
@@ -1229,8 +1343,17 @@ if __name__ == "__main__":
     parser.add_argument(
         "--additional-wait",
         type=int,
-        default=3,
-        help="The additional time to wait for the page to load.",
+        default=None,
+        help="Fixed minimum sleep (seconds) after readyState=complete. "
+             "Defaults to scan_waits.additional_wait from the YAML config.",
+    )
+    parser.add_argument(
+        "--max-network-wait",
+        type=float,
+        default=None,
+        help="Extra cap (seconds) on top of --additional-wait during which the "
+             "scanner waits for network/URL quiescence. Defaults to "
+             "scan_waits.max_network_wait from the YAML config.",
     )
     parser.add_argument(
         "--proxy",
@@ -1253,8 +1376,20 @@ if __name__ == "__main__":
         target = args.target
 
     scanner = Scanner(config_path=args.config)
+    additional_wait = (
+        args.additional_wait if args.additional_wait is not None
+        else scanner.ADDITIONAL_WAIT
+    )
+    max_network_wait = (
+        args.max_network_wait if args.max_network_wait is not None
+        else scanner.MAX_NETWORK_WAIT
+    )
     result = scanner.scan(
-        target, args.output_dir, args.additional_wait, proxy=args.proxy
+        target,
+        args.output_dir,
+        additional_wait,
+        proxy=args.proxy,
+        max_network_wait=max_network_wait,
     )
     print(result)
     sys.exit(0)

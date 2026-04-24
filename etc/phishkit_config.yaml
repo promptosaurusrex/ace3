@@ -141,6 +141,23 @@ proxy_fallback:
   # Whether to retry without proxy when the scanner process times out.
   retry_on_timeout: true
 
+# Per-scan wait tuning applied by scanner.py after page load.
+#
+# additional_wait is a fixed minimum sleep after document.readyState=complete
+# — covers deferred challenge UI injection via setTimeout(). max_network_wait
+# is an *additional* cap on top of that, during which the scanner keeps
+# waiting while any network request is in flight, the URL is changing, or a
+# Network.* CDP event has fired recently. Exits early when all three go quiet.
+#
+# Total post-readyState wait is roughly (additional_wait + max_network_wait),
+# so it must stay comfortably less than the outer scanner timeout
+# (PhishkitAnalyzerConfig.scanner_timeout in saq/modules/phishkit.py, 15s
+# default). If you raise max_network_wait, also raise scanner_timeout or the
+# scanner process will be killed before the adaptive wait can complete.
+scan_waits:
+  additional_wait: 3
+  max_network_wait: 10
+
 # Resource limits applied to each scanner container spawned by the phishkit
 # manager, plus settings for the orphan-container reaper.
 # Only used by the Celery worker (phishkit.py), not by scanner.py.
