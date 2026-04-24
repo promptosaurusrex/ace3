@@ -14,6 +14,12 @@ from saq.configuration.config import get_config
 from saq.constants import CLOSED_EVENT_LIMIT, DIRECTIVE_DESCRIPTIONS, F_FILE, GUI_DIRECTIVES
 from saq.database.model import Campaign, Comment, Company, Malware, User, Event
 from saq.database.pool import get_db
+from saq.analysis.detection_chain import (
+    build_detection_chains,
+    build_merged_detection_tree,
+    module_display_name,
+    observable_display_value,
+)
 from saq.database.util.observable_detection import get_all_observable_detections
 from aceapi_v2.observables.service import get_interesting_observables_by_hashes
 from saq.disposition import get_dispositions
@@ -302,8 +308,10 @@ def index():
     alert_tags = [tag for tag in alert_tags if tag not in special_tag_names]
 
     # XXX refactor this omg
-    # get all of the current observable detection data 
+    # get all of the current observable detection data
     observable_detections = get_all_observable_detections(alert.root_analysis)
+
+    detection_chain_merged_tree = build_merged_detection_tree(build_detection_chains(alert.root_analysis))
 
     # get all observable comments for the analysis tree
     all_observables = list(alert.root_analysis.all_observables)
@@ -433,4 +441,7 @@ def index():
         interesting_observables=interesting_observables,
         interesting_observable_list=interesting_observable_list,
         observable_types=run_async_with_session(get_observable_types),
+        detection_chain_merged_tree=detection_chain_merged_tree,
+        detection_chain_module_display_name=module_display_name,
+        detection_chain_observable_display_value=observable_display_value,
     )

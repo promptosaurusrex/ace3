@@ -1,0 +1,37 @@
+{% if detection_chain_merged_tree %}
+<div class="row">
+    <div class="col">
+        <div class="card mb-3">
+            <div class="card-header">
+                <h5>Detection Chains <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_detection_chains" aria-expanded="true" aria-controls="collapse_detection_chains">(hide/show)</a></h5>
+            </div>
+            <div class="card-body collapse show" id="collapse_detection_chains">
+
+                {% macro observable_chip(observable) %}
+                    <a href="#{{ observable.uuid }}" class="badge text-bg-secondary text-decoration-none" style="font-size: 0.85rem;">{{ observable.type }}: {{ detection_chain_observable_display_value(observable) }}</a>
+                {% endmacro %}
+
+                <ul class="list-unstyled mb-0">
+                {% for node in detection_chain_merged_tree recursive %}
+                    <li class="my-1">
+                        {% if node.extracted_by %}
+                            <span class="text-muted me-1" style="font-size: 0.8rem;">via {{ detection_chain_module_display_name(node.extracted_by) }} →</span>
+                        {% endif %}
+                        {{ observable_chip(node.observable) }}
+                        {% for detection in node.detections %}
+                            <a href="#detection_{{ detection.id }}" class="badge text-bg-danger ms-1 text-decoration-none" style="font-size: 0.85rem; white-space: normal;"><span class="bi bi-exclamation-triangle-fill"></span> {{ detection.description }}</a>
+                        {% endfor %}
+                        {% if node.children %}
+                        <ul class="list-unstyled ms-4" style="border-left: 2px solid #dee2e6; padding-left: 0.75rem;">
+                            {{ loop(node.children.values()) }}
+                        </ul>
+                        {% endif %}
+                    </li>
+                {% endfor %}
+                </ul>
+
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
