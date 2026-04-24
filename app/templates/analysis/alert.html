@@ -124,13 +124,6 @@
     </tr>
     {% endfor %}
 
-    {% for detection in alert.root_analysis.all_detection_points %}
-    <tr>
-        <td class="col-md-2">Detection</td>
-        <td class="col-md-10"><a href="#detection_{{detection.id}}">{{detection.description}}</a></td>
-    </tr>
-    {% endfor %}
-
     {% if alert.root_analysis.instructions %}
     <tr>
         <td class="col-md-2">Instructions</td>
@@ -151,17 +144,15 @@
     </div>
 </div>
 
+{% include 'analysis/detection_chains.html' %}
+
 {% if observable_open_event_counts %}
     <div class="panel panel-default">
     {% set matching_open_events = observable_open_event_counts|dictsort(false, 'value')  %}
     <div class="panel-heading">
-        <h3 class="panel-title">Matching Open Events: {{ matching_open_events | length }} Event(s) | {{ matching_open_events[-1][1] }}/{{ num_observables_in_alert }} matching observables | {{ matching_open_events[-1][0].name }} <a role="button" data-toggle="collapse" data-target="#collapse_matching_open_events" aria-expanded="true" aria-controls="collapse_matching_open_events">(hide/show)</a></h3>
+        <h3 class="panel-title">Matching Open Events: {{ matching_open_events | length }} Event(s) | {{ matching_open_events[-1][1] }}/{{ num_observables_in_alert }} matching observables | {{ matching_open_events[-1][0].name }} <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_matching_open_events" aria-expanded="true" aria-controls="collapse_matching_open_events">(hide/show)</a></h3>
     </div>
-    {%if ace_config.gui.matching_open_events_collapsed %}
-        <div class="panel-body collapse" id="collapse_matching_open_events">
-    {% else %}
-        <div class="panel-body" id="collapse_matching_open_events">
-    {% endif %}
+    <div class="panel-body collapse{% if not ace_config.gui.matching_open_events_collapsed %} show{% endif %}" id="collapse_matching_open_events">
 
 
         <table class="table table-bordered table-condensed">
@@ -194,7 +185,7 @@
                 <h5>Alert Details <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_alert_details" aria-expanded="true" aria-controls="collapse_alert_details">(hide/show)</a></h5>
             </div>
             <div class="card-body">
-                <div class="card-text {% if ace_config.gui.alert_details_collapsed %} collapse{% endif %}" id="collapse_alert_details">
+                <div class="card-text collapse{% if not ace_config.gui.alert_details_collapsed %} show{% endif %}" id="collapse_alert_details">
                     <!-- by default we just pretty-print the json -->
                     {% block alert_details %} <code><pre>{{ analysis.details | pprint }}</pre></code> {% endblock %}
                 </div>
@@ -256,7 +247,7 @@
             <div class="card-header">
                 <h5>Summary Details <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_alert_summary_details" aria-expanded="true" aria-controls="collapse_alert_summary_details">(hide/show)</a></h5>
             </div>
-            <div class="card-body" id="collapse_alert_summary_details">
+            <div class="card-body collapse show" id="collapse_alert_summary_details">
                 <div class="card-text">
                 {% for summary_detail in alert.root_analysis.summary_details %}
                     {{ display_summary_detail(summary_detail) }}
@@ -380,7 +371,7 @@
     <div class="col">
         <div class="card mb-3">
             <div class="card-heading">
-                <h3>Remediation Targets: {{ remediation_status['success'] }} Successful | {{ remediation_status['failed'] }} Failed | {{ remediation_status['in_progress'] }} In Progress <a role="button" data-toggle="collapse" data-target="#collapse_remediation_targets" aria-expanded="true" aria-controls="collapse_remediation_targets">(hide/show)</a></h3>
+                <h3>Remediation Targets: {{ remediation_status['success'] }} Successful | {{ remediation_status['failed'] }} Failed | {{ remediation_status['in_progress'] }} In Progress <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_remediation_targets" aria-expanded="false" aria-controls="collapse_remediation_targets">(hide/show)</a></h3>
             </div>
             <div class="card-body collapse" id="collapse_remediation_targets">
                 <div class="card-text">
