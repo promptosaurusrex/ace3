@@ -1,11 +1,3 @@
-/*MULTISELECT_SETTINGS = {
-        enableFiltering: true,
-        enableFullValueFiltering: true,
-        dropUp: true,
-        includeSelectAllOption: false,
-        maxHeight: '300'
-    };*/
-
 $(document).ready(function() {
     $('input[name="new_alert_insert_date"]').datetimepicker({
       showSecond: true,
@@ -18,13 +10,10 @@ $(document).ready(function() {
       dateFormat: 'mm-dd-yy',
       timeFormat: 'HH:mm:ss'
     });
-    //let multiselect = $('.multiselect-ui');
-    //multiselect.multiselect(MULTISELECT_SETTINGS);
-    //multiselect.multiselect('select', 'sandbox');
 });
 
 function new_alert_observable() {
-  var index = new Date().valueOf()
+  var index = new Date().valueOf();
   (function() {
     const params = new URLSearchParams({ index: index });
     fetch('new_alert_observable?' + params.toString(), { credentials: 'same-origin' })
@@ -47,8 +36,7 @@ function new_alert_observable() {
 }
 
 function clear_multiselect(multiselect) {
-    //multiselect.multiselect('deselectAll', false);
-    //multiselect.multiselect('updateButtonText');
+    multiselect.find('option').prop('selected', false);
 }
 
 function new_alert_observable_type_changed(index) {
@@ -74,7 +62,7 @@ function new_alert_observable_type_changed(index) {
   }
 
   if (type_input.value === 'file') {
-      directives_input_multiselect.multiselect('select', 'sandbox');
+      directives_input_multiselect.find('option[value="sandbox"]').prop('selected', true);
       if (value_input.type !== 'file') {
           target_input_container.html('<input class="form-control" type="file" name="observables_values_' + index + '" id="observables_values_' + index + '" value="">');
       }
