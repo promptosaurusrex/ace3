@@ -238,6 +238,10 @@ def normalize_message_id(message_id):
     """Returns message id with < and > prepended and appended respectively
 
     Required format for exchangelib filter."""
+    if message_id is None:
+        return None
+    if not isinstance(message_id, str):
+        message_id = decode_rfc2822(message_id)
     message_id = message_id.strip()
     if not message_id.startswith("<"):
         message_id = f"<{message_id}"
