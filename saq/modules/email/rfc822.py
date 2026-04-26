@@ -631,7 +631,7 @@ class EmailAnalyzer(AnalysisModule):
         # check to see if the sender or receiver has been whitelisted
         # this is useful to filter out internally sourced garbage
         if 'from' in target_email:
-            file_path, address = email.utils.parseaddr(target_email['from'])
+            file_path, address = email.utils.parseaddr(decode_rfc2822(target_email['from']))
             if address != '':
                 if self.whitelist.is_whitelisted(WHITELIST_TYPE_SMTP_FROM, address):
                     _file.whitelist()
@@ -643,7 +643,7 @@ class EmailAnalyzer(AnalysisModule):
 
         # if this is an office365 email then we know who the email was actually delivered to
         if is_office365 and 'X-MS-Exchange-Organization-OriginalEnvelopeRecipients' in target_email:
-            file_path, address = email.utils.parseaddr(target_email['X-MS-Exchange-Organization-OriginalEnvelopeRecipients'])
+            file_path, address = email.utils.parseaddr(decode_rfc2822(target_email['X-MS-Exchange-Organization-OriginalEnvelopeRecipients']))
             if address:
                 env_rcpt_to = [ address ]
 
@@ -891,11 +891,11 @@ class EmailAnalyzer(AnalysisModule):
         # extract CC and BCC recipients
         cc = []
         if 'cc' in target_email:
-            cc = [e.strip() for e in target_email['cc'].split(',')]
+            cc = [e.strip() for e in decode_rfc2822(target_email['cc']).split(',')]
 
         bcc = []
         if 'bcc' in target_email:
-            bcc = [e.strip() for e in target_email['bcc'].split(',')]
+            bcc = [e.strip() for e in decode_rfc2822(target_email['bcc']).split(',')]
 
         path = []
         for header in target_email.get_all('received', []):
@@ -908,19 +908,19 @@ class EmailAnalyzer(AnalysisModule):
 
         user_agent = None
         if 'user-agent' in target_email:
-            email_details[KEY_USER_AGENT] = target_email['user-agent']
-            user_agent = target_email['user-agent']
+            user_agent = decode_rfc2822(target_email['user-agent'])
+            email_details[KEY_USER_AGENT] = user_agent
             analysis.add_observable_by_spec(F_USER_AGENT, user_agent)
 
         x_mailer = None
         if 'x-mailer' in target_email:
-            email_details[KEY_X_MAILER] = target_email['x-mailer']
-            x_mailer = target_email['x-mailer']
+            x_mailer = decode_rfc2822(target_email['x-mailer'])
+            email_details[KEY_X_MAILER] = x_mailer
             analysis.add_observable_by_spec(F_EMAIL_X_MAILER, x_mailer)
 
         # sender IP address (office365)
         if 'x-originating-ip' in target_email:
-            value = target_email['x-originating-ip']
+            value = decode_rfc2822(target_email['x-originating-ip'])
             value = re.sub(r'[^0-9\.]', '', value) # these seem to have extra characters added
             email_details[KEY_ORIGINATING_IP] = value
             ipv4 = analysis.add_observable_by_spec(F_IP, value, o_time=received_time)
@@ -928,7 +928,7 @@ class EmailAnalyzer(AnalysisModule):
                 ipv4.display_type = "Originating IP"
 
         if 'x-sender-ip' in target_email:
-            value = target_email['x-sender-ip']
+            value = decode_rfc2822(target_email['x-sender-ip'])
             value = re.sub(r'[^0-9\.]', '', value)  # these seem to have extra characters added
             email_details[KEY_X_SENDER_IP] = value
             ipv4 = analysis.add_observable_by_spec(F_IP, value, o_time=received_time)
