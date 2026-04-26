@@ -51,7 +51,12 @@ def test_decode_rfc2822(source: str, target: str):
     '<this_is_fake@local.local',
     'this_is_fake@local.local>',
     ' this_is_fake@local.local>\n',
+    Header('this_is_fake@local.local'),
 ])
 @pytest.mark.unit
 def test_normalize_message_id_no_brackets(message_id):
     assert normalize_message_id(message_id) == "<this_is_fake@local.local>"
+
+@pytest.mark.unit
+def test_normalize_message_id_none():
+    assert normalize_message_id(None) is None

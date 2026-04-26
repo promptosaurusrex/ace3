@@ -43,8 +43,10 @@ def get_received_time(received_header):
     return None
 
 def get_address_list(email_obj, header_name):
-    header = email_obj.get_all(header_name, [])
-    addresses = email.utils.getaddresses(header)
+    # decode each header to str so email.utils.getaddresses doesn't see the
+    # encoded form when the value comes back as an email.header.Header
+    headers = [decode_rfc2822(h) for h in email_obj.get_all(header_name, [])]
+    addresses = email.utils.getaddresses(headers)
     return [x[1] for x in addresses]
 
 
@@ -610,14 +612,14 @@ class EmailAnalyzer(AnalysisModule):
             # look for office365 header indicating a parent message-id
             if 'X-MS-Exchange-Parent-Message-Id' in part:
                 is_office365 = True # we use this to identify this is an office365 journaled message
-                target_message_id = part['X-MS-Exchange-Parent-Message-Id'].strip()
+                target_message_id = decode_rfc2822(part['X-MS-Exchange-Parent-Message-Id']).strip()
                 logging.debug("found office365 parent message-id {}".format(target_message_id))
                 continue
 
             if 'message-id' in part:
                 # if we are looking for a specific message-id...
                 if target_message_id:
-                    if part['message-id'].strip() == target_message_id:
+                    if decode_rfc2822(part['message-id']).strip() == target_message_id:
                         # found the part we're looking for
                         target_email = part
                         logging.debug("found target email using message-id{}".format(target_message_id))
@@ -665,7 +667,7 @@ class EmailAnalyzer(AnalysisModule):
         # then at least log that something is wrong
         if is_office365 and not o365_meta_part:
             try:
-                message_id = parsed_email['message_id']
+                message_id = parsed_email['message-id']
             except:
                 message_id = "unknown"
 
@@ -698,7 +700,7 @@ class EmailAnalyzer(AnalysisModule):
         # this only applies to the original email, not email attachments
         if is_office365 and _file.has_directive(DIRECTIVE_ORIGINAL_EMAIL):
             if 'X-MS-Exchange-Organization-MessageDirectionality' in target_email:
-                if target_email['X-MS-Exchange-Organization-MessageDirectionality'] != 'Incoming':
+                if decode_rfc2822(target_email['X-MS-Exchange-Organization-MessageDirectionality']) != 'Incoming':
                     _file.add_tag(TAG_OUTBOUND_EMAIL)
                     if self.config.scan_inbound_only:
                         # do we have a configured exception?
@@ -724,9 +726,11 @@ class EmailAnalyzer(AnalysisModule):
         # parse out important email header information and add observables
 
         # capture all email headers
+        # decode values to str so downstream consumers (re.sub, str ops, JSON) don't
+        # trip on email.header.Header instances returned under compat32 policy.
         email_details[KEY_HEADERS] = []
         for header, value in target_email.items():
-            email_details[KEY_HEADERS].append([header, value])
+            email_details[KEY_HEADERS].append([header, decode_rfc2822(value)])
 
         # who did the email come from and who did it go to?
         # with office365 journaling all you have is the header from
@@ -738,7 +742,7 @@ class EmailAnalyzer(AnalysisModule):
         # figure out when the email was received
         if 'received' in target_email:
             # use the last received email header as the date
-            received_time = get_received_time(target_email.get_all('received')[0])
+            received_time = get_received_time(decode_rfc2822(target_email.get_all('received')[0]))
 
         if 'from' in target_email:
             email_details[KEY_FROM] = decode_rfc2822(target_email['from'])
@@ -773,10 +777,10 @@ class EmailAnalyzer(AnalysisModule):
                     to_address.display_type = "Envelope Recipient"
                     analysis.add_observable_by_spec(F_EMAIL_CONVERSATION, create_email_conversation(mail_from, address))
 
-        email_details[KEY_TO] = target_email.get_all('to', [])
+        email_details[KEY_TO] = [decode_rfc2822(h) for h in target_email.get_all('to', [])]
         email_details[KEY_TO_ADDRESSES] = get_address_list(target_email, 'to')
         for addr in email_details[KEY_TO]:
-            address = normalize_email_address(decode_rfc2822(addr))
+            address = normalize_email_address(addr)
             if address:
                 # if we don't know who it was delivered to yet then we grab the first To:
                 if mail_to is None:
@@ -789,15 +793,21 @@ class EmailAnalyzer(AnalysisModule):
                         analysis.add_observable_by_spec(F_EMAIL_CONVERSATION, create_email_conversation(mail_from, address))
 
         if 'subject' in target_email:
-            email_details[KEY_SUBJECT] = target_email['subject']
-            if target_email['subject']:
-                analysis.add_observable_by_spec(F_EMAIL_SUBJECT, target_email['subject'])
+            # KEY_SUBJECT keeps the raw (possibly RFC 2822-encoded) value as a str;
+            # KEY_DECODED_SUBJECT is populated below from this value.
+            raw_subject = target_email['subject']
+            if raw_subject is not None:
+                raw_subject = str(raw_subject)
+            email_details[KEY_SUBJECT] = raw_subject
+            if raw_subject:
+                analysis.add_observable_by_spec(F_EMAIL_SUBJECT, raw_subject)
 
         if 'message-id' in target_email:
-            email_details[KEY_MESSAGE_ID] = target_email['message-id']
+            message_id = decode_rfc2822(target_email['message-id'])
+            email_details[KEY_MESSAGE_ID] = message_id
             message_id_observable = analysis.add_observable_by_spec(
                     F_MESSAGE_ID,
-                    normalize_message_id(target_email['message-id']),
+                    normalize_message_id(message_id),
                     o_time=received_time)
 
             if message_id_observable:
@@ -825,7 +835,7 @@ class EmailAnalyzer(AnalysisModule):
                                                 create_email_delivery(email_details[KEY_MESSAGE_ID], rcpt_to))
 
         if 'x-sender' in target_email:
-            address = normalize_email_address(target_email['x-sender'])
+            address = normalize_email_address(decode_rfc2822(target_email['x-sender']))
             if address:
                 email_details[KEY_X_SENDER] = address
                 x_sender_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
@@ -833,7 +843,7 @@ class EmailAnalyzer(AnalysisModule):
                     x_sender_address.display_type = "Mail X-Sender"
 
         if 'x-sender-id' in target_email:
-            address = normalize_email_address(target_email['x-sender-id'])
+            address = normalize_email_address(decode_rfc2822(target_email['x-sender-id']))
             if address:
                 email_details[KEY_X_SENDER_ID] = address
                 x_sender_id_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
@@ -841,7 +851,7 @@ class EmailAnalyzer(AnalysisModule):
                     x_sender_id_address.display_type = "Mail X-Sender ID"
 
         if 'x-auth-id' in target_email:
-            address = normalize_email_address(target_email['x-auth-id'])
+            address = normalize_email_address(decode_rfc2822(target_email['x-auth-id']))
             if address:
                 email_details[KEY_X_AUTH_ID] = address
                 x_auth_id_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
@@ -849,7 +859,7 @@ class EmailAnalyzer(AnalysisModule):
                     x_auth_id_address.display_type = "Mail X-Auth ID"
 
         if 'x-original-sender' in target_email:
-            address = normalize_email_address(target_email['x-original-sender'])
+            address = normalize_email_address(decode_rfc2822(target_email['x-original-sender']))
             if address:
                 email_details[KEY_X_ORIGINAL_SENDER] = address
                 x_original_sender_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
@@ -857,7 +867,7 @@ class EmailAnalyzer(AnalysisModule):
                     x_original_sender_address.display_type = "Mail X-Original Sender"
 
         if 'reply-to' in target_email:
-            address = normalize_email_address(target_email['reply-to'])
+            address = normalize_email_address(decode_rfc2822(target_email['reply-to']))
             if address:
                 email_details[KEY_REPLY_TO] = address
                 email_details[KEY_REPLY_TO_ADDRESS] = address
@@ -866,7 +876,7 @@ class EmailAnalyzer(AnalysisModule):
                     reply_to.display_type = "Mail Reply To"
 
         if 'return-path' in target_email:
-            address = normalize_email_address(target_email['return-path'])
+            address = normalize_email_address(decode_rfc2822(target_email['return-path']))
             email_details[KEY_RETURN_PATH] = address
             if address:
                 return_path = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
@@ -899,7 +909,7 @@ class EmailAnalyzer(AnalysisModule):
 
         path = []
         for header in target_email.get_all('received', []):
-            m = _PATTERN_RECEIVED_IPADDR.match(header)
+            m = _PATTERN_RECEIVED_IPADDR.match(decode_rfc2822(header))
             if not m:
                 continue
 
@@ -976,7 +986,7 @@ class EmailAnalyzer(AnalysisModule):
                 if target.get_content_type() == 'message/rfc822':
                     # the actual message-id will be in one of the payloads of the email
                     for payload in target.get_payload():
-                        if 'message-id' in payload and payload['message-id'].strip() == target_message_id:
+                        if 'message-id' in payload and decode_rfc2822(payload['message-id']).strip() == target_message_id:
                             # Even though we skip extracting the target email as a file,
                             # we still need to recursively process its payload to extract
                             # any embedded files (e.g., PDF in the body)
@@ -1143,10 +1153,10 @@ class EmailAnalyzer(AnalysisModule):
             'attachment_types': [a[1] for a in attachments],
             'attachment_names': [a[2] for a in attachments],
             'attachment_hashes': [a[3] for a in attachments],
-            'thread_topic': target_email['thread-topic'] if 'thread-topic' in target_email else None,
-            'thread_index': target_email['thread-index'] if 'thread-index' in target_email else None,
-            'refereneces': target_email['references'] if 'references' in target_email else None,
-            'x_sender': target_email['x-sender'] if 'x-sender' in target_email else None,
+            'thread_topic': decode_rfc2822(target_email['thread-topic']) if 'thread-topic' in target_email else None,
+            'thread_index': decode_rfc2822(target_email['thread-index']) if 'thread-index' in target_email else None,
+            'refereneces': decode_rfc2822(target_email['references']) if 'references' in target_email else None,
+            'x_sender': decode_rfc2822(target_email['x-sender']) if 'x-sender' in target_email else None,
         }
 
         email_details[KEY_LOG_ENTRY] = log_entry

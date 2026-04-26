@@ -1317,3 +1317,15 @@ def test_log_entry_subject(root_analysis, datadir, email_file, expected_subject,
     assert log_entry is not None
     assert log_entry["subject"] == expected_subject
     assert log_entry["subject_raw"] == expected_subject_raw
+
+    # KEY_SUBJECT must be a plain str (the raw, possibly RFC 2822-encoded form),
+    # not an email.header.Header instance. KEY_DECODED_SUBJECT must be the decoded form.
+    assert isinstance(email_analysis.subject, str)
+    assert email_analysis.subject == expected_subject_raw
+    assert email_analysis.decoded_subject == expected_subject
+
+    # all values stored in KEY_HEADERS must be strings, not Header instances —
+    # otherwise downstream JSON serialization and the .headers file write break.
+    for name, value in email_analysis.headers:
+        assert isinstance(name, str)
+        assert isinstance(value, str)
