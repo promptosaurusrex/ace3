@@ -1,5 +1,7 @@
 import pytest
 
+from email.header import Header
+
 from saq.email import decode_rfc2822, is_local_email_domain, normalize_email_address, normalize_message_id
 
 @pytest.mark.parametrize('email_address, expected_result', [
@@ -18,9 +20,12 @@ def test_is_local_email_domain(email_address, expected_result):
     ('<TEST@USER.COM>', 'test@user.com'),
     ('"user name" <TEST@USER.COM>', 'test@user.com'),
     ('user name <TEST@USER.COM>', 'test@user.com'),
+    (Header('benztj@bv.com'), 'benztj@bv.com'),
+    (Header('<<benztj@bv.com>>'), 'benztj@bv.com'),
+    (None, None),
 ])
 @pytest.mark.unit
-def test_normalize_email_address(source: str, target: str):
+def test_normalize_email_address(source, target):
     assert normalize_email_address(source) == target
 
 @pytest.mark.parametrize("source, target", [

@@ -41,6 +41,12 @@ def email_address_similarity(email_address_a, email_address_b):
 
 def normalize_email_address(email_address):
     """Returns a normalized version of email address.  Returns None if the address cannot be parsed."""
+    if email_address is None:
+        return None
+    if not isinstance(email_address, str):
+        # email.message.Message[header] can return an email.header.Header under
+        # compat32 policy; decode to str so substring/parseaddr operations work.
+        email_address = decode_rfc2822(email_address)
     name, address = parseaddr(email_address)
     if not address:
         # attempt to fix known cases the stdlib has, like <<person@example.com>>
