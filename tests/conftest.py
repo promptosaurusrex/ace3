@@ -389,15 +389,15 @@ def api_server():
 def mock_api_call(test_client, monkeypatch):
     import ace_api
 
-    def mock_execute_api_call(command, 
-                        method=ace_api.METHOD_GET, 
-                        remote_host=None, 
-                        ssl_verification=None, 
+    def mock_execute_api_call(command,
+                        method=ace_api.METHOD_GET,
+                        remote_host=None,
+                        ssl_verification=None,
                         disable_ssl_verification=False,
                         api_key=None,
-                        stream=False, 
-                        data=None, 
-                        files=None, 
+                        stream=False,
+                        data=None,
+                        files=None,
                         params=None,
                         proxies=None,
                         timeout=None):
@@ -406,6 +406,9 @@ def mock_api_call(test_client, monkeypatch):
             api_key = ace_api.default_api_key
             if api_key is None:
                 api_key = os.environ.get("ICE_API_KEY", None)
+
+        if command.startswith("v2/"):
+            return _dispatch_v2(command, method, api_key, data, params)
 
         if method == ace_api.METHOD_GET:
             func = test_client.get
@@ -430,7 +433,7 @@ def mock_api_call(test_client, monkeypatch):
                     # turn this into a list if we haven't done so already
                     if not isinstance(kwargs["data"][post_field], list):
                         kwargs["data"][post_field] = [ kwargs["data"][post_field] ]
-                    
+
                     # then append this to the list
                     kwargs["data"][post_field].append((fp, file_name, "application/octet-stream"))
                 else:
@@ -467,6 +470,67 @@ def mock_api_call(test_client, monkeypatch):
         return CustomResponse(response)
 
     monkeypatch.setattr(ace_api, "_execute_api_call", mock_execute_api_call)
+
+
+def _dispatch_v2(command, method, api_key, data, params):
+    """Dispatch a `v2/*` ace_api command through the FastAPI ASGI app in-process.
+
+    ace_api builds URLs as `/api/<command>`. For v2 commands (`v2/<group>/<name>`),
+    the path inside the FastAPI ASGI app is `/<group>/<name>` — `root_path="/api/v2"`
+    is only used to generate Swagger/OpenAPI URLs, not to match routes.
+
+    The request is driven through `aceapi_v2.sync.run_async` so it runs on the same
+    persistent background event loop that the cached async SQLAlchemy engine is bound
+    to. Using the synchronous `fastapi.testclient.TestClient` here would spin up a new
+    loop per instance and hit "Future attached to a different loop" against the cached
+    engine.
+    """
+    import ace_api
+    from httpx import ASGITransport, AsyncClient
+    from aceapi_v2.application import app as fastapi_app
+    from aceapi_v2.sync import run_async
+
+    path = "/" + command[len("v2/"):]
+    headers = {"x-ace-auth": api_key} if api_key else {}
+    kwargs = {"headers": headers}
+    if params is not None:
+        kwargs["params"] = params
+    if data is not None:
+        kwargs["json"] = data
+
+    method_name = {
+        ace_api.METHOD_GET: "GET",
+        ace_api.METHOD_PUT: "PUT",
+        ace_api.METHOD_POST: "POST",
+    }[method]
+
+    async def _send():
+        async with AsyncClient(
+            transport=ASGITransport(app=fastapi_app),
+            base_url="http://testserver",
+        ) as client:
+            return await client.request(method_name, path, **kwargs)
+
+    response = run_async(_send())
+
+    if response.status_code // 100 != 2:
+        raise HTTPError()
+
+    class V2Response:
+        def __init__(self, response):
+            self._response = response
+
+        def json(self):
+            return self._response.json()
+
+        def iter_content(self, *args, **kwargs):
+            yield self._response.content
+
+        @property
+        def status_code(self):
+            return self._response.status_code
+
+    return V2Response(response)
 
 #
 # for integrations we need to update the PYTHONPATH

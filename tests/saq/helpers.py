@@ -405,36 +405,43 @@ def start_api_server(remote_host=None, ssl_verification=None, listen_address=Non
     return api_server_process
 
 def execute_api_server(listen_address=None, listen_port=None, ssl_cert=None, ssl_key=None):
+    # Serve the legacy Flask app at /api and the FastAPI v2 app at /api/v2 through a single
+    # uvicorn (ASGI) process. Flask is exposed as ASGI via Starlette's WSGIMiddleware so both
+    # routers share one port — `ace_api` clients always hit https://host/api/... regardless
+    # of which app ultimately handles the request.
 
-    # https://gist.github.com/rduplain/1705072
-    # this is a bit weird because I want the urls to be the same as they
-    # are configured for apache, where they are all starting with /api
-    
     import aceapi
+    import aceapi_v2
+    import uvicorn
+    from fastapi import FastAPI
+    from starlette.middleware.wsgi import WSGIMiddleware
 
-    app = aceapi.create_app(testing=True)
-    from werkzeug.serving import run_simple
-    from werkzeug.middleware.dispatcher import DispatcherMiddleware
-    from flask import Flask
-    app.config['DEBUG'] = True
-    app.config['APPLICATION_ROOT'] = '/api'
-    application = DispatcherMiddleware(Flask('dummy_app'), {
-        app.config['APPLICATION_ROOT']: app,
-    })
+    flask_app = aceapi.create_app(testing=True)
+    flask_app.config['DEBUG'] = True
+    flask_app.config['APPLICATION_ROOT'] = '/api'
+
+    fastapi_v2_app = aceapi_v2.create_app()
+
+    root = FastAPI()
+    root.mount('/api/v2', fastapi_v2_app)
+    root.mount('/api', WSGIMiddleware(flask_app))
 
     if listen_address is None:
         listen_address = get_config().api.listen_address
     if listen_port is None:
         listen_port = get_config().api.listen_port
-    ssl_context = (
-        get_config().api.ssl_cert if ssl_cert is None else ssl_cert,
-        get_config().api.ssl_key if ssl_key is None else ssl_key )
-
-    # XXX really?
-    #initialize_database()
+    ssl_certfile = get_config().api.ssl_cert if ssl_cert is None else ssl_cert
+    ssl_keyfile = get_config().api.ssl_key if ssl_key is None else ssl_key
 
     logging.info(f"starting api server on {listen_address} port {listen_port}")
-    run_simple(listen_address, listen_port, application, ssl_context=ssl_context, use_reloader=False)
+    uvicorn.run(
+        root,
+        host=listen_address,
+        port=int(listen_port),
+        ssl_certfile=ssl_certfile,
+        ssl_keyfile=ssl_keyfile,
+        log_level="warning",
+    )
 
 def stop_api_server(api_server_process: Process):
     """Stops the API server if it's running."""
