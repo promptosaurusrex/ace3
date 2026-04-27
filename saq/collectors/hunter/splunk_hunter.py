@@ -100,7 +100,7 @@ class SplunkHunt(QueryHunt):
     def load_hunt_config(self, path: str) -> tuple[SplunkHuntConfig, set[str]]:
         return load_from_yaml(path, SplunkHuntConfig)
 
-    def execute_query(self, start_time: datetime.datetime, end_time: datetime.datetime, unit_test_query_results=None, **kwargs) -> Optional[list[dict]]:
+    def execute_query(self, start_time: datetime.datetime, end_time: datetime.datetime, unit_test_query_results=None, time_range_overrides: Optional[dict[str, str]] = None, **kwargs) -> Optional[list[dict]]:
         tz = pytz.timezone(self.timezone)
 
         query = self.formatted_query()
@@ -119,11 +119,16 @@ class SplunkHunt(QueryHunt):
         timespec_tokens = set(TIMESPEC_PATTERN.findall(query))
 
         if timespec_tokens:
-            # Build time range map from explicit time_ranges config
+            # Build time range map from explicit time_ranges config, with optional per-token overrides
             time_range_map = {}
             if self.config.time_ranges:
                 for token_name, tr_config in self.config.time_ranges.items():
                     duration = create_timedelta(tr_config.duration_before)
+                    time_range_map[token_name] = (end_time - duration, end_time)
+
+            if time_range_overrides:
+                for token_name, override_duration in time_range_overrides.items():
+                    duration = create_timedelta(override_duration)
                     time_range_map[token_name] = (end_time - duration, end_time)
 
             # Backward compat: if TIMESPEC is in query but not in time_ranges, derive from hunt's start/end

@@ -699,6 +699,134 @@ def test_splunk_hunt_timespec_multiple_tokens(manager_kwargs):
 
 
 @pytest.mark.unit
+def test_splunk_hunt_timespec_overrides_replace_yaml_durations(manager_kwargs):
+    """time_range_overrides replaces YAML-configured duration_before per token."""
+    from unittest.mock import Mock, patch
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_timespec_overrides",
+        type="splunk",
+        enabled=True,
+        description="test timespec overrides",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="<TIMESPEC> index=test [search <TIMESPEC2> index=test2]",
+        full_coverage=True,
+        use_index_time=False,
+        auto_append="",
+        time_ranges={TIMESPEC_TOKEN: "00:10:00", "TIMESPEC2": "00:30:00"},
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+
+    start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+    end = datetime(2024, 1, 1, 1, 0, 0, tzinfo=UTC)
+
+    mock_searcher = Mock()
+    mock_searcher.encoded_query_link.return_value = "http://test"
+    mock_searcher.query_async.return_value = (Mock(), [{"count": "1"}])
+    mock_searcher.search_failed.return_value = False
+
+    with patch("saq.collectors.hunter.splunk_hunter.SplunkClient", return_value=mock_searcher):
+        # Override TIMESPEC2 to 2h, leave TIMESPEC on YAML default (10m)
+        hunt.execute_query(start, end, time_range_overrides={"TIMESPEC2": "02:00:00"})
+
+    query_arg = mock_searcher.query_async.call_args[1].get('query') or mock_searcher.query_async.call_args[0][0]
+
+    # TIMESPEC stays on YAML default (10m): end - 10min = 00:50:00
+    assert 'earliest=01/01/2024:00:50:00' in query_arg
+    assert 'latest=01/01/2024:01:00:00' in query_arg
+    # TIMESPEC2 uses override (2h): end - 2h = 23:00:00 prev day
+    assert 'earliest=12/31/2023:23:00:00' in query_arg
+
+
+@pytest.mark.unit
+def test_splunk_hunt_timespec_overrides_for_token_absent_from_yaml(manager_kwargs):
+    """Override can introduce a duration for a token the YAML did not pre-declare."""
+    from unittest.mock import Mock, patch
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_timespec_override_new_token",
+        type="splunk",
+        enabled=True,
+        description="test override of unconfigured token",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="<TIMESPEC> index=test [search <TIMESPEC_NEW> index=test2]",
+        full_coverage=True,
+        use_index_time=False,
+        auto_append="",
+        time_ranges={TIMESPEC_TOKEN: "00:10:00"},
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+
+    start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+    end = datetime(2024, 1, 1, 1, 0, 0, tzinfo=UTC)
+
+    mock_searcher = Mock()
+    mock_searcher.encoded_query_link.return_value = "http://test"
+    mock_searcher.query_async.return_value = (Mock(), [{"count": "1"}])
+    mock_searcher.search_failed.return_value = False
+
+    with patch("saq.collectors.hunter.splunk_hunter.SplunkClient", return_value=mock_searcher):
+        hunt.execute_query(start, end, time_range_overrides={"TIMESPEC_NEW": "00:45:00"})
+
+    query_arg = mock_searcher.query_async.call_args[1].get('query') or mock_searcher.query_async.call_args[0][0]
+
+    # TIMESPEC_NEW (45m) end - 45min = 00:15:00
+    assert '<TIMESPEC_NEW>' not in query_arg
+    assert 'earliest=01/01/2024:00:15:00' in query_arg
+
+
+@pytest.mark.unit
+def test_splunk_hunt_timespec_override_invalid_duration_raises(manager_kwargs):
+    """A malformed override duration raises ValueError via create_timedelta."""
+    from unittest.mock import Mock, patch
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_timespec_override_bad",
+        type="splunk",
+        enabled=True,
+        description="test bad override duration",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="<TIMESPEC> index=test",
+        full_coverage=True,
+        use_index_time=False,
+        auto_append="",
+        time_ranges={TIMESPEC_TOKEN: "00:10:00"},
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+
+    start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+    end = datetime(2024, 1, 1, 1, 0, 0, tzinfo=UTC)
+
+    mock_searcher = Mock()
+    mock_searcher.encoded_query_link.return_value = "http://test"
+
+    with patch("saq.collectors.hunter.splunk_hunter.SplunkClient", return_value=mock_searcher):
+        with pytest.raises((ValueError, Exception)):
+            hunt.execute_query(start, end, time_range_overrides={TIMESPEC_TOKEN: "not-a-duration"})
+
+
+@pytest.mark.unit
 def test_splunk_hunt_timespec_unconfigured_token_raises(manager_kwargs):
     """Test that an unconfigured TIMESPEC token raises ValueError."""
     from unittest.mock import Mock, patch

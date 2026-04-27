@@ -61,6 +61,10 @@ class ExecutionArguments(BaseModel):
     # correlation logic against a previously captured event list. When provided,
     # start_time/end_time are not required.
     query_results: Optional[list[dict]] = None
+    # Optional per-token TIMESPEC duration overrides. Maps token name to a duration
+    # string in [D:][H:][M:]S format (e.g. "00:10:00"). Replaces the YAML-configured
+    # duration_before for that token at execution time.
+    time_range_overrides: Optional[dict[str, str]] = None
 
 
 def _validate_and_execute(target_file_path: str, request_json: dict):
@@ -135,6 +139,9 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
 
         exec_kwargs['start_time'] = start_time
         exec_kwargs['end_time'] = end_time
+
+        if execution_arguments.time_range_overrides is not None:
+            exec_kwargs['time_range_overrides'] = execution_arguments.time_range_overrides
 
     # Set up logging handler to collect all logs
     collected_logs: List[logging.LogRecord] = []
