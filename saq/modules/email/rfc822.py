@@ -1083,7 +1083,8 @@ class EmailAnalyzer(AnalysisModule):
 
                 # tracking attachments for logging purposes
                 attachments.append((len(payload), target.get_content_type(),
-                                    extracted_file.file_path, hashlib.sha256(payload).hexdigest()))
+                                    extracted_file.file_path if extracted_file else file_path,
+                                    hashlib.sha256(payload).hexdigest()))
 
                 # If this was a message/rfc822, recursively process its payload
                 # to extract any embedded files (e.g., PDF attachments in the inner email body)
@@ -1192,9 +1193,9 @@ class EmailAnalyzer(AnalysisModule):
                     fp.write(b'\n\n')
 
                     # copy each attachment in the order it was seen in the email if it has 'unknown_' in the name
-                    for size, type, file_path, sha256 in attachments:
-                        if 'unknown_' in file_path:
-                            attachment_path = self.get_root().create_file_path(file_path)
+                    for _size, _content_type, attachment_file_path, _sha256 in attachments:
+                        if 'unknown_' in attachment_file_path:
+                            attachment_path = self.get_root().create_file_path(attachment_file_path)
                             try:
                                 with open(attachment_path, 'rb') as fp_in:
                                     shutil.copyfileobj(fp_in, fp)
