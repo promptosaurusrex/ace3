@@ -20,8 +20,8 @@ def test_is_local_email_domain(email_address, expected_result):
     ('<TEST@USER.COM>', 'test@user.com'),
     ('"user name" <TEST@USER.COM>', 'test@user.com'),
     ('user name <TEST@USER.COM>', 'test@user.com'),
-    (Header('benztj@bv.com'), 'benztj@bv.com'),
-    (Header('<<benztj@bv.com>>'), 'benztj@bv.com'),
+    (Header('soc@radarblows.com'), 'soc@radarblows.com'),
+    (Header('<<soc@radarblows.com>>'), 'soc@radarblows.com'),
     (None, None),
 ])
 @pytest.mark.unit
