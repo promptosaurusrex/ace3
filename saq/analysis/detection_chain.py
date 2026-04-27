@@ -1,3 +1,4 @@
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
@@ -21,28 +22,44 @@ class DetectionChain:
 
 
 def _walk_to_root(observable: Observable) -> list[ChainStep]:
-    steps_reversed: list[ChainStep] = []
-    current: Optional[Observable] = observable
-    visited: set[str] = set()
+    # BFS in the parent DAG to find the shortest extraction lineage from `observable`
+    # back to a true root observable (one with no non-root, non-self-loop parents).
+    #
+    # Why BFS: an observable can have many legitimate parent analyses (e.g. an FQDN
+    # parsed out of dozens of redirected URLs). Picking parents[0] is non-deterministic
+    # across loads, and walking arbitrary parents can take a long detour. BFS naturally
+    # picks the shortest extraction lineage and we sort siblings for reproducibility.
+    #
+    # Why skip self-loops: some analyses (notably PhishkitAnalysis) include their own
+    # input observable in their output set, so observable.parents lists an analysis
+    # whose .observable is the same observable. Walking through it terminates the chain
+    # immediately on a phantom one-step root.
+    visited: set[str] = {observable.uuid}
+    queue: deque[tuple[Observable, list[ChainStep]]] = deque([(observable, [])])
 
-    while current is not None and current.uuid not in visited:
-        visited.add(current.uuid)
-        # RootAnalysis reports itself as a parent of every descendant observable (its
-        # has_observable() walks the whole tree), so prefer a non-root parent when one exists.
-        non_root_parents = [p for p in current.parents if not isinstance(p, RootAnalysis)]
-        if not non_root_parents:
-            steps_reversed.append(ChainStep(observable=current, extracted_by=None))
-            break
+    while queue:
+        current, path = queue.popleft()
+        candidate_parents = [
+            p for p in current.parents
+            if not isinstance(p, RootAnalysis)
+            and p.observable is not None
+            and p.observable.uuid != current.uuid
+        ]
+        if not candidate_parents:
+            return list(reversed(path + [ChainStep(observable=current, extracted_by=None)]))
 
-        parent_analysis = non_root_parents[0]
-        if parent_analysis.observable is None:
-            steps_reversed.append(ChainStep(observable=current, extracted_by=None))
-            break
+        candidate_parents.sort(key=lambda a: (a.observable.uuid, a.module_path or ''))
+        for parent_analysis in candidate_parents:
+            parent_obs_uuid = parent_analysis.observable.uuid
+            if parent_obs_uuid in visited:
+                continue
+            visited.add(parent_obs_uuid)
+            queue.append((
+                parent_analysis.observable,
+                path + [ChainStep(observable=current, extracted_by=parent_analysis)],
+            ))
 
-        steps_reversed.append(ChainStep(observable=current, extracted_by=parent_analysis))
-        current = parent_analysis.observable
-
-    return list(reversed(steps_reversed))
+    return [ChainStep(observable=observable, extracted_by=None)]
 
 
 def build_detection_chains(root_analysis: RootAnalysis) -> list[DetectionChain]:
