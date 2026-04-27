@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 import getpass
 import glob
 import json
 import os
+import re
 import sys
 import traceback
 from typing import Optional
@@ -14,6 +15,7 @@ import warnings
 from zoneinfo import ZoneInfo
 
 import requests
+import yaml
 
 try:
     from requests_pkcs12 import post as pkcs12_post
@@ -24,6 +26,99 @@ except ImportError:
 from hunt_compiler import compile_hunt
 
 warnings.simplefilter("ignore", urllib3.exceptions.SecurityWarning)
+
+# Matches DD:HH:MM:SS, HH:MM:SS, MM:SS, or S — same shape used by saq/util/time.py
+# and accepted by the hunt config's `time_range`/`time_ranges.*.duration_before` fields.
+_RE_DURATION = re.compile(r'^(\d+:)?(\d+:)?(\d+:)?\d+$')
+
+
+def _parse_duration(timespec: str) -> timedelta:
+    """Parse [D:][H:][M:]S into a timedelta. Mirrors saq.util.time.create_timedelta."""
+    if not _RE_DURATION.match(timespec):
+        raise ValueError(
+            f"invalid duration {timespec!r}; expected [D:][H:][M:]S (e.g. 00:10:00 or 30)"
+        )
+    parts = timespec.split(':')
+    seconds = int(parts[-1])
+    minutes = int(parts[-2]) if len(parts) > 1 else 0
+    hours = int(parts[-3]) if len(parts) > 2 else 0
+    days = int(parts[-4]) if len(parts) > 3 else 0
+    return timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+
+
+def _parse_time_range_override(value: str) -> tuple[str, str]:
+    """Parse a `--time-range NAME=DURATION` argument into (name, duration_str)."""
+    if '=' not in value:
+        raise argparse.ArgumentTypeError(
+            f"--time-range must be NAME=DURATION (got {value!r})"
+        )
+    name, _, duration = value.partition('=')
+    name = name.strip()
+    duration = duration.strip()
+    if not name or not duration:
+        raise argparse.ArgumentTypeError(
+            f"--time-range must be NAME=DURATION (got {value!r})"
+        )
+    try:
+        _parse_duration(duration)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from e
+    return name, duration
+
+
+def _read_hunt_durations(file_path: str) -> dict[str, str]:
+    """Read `rule.time_ranges` (and the legacy `rule.time_range`) from a hunt YAML.
+
+    Returns a dict of {token_name: duration_str}. The single `time_range` is mapped
+    to the TIMESPEC token. Returns an empty dict if neither field is present.
+    """
+    with open(file_path, 'r') as fp:
+        parsed = yaml.safe_load(fp)
+    if not isinstance(parsed, dict):
+        return {}
+    rule = parsed.get('rule')
+    if not isinstance(rule, dict):
+        return {}
+
+    durations: dict[str, str] = {}
+    time_ranges = rule.get('time_ranges')
+    if isinstance(time_ranges, dict):
+        for name, value in time_ranges.items():
+            if isinstance(value, str):
+                durations[name] = value
+            elif isinstance(value, dict) and isinstance(value.get('duration_before'), str):
+                durations[name] = value['duration_before']
+
+    legacy = rule.get('time_range')
+    if isinstance(legacy, str) and 'TIMESPEC' not in durations:
+        durations['TIMESPEC'] = legacy
+
+    return durations
+
+
+def _synthesize_start_time(
+    file_path: str,
+    end_time_str: str,
+    overrides: dict[str, str],
+    tz: tzinfo,
+) -> str:
+    """Compute a `--start-time` from the hunt's time ranges + CLI overrides.
+
+    The synthesized start_time spans the widest configured/overridden duration so the
+    server's existing required-fields check passes. Per-token windows are still
+    derived from time_ranges/overrides at execution time.
+    """
+    yaml_durations = _read_hunt_durations(file_path)
+    merged = {**yaml_durations, **overrides}
+    if not merged:
+        raise ValueError(
+            f"hunt {file_path} has no `time_range` or `time_ranges` and no --time-range "
+            "overrides were provided; cannot synthesize a start_time. Pass -s explicitly."
+        )
+    widest = max(_parse_duration(d) for d in merged.values())
+    end_dt = datetime.strptime(end_time_str, "%m/%d/%Y:%H:%M:%S").replace(tzinfo=tz)
+    start_dt = end_dt - widest
+    return start_dt.strftime("%m/%d/%Y:%H:%M:%S")
 
 
 def parse_args():
@@ -115,6 +210,17 @@ def parse_args():
         "--timezone",
         type=str,
         help="The timezone to use for the hunt specified by tz database (IANA) time zone identifier. If not specified, UTC is assumed.",
+    )
+    parser.add_argument(
+        "--time-range",
+        dest="time_range_overrides",
+        action="append",
+        type=_parse_time_range_override,
+        metavar="NAME=DURATION",
+        help="Override a hunt's TIMESPEC duration_before for one token. Repeatable. "
+             "DURATION uses [D:][H:][M:]S format (e.g. --time-range TIMESPEC=00:10:00). "
+             "When -s/--start-time is omitted, it is synthesized from the widest of the "
+             "merged YAML defaults and these overrides.",
     )
     parser.add_argument(
         "--analyze-results",
@@ -254,9 +360,10 @@ def validate_args(args: argparse.Namespace) -> None:
                 f"--query-results-file must contain a JSON list of event objects, got {type(loaded).__name__}"
             )
 
-    # Disallow partial absolute
-    if (args.start_time and not args.end_time) or (args.end_time and not args.start_time):
-        raise ValueError("Provide both --start-time and --end-time, or use --hours/--days.")
+    # `-s` is optional now, but `-e` without `-s` is only valid for query hunts where we can
+    # synthesize start_time from time_ranges. `-s` without `-e` is never useful — reject it.
+    if args.start_time and not args.end_time:
+        raise ValueError("--start-time requires --end-time (or use --hours/--days).")
 
     rel_any = (
         (args.seconds and args.seconds > 0)
@@ -290,20 +397,26 @@ def validate_args(args: argparse.Namespace) -> None:
                 f"Invalid timezone '{args.timezone}'. Use an IANA zone like 'UTC' or 'America/Chicago'."
             ) from e
 
-    if args.start_time is not None and args.end_time is not None:
-        date_fmt = "%m/%d/%Y:%H:%M:%S"
+    date_fmt = "%m/%d/%Y:%H:%M:%S"
+    if args.end_time is not None:
         try:
-            start_dt = datetime.strptime(args.start_time, date_fmt)
             end_dt = datetime.strptime(args.end_time, date_fmt)
         except ValueError as e:
             raise ValueError(
-                "Start and end times must be in MM/DD/YYYY:HH:MM:SS format. %s" % e
+                "End time must be in MM/DD/YYYY:HH:MM:SS format. %s" % e
             ) from e
-        if end_dt <= start_dt:
-            raise ValueError(
-                "End time must be after start time (got start=%s, end=%s)"
-                % (args.start_time, args.end_time)
-            )
+        if args.start_time is not None:
+            try:
+                start_dt = datetime.strptime(args.start_time, date_fmt)
+            except ValueError as e:
+                raise ValueError(
+                    "Start time must be in MM/DD/YYYY:HH:MM:SS format. %s" % e
+                ) from e
+            if end_dt <= start_dt:
+                raise ValueError(
+                    "End time must be after start time (got start=%s, end=%s)"
+                    % (args.start_time, args.end_time)
+                )
 
 
 def validate_hunt(
@@ -324,6 +437,7 @@ def validate_hunt(
     queue: Optional[str] = None,
     query_results: Optional[list] = None,
     package_root: Optional[str] = None,
+    time_range_overrides: Optional[dict[str, str]] = None,
 ) -> bool:
     compiled = compile_hunt(file_path, package_root=package_root)
 
@@ -343,6 +457,8 @@ def validate_hunt(
             execution_arguments["timezone"] = timezone
         if query_results is not None:
             execution_arguments["query_results"] = query_results
+        if time_range_overrides:
+            execution_arguments["time_range_overrides"] = time_range_overrides
         json_data["execution_arguments"] = execution_arguments
 
     # Configure SSL verification
@@ -495,6 +611,12 @@ def main():
     args = parse_args()
     validate_args(args)
 
+    # Collapse the repeatable --time-range list into a {token: duration_str} dict.
+    # Later occurrences win — argparse appends in order.
+    time_range_overrides: dict[str, str] = {}
+    for name, duration in args.time_range_overrides or []:
+        time_range_overrides[name] = duration
+
     # Translate relative (-S/-M/-H/-D) into absolute times expected by the API ---
     if (
         (args.seconds and args.seconds > 0)
@@ -534,6 +656,16 @@ def main():
 
     for file_path in file_paths:
         try:
+            # When -e is supplied without -s, synthesize a start_time spanning the widest
+            # of the merged YAML defaults + CLI overrides, so the API's required-fields
+            # check still passes. Per-token windows are derived server-side at execution.
+            effective_start_time = args.start_time
+            if args.end_time and not args.start_time and query_results_override is None:
+                tz = ZoneInfo(args.timezone) if args.timezone else timezone.utc
+                effective_start_time = _synthesize_start_time(
+                    file_path, args.end_time, time_range_overrides, tz,
+                )
+
             result = validate_hunt(
                 file_path,
                 args.remote_host,
@@ -544,7 +676,7 @@ def main():
                 args.client_key,
                 args.client_p12,
                 args.client_p12_password,
-                args.start_time,
+                effective_start_time,
                 args.end_time,
                 args.timezone,
                 args.analyze_results,
@@ -552,6 +684,7 @@ def main():
                 args.queue,
                 query_results_override,
                 args.package_root,
+                time_range_overrides or None,
             )
         except Exception:
             has_failures = True
@@ -581,7 +714,7 @@ def main():
             continue
 
         executing_hunt = (
-            (args.start_time is not None and args.end_time is not None)
+            (effective_start_time is not None and args.end_time is not None)
             or query_results_override is not None
         )
 
