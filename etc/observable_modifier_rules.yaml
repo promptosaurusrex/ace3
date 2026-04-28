@@ -15,8 +15,9 @@
 #                    # `python -c "import uuid; print(uuid.uuid4())"`.
 #     description: "Optional description"
 #     enabled: true  # default true; set false to disable without removing
-#     phase: post    # "pre" runs before other modules; "post" (default) runs after all
-#                    # other analysis completes, so tree conditions can inspect results
+#     phase: post    # "pre" runs in execute_analysis (re-invoked as the tree grows);
+#                    # "post" (default) runs in execute_final_analysis after engine
+#                    # drain. See "Phase guidance" below for when to use which.
 #
 #     conditions:
 #       # Alert-level conditions (checked via root analysis)
@@ -67,5 +68,26 @@
 #
 # All condition fields are optional. Multiple conditions within a rule use AND logic.
 # Multiple rules are evaluated independently.
+#
+# Phase guidance:
+# Prefer `pre` unless one of these hard constraints applies:
+#   - Action is `ignore: true` → must be `post`. The parent-removal logic and
+#     `observable.ignored` flag are only set in the post block; in pre, `apply()`
+#     just records the intent and nothing actually removes the observable.
+#   - Action is `reset_analysis: [...]` → must be `post`. The action clears the
+#     "no-analysis" sentinel a target module records after it evaluates and bails;
+#     in pre the target hasn't evaluated yet, so there is no sentinel to clear.
+#   - A tree condition's `details_match` gates on slow/deferred fields (e.g.
+#     `WhoisAnalysis` age lookups, sandbox results, modules with long backoff) →
+#     use `post`. Pre-phase rules don't get a final pass, so a condition that only
+#     becomes true after engine drain will be missed in pre.
+# Otherwise `pre` is preferable, especially when the rule installs directives
+# (`extract_iocs`, `crawl`, `ocr`, `pivot_on_ip`, etc.) that gate downstream
+# analyzers — in `pre` those modules can run inline instead of waiting for final.
+# Tree-condition scope (self/parent/ancestors/descendants/global) is NOT the
+# deciding factor; descendants/global rules also work in `pre` since
+# `execute_analysis` is re-invoked as the analysis tree grows. Failure modes are
+# asymmetric: a misclassified-pre rule may silently miss matches, a
+# misclassified-post rule just fires later than necessary.
 
 rules: []
