@@ -606,6 +606,229 @@ class TestVisualCheckboxBypass:
         captured = capsys.readouterr()
         assert "Failed to find checkbox visually" in captured.out
 
+    @pytest.mark.unit
+    @patch("scanner.time.sleep")
+    @patch("scanner.cv2")
+    @patch("scanner.Image.open")
+    def test_visual_checkbox_bypass_multi_click_disabled_default(
+        self, mock_image_open, mock_cv2, _mock_sleep, scanner, tmpdir
+    ):
+        # Without enable_multi_click, the handler must take exactly one
+        # screenshot and dispatch exactly one click — same as before this feature.
+        fake_screenshot = MagicMock()
+        fake_screenshot.size = (800, 600)
+        fake_checkbox = MagicMock()
+        fake_checkbox.mode = "RGB"
+
+        mock_image_open.side_effect = [fake_checkbox, fake_screenshot]
+
+        screenshot_gray = MagicMock()
+        screenshot_gray.shape = [600, 800]
+        needle_gray = MagicMock()
+        needle_gray.shape = [30, 30]
+        mock_cv2.cvtColor.side_effect = [screenshot_gray, needle_gray]
+        mock_cv2.TM_CCOEFF_NORMED = 5
+        mock_cv2.matchTemplate.return_value = MagicMock()
+        mock_cv2.minMaxLoc.return_value = (0, 0.95, (0, 0), (100, 200))
+
+        sb = MagicMock()
+        sb.execute_cdp_cmd.return_value = {"data": "AAAA"}
+        scanner._output_dir = str(tmpdir)
+        config = {"checkbox_pngs": ["iVBORw0KGgo="]}
+
+        scanner.visual_checkbox_bypass(sb, config)
+
+        screenshot_calls = [
+            c for c in sb.execute_cdp_cmd.call_args_list
+            if c[0][0] == "Page.captureScreenshot"
+        ]
+        click_calls = [
+            c for c in sb.execute_cdp_cmd.call_args_list
+            if c[0][0] == "Input.dispatchMouseEvent" and c[0][1].get("type") == "mousePressed"
+        ]
+        assert len(screenshot_calls) == 1
+        assert len(click_calls) == 1
+
+    @pytest.mark.unit
+    @patch("scanner.time.sleep")
+    @patch("scanner.cv2")
+    @patch("scanner.Image.open")
+    def test_visual_checkbox_bypass_multi_click_two_iterations(
+        self, mock_image_open, mock_cv2, _mock_sleep, scanner, tmpdir
+    ):
+        # Two pngs, three iterations allowed:
+        #   iter 1: png[0] matches → click
+        #   iter 2: png[0] excluded, png[1] matches → click
+        #   iter 3: both excluded → no match → return
+        fake_checkbox_0 = MagicMock(); fake_checkbox_0.mode = "RGB"; fake_checkbox_0.size = (30, 30)
+        fake_checkbox_1 = MagicMock(); fake_checkbox_1.mode = "RGB"; fake_checkbox_1.size = (30, 30)
+        screenshot_1 = MagicMock(); screenshot_1.size = (800, 600)
+        screenshot_2 = MagicMock(); screenshot_2.size = (800, 600)
+        screenshot_3 = MagicMock(); screenshot_3.size = (800, 600)
+
+        mock_image_open.side_effect = [
+            fake_checkbox_0, fake_checkbox_1,  # config load
+            screenshot_1, screenshot_2, screenshot_3,  # one per iteration
+        ]
+
+        screenshot_gray = MagicMock(); screenshot_gray.shape = [600, 800]
+        needle_gray_0 = MagicMock(); needle_gray_0.shape = [30, 30]
+        needle_gray_1 = MagicMock(); needle_gray_1.shape = [30, 30]
+        # cvtColor is called once for screenshot per iteration, then once per
+        # non-matched png until a match is found:
+        #   iter 1: screenshot_gray, needle_gray_0 (match → break)
+        #   iter 2: screenshot_gray, needle_gray_1 (png[0] skipped, png[1] match)
+        #   iter 3: screenshot_gray (both skipped, no needle calls)
+        mock_cv2.cvtColor.side_effect = [
+            screenshot_gray, needle_gray_0,
+            screenshot_gray, needle_gray_1,
+            screenshot_gray,
+        ]
+        mock_cv2.TM_CCOEFF_NORMED = 5
+        mock_cv2.matchTemplate.return_value = MagicMock()
+        # Both matches are at confidence 0.95 with distinct coordinates so we
+        # can distinguish click 1 from click 2.
+        mock_cv2.minMaxLoc.side_effect = [
+            (0, 0.95, (0, 0), (100, 200)),  # iter 1, png[0]
+            (0, 0.95, (0, 0), (300, 400)),  # iter 2, png[1]
+        ]
+
+        sb = MagicMock()
+        sb.execute_cdp_cmd.return_value = {"data": "AAAA"}
+        scanner._output_dir = str(tmpdir)
+        config = {
+            "checkbox_pngs": ["png0", "png1"],
+            "enable_multi_click": True,
+            "max_click_iterations": 3,
+        }
+
+        scanner.visual_checkbox_bypass(sb, config)
+
+        screenshot_calls = [
+            c for c in sb.execute_cdp_cmd.call_args_list
+            if c[0][0] == "Page.captureScreenshot"
+        ]
+        click_calls = [
+            c for c in sb.execute_cdp_cmd.call_args_list
+            if c[0][0] == "Input.dispatchMouseEvent" and c[0][1].get("type") == "mousePressed"
+        ]
+        assert len(screenshot_calls) == 3
+        assert len(click_calls) == 2
+        # Click 1 at center of (100,200) + (15,15) = (115,215)
+        # Click 2 at center of (300,400) + (15,15) = (315,415)
+        assert (click_calls[0][0][1]["x"], click_calls[0][0][1]["y"]) == (115, 215)
+        assert (click_calls[1][0][1]["x"], click_calls[1][0][1]["y"]) == (315, 415)
+
+    @pytest.mark.unit
+    @patch("scanner.time.sleep")
+    @patch("scanner.cv2")
+    @patch("scanner.Image.open")
+    def test_visual_checkbox_bypass_multi_click_excludes_matched_index(
+        self, mock_image_open, mock_cv2, _mock_sleep, scanner, tmpdir, capsys
+    ):
+        # Single png that would match every screenshot. With multi-click on,
+        # the index must be excluded after iter 1, so iter 2 finds no match
+        # and the handler returns after exactly one click.
+        fake_checkbox = MagicMock(); fake_checkbox.mode = "RGB"; fake_checkbox.size = (30, 30)
+        screenshot_1 = MagicMock(); screenshot_1.size = (800, 600)
+        screenshot_2 = MagicMock(); screenshot_2.size = (800, 600)
+
+        mock_image_open.side_effect = [fake_checkbox, screenshot_1, screenshot_2]
+
+        screenshot_gray = MagicMock(); screenshot_gray.shape = [600, 800]
+        needle_gray = MagicMock(); needle_gray.shape = [30, 30]
+        # iter 1: screenshot_gray, needle_gray (match)
+        # iter 2: screenshot_gray (png[0] skipped, no needle calls)
+        mock_cv2.cvtColor.side_effect = [
+            screenshot_gray, needle_gray,
+            screenshot_gray,
+        ]
+        mock_cv2.TM_CCOEFF_NORMED = 5
+        mock_cv2.matchTemplate.return_value = MagicMock()
+        # Only one matchTemplate/minMaxLoc result needed — iter 2 has no
+        # candidates so neither is called.
+        mock_cv2.minMaxLoc.return_value = (0, 0.95, (0, 0), (100, 200))
+
+        sb = MagicMock()
+        sb.execute_cdp_cmd.return_value = {"data": "AAAA"}
+        scanner._output_dir = str(tmpdir)
+        config = {
+            "checkbox_pngs": ["png0"],
+            "enable_multi_click": True,
+            "max_click_iterations": 2,
+        }
+
+        scanner.visual_checkbox_bypass(sb, config)
+
+        click_calls = [
+            c for c in sb.execute_cdp_cmd.call_args_list
+            if c[0][0] == "Input.dispatchMouseEvent" and c[0][1].get("type") == "mousePressed"
+        ]
+        assert len(click_calls) == 1
+        # matchTemplate called exactly once — iter 2 had nothing to match
+        assert mock_cv2.matchTemplate.call_count == 1
+        captured = capsys.readouterr()
+        assert "no further matches, done after 1 click(s)" in captured.out
+
+    @pytest.mark.unit
+    @patch("scanner.time.sleep")
+    @patch("scanner.cv2")
+    @patch("scanner.Image.open")
+    def test_visual_checkbox_bypass_multi_click_max_iterations_cap(
+        self, mock_image_open, mock_cv2, _mock_sleep, scanner, tmpdir, capsys
+    ):
+        # Two pngs, max_click_iterations=2. Both pngs would keep matching, but
+        # the outer loop must stop at exactly two clicks regardless.
+        fake_checkbox_0 = MagicMock(); fake_checkbox_0.mode = "RGB"; fake_checkbox_0.size = (30, 30)
+        fake_checkbox_1 = MagicMock(); fake_checkbox_1.mode = "RGB"; fake_checkbox_1.size = (30, 30)
+        screenshot_1 = MagicMock(); screenshot_1.size = (800, 600)
+        screenshot_2 = MagicMock(); screenshot_2.size = (800, 600)
+
+        mock_image_open.side_effect = [
+            fake_checkbox_0, fake_checkbox_1,
+            screenshot_1, screenshot_2,
+        ]
+
+        screenshot_gray = MagicMock(); screenshot_gray.shape = [600, 800]
+        needle_gray_0 = MagicMock(); needle_gray_0.shape = [30, 30]
+        needle_gray_1 = MagicMock(); needle_gray_1.shape = [30, 30]
+        # iter 1: screenshot_gray, needle_gray_0 (match)
+        # iter 2: screenshot_gray, needle_gray_1 (png[0] skipped, match)
+        mock_cv2.cvtColor.side_effect = [
+            screenshot_gray, needle_gray_0,
+            screenshot_gray, needle_gray_1,
+        ]
+        mock_cv2.TM_CCOEFF_NORMED = 5
+        mock_cv2.matchTemplate.return_value = MagicMock()
+        mock_cv2.minMaxLoc.side_effect = [
+            (0, 0.95, (0, 0), (100, 200)),
+            (0, 0.95, (0, 0), (300, 400)),
+        ]
+
+        sb = MagicMock()
+        sb.execute_cdp_cmd.return_value = {"data": "AAAA"}
+        scanner._output_dir = str(tmpdir)
+        config = {
+            "checkbox_pngs": ["png0", "png1"],
+            "enable_multi_click": True,
+            "max_click_iterations": 2,
+        }
+
+        scanner.visual_checkbox_bypass(sb, config)
+
+        screenshot_calls = [
+            c for c in sb.execute_cdp_cmd.call_args_list
+            if c[0][0] == "Page.captureScreenshot"
+        ]
+        click_calls = [
+            c for c in sb.execute_cdp_cmd.call_args_list
+            if c[0][0] == "Input.dispatchMouseEvent" and c[0][1].get("type") == "mousePressed"
+        ]
+        assert len(screenshot_calls) == 2
+        assert len(click_calls) == 2
+        captured = capsys.readouterr()
+        assert "reached max_click_iterations=2, stopping" in captured.out
+
 
 # ---------------------------------------------------------------------------
 # WebSocket event handlers
