@@ -174,3 +174,29 @@ class TestCorrelationEngine:
         result = engine.execute([])
         assert len(result.events) == 0
         assert not result.discarded
+
+    def test_alert_event_origin_indices_tracks_pre_correlation_index(self):
+        """`alert_event_origin_indices[i]` should be the engine event_index that produced
+        `events[i]` — letting downstream callers map a kept event back to its EventTrace.
+        """
+        # Filter middle event, keep first and third
+        config = _make_config([
+            {
+                "when": {"type": "equals", "value": "drop", "property": "tag"},
+                "execute": [{"action": "filter"}],
+            },
+        ])
+        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
+        events = [
+            {"id": 1, "tag": "keep"},
+            {"id": 2, "tag": "drop"},
+            {"id": 3, "tag": "keep"},
+        ]
+        result = engine.execute(events)
+        assert [e["id"] for e in result.events] == [1, 3]
+        # Index 1 was filtered; the kept events came from original positions 0 and 2.
+        assert result.alert_event_origin_indices == [0, 2]
+        # Each kept origin index must correspond to an EventTrace with outcome=alert.
+        traces_by_index = {et.event_index: et for et in result.trace.event_traces}
+        for origin in result.alert_event_origin_indices:
+            assert traces_by_index[origin].outcome == "alert"
