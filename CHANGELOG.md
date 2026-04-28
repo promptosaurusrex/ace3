@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.41] - 2026-04-28
+
+- [Migrates Flask 'common' API endpoints to FastAPI](https://github.com/ACE-Collective/ace3/pull/164)
+- [Fixes bugs in detection chains](https://github.com/ACE-Collective/ace3/pull/180)
+- [Adds multiple time ranges support to hunt validator](https://github.com/ACE-Collective/ace3/pull/181)
+- [Adds multi-click support to Phishkit](https://github.com/ACE-Collective/ace3/pull/182)
+- [Updates observable modifier docs](https://github.com/ACE-Collective/ace3/pull/183)
+
 ## [3.0.40] - 2026-04-24
 
 - [Indent guide refinement](https://github.com/ACE-Collective/ace3/pull/170)

@@ -1,7 +1,6 @@
 from collections.abc import AsyncGenerator
 from datetime import timedelta
 
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
@@ -16,12 +15,6 @@ from aceapi_v2.application import app
 from aceapi_v2.auth import create_access_token
 from aceapi_v2.database import build_database_url, get_async_session
 from saq.database.model import User
-
-
-@pytest.fixture(autouse=True)
-def global_function_setup():
-    """Override global fixture - savepoint rollback handles cleanup for these tests."""
-    yield
 
 
 @pytest_asyncio.fixture
