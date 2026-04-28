@@ -919,46 +919,68 @@ class Scanner:
         checkbox_pngs = config.get("checkbox_pngs", [])
         checkboxes = [Image.open(BytesIO(base64.b64decode(png))) for png in checkbox_pngs]
 
-        # Use CDP screenshot instead of pyautogui.screenshot() because
-        # headless2 mode renders via CDP, not to the Xvfb display (which is black).
-        result = sb.execute_cdp_cmd("Page.captureScreenshot", {
-            "format": "png",
-            "fromSurface": True,
-            "captureBeyondViewport": False,
-        })
-        screenshot = Image.open(BytesIO(base64.b64decode(result["data"])))
-        pre_bypass_path = os.path.join(self._output_dir, "pre_bypass_screenshot.png")
-        screenshot.save(pre_bypass_path)
-        print(f"saved pre-bypass screenshot to {pre_bypass_path} (size={screenshot.size})")
+        enable_multi_click = bool(config.get("enable_multi_click", False))
+        max_iterations = int(config.get("max_click_iterations", 2)) if enable_multi_click else 1
+        max_iterations = max(1, max_iterations)
 
-        # Convert screenshot to grayscale numpy array for template matching
-        screenshot_gray = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2GRAY)
-
-        match_loc = None
-        match_size = None
+        matched_indices: set[int] = set()
         confidence = 0.88
-        for checkbox in checkboxes:
-            # Convert needle to grayscale numpy array. Normalize to RGB first
-            # so PNGs saved in modes PIL uses for smaller files (P, L, LA,
-            # RGBA) don't crash cv2.cvtColor, which only accepts 3- or
-            # 4-channel arrays.
-            needle_rgb = checkbox if checkbox.mode == "RGB" else checkbox.convert("RGB")
-            needle_gray = cv2.cvtColor(np.array(needle_rgb), cv2.COLOR_RGB2GRAY)
 
-            if needle_gray.shape[0] > screenshot_gray.shape[0] or needle_gray.shape[1] > screenshot_gray.shape[1]:
-                print(f"skipping {checkbox.size}: larger than screenshot")
-                continue
+        for iteration in range(1, max_iterations + 1):
+            # Use CDP screenshot instead of pyautogui.screenshot() because
+            # headless2 mode renders via CDP, not to the Xvfb display (which is black).
+            result = sb.execute_cdp_cmd("Page.captureScreenshot", {
+                "format": "png",
+                "fromSurface": True,
+                "captureBeyondViewport": False,
+            })
+            screenshot = Image.open(BytesIO(base64.b64decode(result["data"])))
+            screenshot_name = (
+                "pre_bypass_screenshot.png"
+                if iteration == 1
+                else f"pre_bypass_screenshot_iter{iteration}.png"
+            )
+            pre_bypass_path = os.path.join(self._output_dir, screenshot_name)
+            screenshot.save(pre_bypass_path)
+            print(f"saved pre-bypass screenshot to {pre_bypass_path} (size={screenshot.size})")
 
-            # cv2.matchTemplate is what pyautogui.locate delegates to internally
-            result = cv2.matchTemplate(screenshot_gray, needle_gray, cv2.TM_CCOEFF_NORMED)
-            _, max_val, _, max_loc = cv2.minMaxLoc(result)
-            print(f"template match for {checkbox.size}: score={max_val:.4f} (threshold={confidence})")
-            if max_val >= confidence:
-                match_loc = max_loc
-                match_size = (needle_gray.shape[1], needle_gray.shape[0])
-                break
+            # Convert screenshot to grayscale numpy array for template matching
+            screenshot_gray = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2GRAY)
 
-        if match_loc and match_size:
+            match_loc = None
+            match_size = None
+            match_idx = None
+            for idx, checkbox in enumerate(checkboxes):
+                if idx in matched_indices:
+                    continue
+                # Convert needle to grayscale numpy array. Normalize to RGB first
+                # so PNGs saved in modes PIL uses for smaller files (P, L, LA,
+                # RGBA) don't crash cv2.cvtColor, which only accepts 3- or
+                # 4-channel arrays.
+                needle_rgb = checkbox if checkbox.mode == "RGB" else checkbox.convert("RGB")
+                needle_gray = cv2.cvtColor(np.array(needle_rgb), cv2.COLOR_RGB2GRAY)
+
+                if needle_gray.shape[0] > screenshot_gray.shape[0] or needle_gray.shape[1] > screenshot_gray.shape[1]:
+                    print(f"skipping {checkbox.size}: larger than screenshot")
+                    continue
+
+                # cv2.matchTemplate is what pyautogui.locate delegates to internally
+                tm_result = cv2.matchTemplate(screenshot_gray, needle_gray, cv2.TM_CCOEFF_NORMED)
+                _, max_val, _, max_loc = cv2.minMaxLoc(tm_result)
+                print(f"iter {iteration} template match idx={idx} {checkbox.size}: score={max_val:.4f} (threshold={confidence})")
+                if max_val >= confidence:
+                    match_loc = max_loc
+                    match_size = (needle_gray.shape[1], needle_gray.shape[0])
+                    match_idx = idx
+                    break
+
+            if not (match_loc and match_size):
+                if iteration == 1:
+                    print("Failed to find checkbox visually")
+                else:
+                    print(f"iter {iteration}: no further matches, done after {iteration - 1} click(s)")
+                return
+
             x = match_loc[0] + match_size[0] // 2
             y = match_loc[1] + match_size[1] // 2
             print(f"Visual match — clicking checkbox at ({x},{y})")
@@ -1013,8 +1035,11 @@ class Scanner:
                     break
             else:
                 print(f"no navigation after {max_wait}s")
-        else:
-            print("Failed to find checkbox visually")
+
+            matched_indices.add(match_idx)
+
+        if enable_multi_click:
+            print(f"reached max_click_iterations={max_iterations}, stopping")
 
     def scan(
         self,

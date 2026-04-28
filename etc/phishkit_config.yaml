@@ -113,6 +113,17 @@ handlers:
       - "iVBORw0KGgoAAAANSUhEUgAAAB4AAAAfCAYAAADwbH0HAAAABHNCSVQICAgIfAhkiAAAABl0RVh0U29mdHdhcmUAZ25vbWUtc2NyZWVuc2hvdO8Dvz4AAADNSURBVEiJ7dexDYMwEIXhPygdgikM04DEJAzjSVywhgtKsKfAQEGTVERYEVUsEil+nV9xn64737Zte/CFJN9AI3xp7sfHNE10Xcc4jjjnggBZllGWJVVVkef5q/c2VkqhtQ6GAjjn0FqjlPJ6b2NjDABt2yKECAJba5FSYq31em/jdV0BgqHHWcuynMNXJsIRjnCEIxzhCP8YnKYpwNuZ8kmGYfBm7/FuLiEEfd8jpQwG7ymK4hxumoYkSTDGMM9zEHA/b+u69vrb333anrLARsXk3WtJAAAAAElFTkSuQmCC"
       - "iVBORw0KGgoAAAANSUhEUgAAACMAAAAiCAYAAADVhWD8AAAABHNCSVQICAgIfAhkiAAAABl0RVh0U29mdHdhcmUAZ25vbWUtc2NyZWVuc2hvdO8Dvz4AAAEISURBVFiF7dfNaYVAFEDh80I22oBag26sQmEq0YpsZECxCBGLGHXvD7hIFsGQQG5A3yPmwZytw/VDZmC8bdv2xj/p5WrA1yxGymKkXn972LYtdV3T9z3Lspx+ieM4+L5PmqZEUSSuu0lHu+s6iqI4DZDKskwEiV+mqioA4jhGKUUQBKcBxhi01jRNQ1mWIkbcM+M4AtwNAQiCAKUUAMMwiOtEzDRNn4Me0T5nnufjmCuyGCmLkbIYKYuRshgpi5F6DozrusDHxegR7XP2uYcwnucBoLWm7/u7IVrrb3N/6s/vwHmeE4bhMcwOqqoKYwzrup4GuK6L7/skSXLu7+CKnuM0XZHFSL0D8Ydjznm/9PUAAAAASUVORK5CYII="
 
+    # When true, after a successful click + nav-wait the handler takes a fresh
+    # screenshot and tries to match again, excluding any png index that already
+    # matched on a previous iteration. Loop ends when no remaining png matches
+    # or max_click_iterations is reached. Use for phishing pages that gate the
+    # final content behind more than one challenge button.
+    enable_multi_click: false
+
+    # Hard cap on the number of click iterations (including the first). Only
+    # consulted when enable_multi_click is true.
+    max_click_iterations: 2
+
 # Proxy fallback configuration. Controls when the scanner retries a scan
 # without the proxy after detecting proxy-related failures.
 # Only used by the Celery worker (phishkit.py), not by scanner.py.
