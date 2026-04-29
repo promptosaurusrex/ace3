@@ -414,6 +414,27 @@ class FileCollectorConfig(BaseModel):
     )
 
 
+class NRDURLList(BaseModel):
+    """A single configured newly-registered-domains list source.
+
+    Each entry has a primary URL plus an optional ordered list of backup URLs
+    that the refresh script falls back to if the primary cannot be downloaded.
+    Backups don't change which data ends up in the database — they are
+    operational fallbacks only — so adding/removing them does not trigger a
+    rebuild via the config_hash check.
+    """
+    url: str = Field(..., description="primary URL the refresh script downloads to populate this list")
+    backups: list[str] = Field(default_factory=list, description="ordered list of backup URLs to try if the primary download fails")
+
+
+class NRDConfig(BaseModel):
+    """Configuration for the newly-registered-domains (NRD) ingestion pipeline."""
+    enabled: bool = Field(default=True, description="kill switch for the refresh script; when false, `python -m saq.nrd.refresh` exits as a no-op before any DB or HTTP work. Does not affect the analyzer (controlled by `analysis_module_nrd_analyzer.enabled`).")
+    database_path: str = Field(default="data/external/nrd/nrd_index.db", description="path to the local SQLite NRD database (relative paths resolve against SAQ_HOME)")
+    check_interval_hours: int = Field(default=24, description="minimum hours between successful upstream refreshes; once elapsed the refresh script HEAD-checks every cron run until upstream actually changes")
+    url_lists: list[NRDURLList] = Field(default_factory=list, description="lists of newly registered domains to ingest")
+
+
 class ACEConfig(BaseModel):
     global_settings: GlobalConfig = Field(alias="global")
     fixed_directives: list[str] = Field(default_factory=list, description="Directives that cannot be copied between observables via copy_directives_to.")
@@ -450,6 +471,7 @@ class ACEConfig(BaseModel):
     splunk_export: Optional[SplunkExportConfig] = None
     sip: Optional[SIPConfig] = None
     shodan: Optional[ShodanConfig] = None
+    nrd: Optional[NRDConfig] = Field(default_factory=NRDConfig, description="newly-registered-domains ingestion configuration")
     yara_export: Optional[YaraExportConfig] = None
     yara_export_string_modifiers: Optional[dict[str, str]] = None
     sip_yara_export: Optional[SIPYaraExportConfig] = None
