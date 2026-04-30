@@ -15,7 +15,7 @@ import logging
 import os
 import sqlite3
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 import idna
@@ -45,7 +45,7 @@ def get_database_path() -> Path:
     return Path(db_path)
 
 
-def _extract_lookup_target(value: str) -> str:
+def _extract_lookup_target(value: Any) -> str:
     """Return the host to look up, given either an FQDN or a URL.
 
     If ``value`` parses as an http/https URL with a hostname, the hostname is
@@ -54,6 +54,10 @@ def _extract_lookup_target(value: str) -> str:
     as an FQDN. Auto-detection lets a single public API serve both shapes
     without callers having to specify which.
     """
+    if value is not None and not isinstance(value, str):
+        logging.error("expected str or None, got %s: %r", type(value).__name__, value)
+        value = str(value)
+
     if value is None:
         return ""
 
@@ -75,7 +79,7 @@ def _extract_lookup_target(value: str) -> str:
     return stripped
 
 
-def _normalize(value: str) -> str:
+def _normalize(value: Any) -> str:
     """Normalize an FQDN or URL into the canonical form stored in the NRD table.
 
     Accepts either a bare FQDN or a full URL — see ``_extract_lookup_target``.
@@ -83,6 +87,10 @@ def _normalize(value: str) -> str:
     domains to punycode (ACE-encoding). Returns an empty string if the input
     is empty or fails IDN encoding — callers treat empty as "no match".
     """
+    if value is not None and not isinstance(value, str):
+        logging.error("expected str or None, got %s: %r", type(value).__name__, value)
+        value = str(value)
+
     domain = _extract_lookup_target(value)
     if not domain:
         return ""

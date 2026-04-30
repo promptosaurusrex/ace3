@@ -8,6 +8,7 @@ import pytest
 
 from saq.nrd import util
 from saq.nrd.util import (
+    _extract_lookup_target,
     _normalize,
     _reset_connection_for_tests,
     is_newly_registered,
@@ -94,6 +95,59 @@ def test_normalize_empty_or_blank_returns_empty(bad_input):
 def test_normalize_malformed_idn_returns_empty():
     # idna rejects underscores in labels (RFC 5891) so this should fail to encode.
     assert _normalize("not_a_domain.example") == ""
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad_input", [123, b"example.com", object()])
+def test_normalize_non_string_logs_error_and_casts(caplog, bad_input):
+    """Non-string non-None inputs should log ERROR and continue with a str cast.
+
+    The function does not raise — that is the whole point of the guard. The
+    return value depends on what ``str(bad_input)`` happens to look like; we
+    only assert that the call survived and an ERROR was emitted.
+    """
+    import logging as _logging
+
+    with caplog.at_level(_logging.ERROR, logger="root"):
+        _normalize(bad_input)
+
+    assert any(rec.levelno == _logging.ERROR for rec in caplog.records), (
+        "expected an ERROR log record for non-string input"
+    )
+
+
+@pytest.mark.unit
+def test_normalize_none_does_not_log_error(caplog):
+    """``None`` is a valid sentinel — no error log should be emitted."""
+    import logging as _logging
+
+    with caplog.at_level(_logging.ERROR, logger="root"):
+        result = _normalize(None)
+
+    assert result == ""
+    assert not any(rec.levelno == _logging.ERROR for rec in caplog.records)
+
+
+@pytest.mark.unit
+def test_extract_lookup_target_non_string_logs_error_and_casts(caplog):
+    import logging as _logging
+
+    with caplog.at_level(_logging.ERROR, logger="root"):
+        result = _extract_lookup_target(123)
+
+    assert result == "123"
+    assert any(rec.levelno == _logging.ERROR for rec in caplog.records)
+
+
+@pytest.mark.unit
+def test_extract_lookup_target_none_does_not_log_error(caplog):
+    import logging as _logging
+
+    with caplog.at_level(_logging.ERROR, logger="root"):
+        result = _extract_lookup_target(None)
+
+    assert result == ""
+    assert not any(rec.levelno == _logging.ERROR for rec in caplog.records)
 
 
 # ---------------------------------------------------------------------------
