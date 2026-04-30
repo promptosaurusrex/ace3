@@ -32,12 +32,14 @@ from saq.nrd.util import get_database_path
 USER_AGENT = "ACE3-NRD-Refresh/1.0 (+https://github.com/ACE-Collective/ace3)"
 HTTP_TIMEOUT = (10, 60)  # (connect, read)
 HTTP_RETRY_BACKOFF_SECONDS = 1
+STREAM_RETRY_ATTEMPTS = 2  # initial attempt + one retry per URL on streaming-body failures
 INSERT_BATCH_SIZE = 10_000
 
 # Domains in the source lists are at most ~253 chars (RFC 1035) and contain
-# only LDH (letters, digits, hyphen) plus dots between labels. Lines that
-# don't fit this shape are dropped as malformed at ingest. Punycode-encoded
-# labels start with ``xn--`` and are still LDH so they match this regex.
+# only LDH (letters, digits, hyphen) plus dots between labels — once they're
+# in their A-label (punycode) form. ``_normalize_domain`` runs ``idna.encode``
+# first so Unicode IDN inputs (e.g. ``001311.企业``) are converted to
+# ``xn--*`` form before this regex validates the encoded result.
 _DOMAIN_LINE_RE = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
 
 
@@ -156,22 +158,6 @@ def _head_one(url: str) -> Optional[dict]:
     return {"etag": etag, "last_modified": last_modified}
 
 
-def _download_one(urls: list[str]) -> Optional[dict]:
-    """Try each URL in order and return ``{response, fetched_from}`` for the first success.
-
-    Caller is responsible for closing the response. Returns None if every URL
-    fails.
-    """
-    for url in urls:
-        response = _http_request("GET", url, stream=True)
-        if response is None:
-            continue
-        if url != urls[0]:
-            logging.warning("Primary URL %s failed; falling back to %s", urls[0], url)
-        return {"response": response, "fetched_from": url}
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Parsing + DB build
 # ---------------------------------------------------------------------------
@@ -182,17 +168,22 @@ def _normalize_domain(line: str) -> Optional[str]:
     domain = line.strip().lower().rstrip(".")
     if not domain or domain.startswith("#"):
         return None
-    if not _DOMAIN_LINE_RE.match(domain):
+    # Encode first so Unicode IDN inputs become A-labels. ``idna.encode``
+    # also rejects almost every shape we don't want (wildcards, URLs,
+    # underscores, spaces, empty/over-length labels) — the LDH regex below
+    # is belt-and-suspenders on the encoded form.
+    try:
+        encoded = idna.encode(domain).decode("ascii")
+    except (idna.IDNAError, UnicodeError):
+        return None
+    if not _DOMAIN_LINE_RE.match(encoded):
         return None
     # Reject IP-shaped lines: a real domain's rightmost label is the TLD,
     # which is never all digits. This also catches "192.168.1.1" etc.
-    labels = domain.split(".")
+    labels = encoded.split(".")
     if len(labels) < 2 or labels[-1].isdigit():
         return None
-    try:
-        return idna.encode(domain).decode("ascii")
-    except (idna.IDNAError, UnicodeError):
-        return None
+    return encoded
 
 
 def _iter_lines(response: requests.Response) -> Iterable[str]:
@@ -210,11 +201,94 @@ def _iter_lines(response: requests.Response) -> Iterable[str]:
             yield raw
 
 
-def _build_database(
-    new_db_path: Path,
-    downloads: list[dict],
-) -> dict:
-    """Build a fresh NRD database at ``new_db_path``. Returns updated source metadata."""
+_STREAM_RETRY_EXCEPTIONS = (
+    requests.exceptions.ChunkedEncodingError,
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+)
+
+
+def _ingest_one_list(conn: sqlite3.Connection, entry) -> Optional[dict]:
+    """Fetch a single configured list and insert its domains into ``conn``.
+
+    Tries the primary URL first then each backup. Each URL gets up to
+    ``STREAM_RETRY_ATTEMPTS`` attempts on streaming-body failures
+    (``ChunkedEncodingError`` etc.); on each failure the partial transaction
+    is rolled back before the next attempt. Returns the per-source meta dict
+    on success, or ``None`` if every URL exhausts its retries.
+    """
+    urls = [entry.url, *entry.backups]
+    for url in urls:
+        for attempt in range(STREAM_RETRY_ATTEMPTS):
+            response = _http_request("GET", url, stream=True)
+            if response is None:
+                # _http_request already retried the connection-level failure;
+                # no point retrying the same URL again.
+                break
+
+            content_length: Optional[int] = None
+            try:
+                if response.headers.get("Content-Length"):
+                    content_length = int(response.headers["Content-Length"])
+            except ValueError:
+                content_length = None
+            etag = response.headers.get("ETag")
+            last_modified = response.headers.get("Last-Modified")
+
+            list_unique: set[str] = set()
+            dropped = 0
+            batch: list[tuple[str]] = []
+            try:
+                conn.execute("BEGIN")
+                for line in _iter_lines(response):
+                    normalized = _normalize_domain(line)
+                    if normalized is None:
+                        stripped = line.strip()
+                        if stripped and not stripped.startswith("#"):
+                            dropped += 1
+                        continue
+                    list_unique.add(normalized)
+                    batch.append((normalized,))
+                    if len(batch) >= INSERT_BATCH_SIZE:
+                        conn.executemany(
+                            "INSERT OR IGNORE INTO nrd (domain) VALUES (?)", batch
+                        )
+                        batch.clear()
+                if batch:
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO nrd (domain) VALUES (?)", batch
+                    )
+                conn.execute("COMMIT")
+            except _STREAM_RETRY_EXCEPTIONS as exc:
+                conn.execute("ROLLBACK")
+                logging.warning(
+                    "Stream failed for %s (attempt %d/%d): %s",
+                    url, attempt + 1, STREAM_RETRY_ATTEMPTS, exc,
+                )
+                if attempt + 1 < STREAM_RETRY_ATTEMPTS:
+                    time.sleep(HTTP_RETRY_BACKOFF_SECONDS)
+                else:
+                    logging.warning("%s exhausted stream retries; trying next URL", url)
+                continue
+            finally:
+                response.close()
+
+            if dropped:
+                logging.warning("Dropped %d malformed entries from %s", dropped, url)
+
+            return {
+                "url": entry.url,
+                "fetched_from": url,
+                "etag": etag,
+                "last_modified": last_modified,
+                "content_length": content_length,
+                "row_count": len(list_unique),
+            }
+    return None
+
+
+def _build_database(new_db_path: Path, url_lists) -> Optional[dict]:
+    """Build a fresh NRD database at ``new_db_path``. Returns aggregated meta or None on failure."""
     new_db_path.parent.mkdir(parents=True, exist_ok=True)
     if new_db_path.exists():
         new_db_path.unlink()
@@ -236,68 +310,28 @@ def _build_database(
         )
 
         sources_meta: list[dict] = []
-        total_seen = set()
-
-        for download in downloads:
-            primary_url: str = download["primary_url"]
-            fetched_from: str = download["fetched_from"]
-            response: requests.Response = download["response"]
-            content_length: Optional[int] = None
-            try:
-                if response.headers.get("Content-Length"):
-                    content_length = int(response.headers["Content-Length"])
-            except ValueError:
-                content_length = None
-            etag = response.headers.get("ETag")
-            last_modified = response.headers.get("Last-Modified")
-
-            list_unique = set()
-            dropped = 0
-            batch: list[tuple[str]] = []
-            try:
-                conn.execute("BEGIN")
-                for line in _iter_lines(response):
-                    normalized = _normalize_domain(line)
-                    if normalized is None:
-                        # Skip blanks and comments without counting them as malformed.
-                        stripped = line.strip()
-                        if stripped and not stripped.startswith("#"):
-                            dropped += 1
-                        continue
-                    list_unique.add(normalized)
-                    batch.append((normalized,))
-                    if len(batch) >= INSERT_BATCH_SIZE:
-                        conn.executemany(
-                            "INSERT OR IGNORE INTO nrd (domain) VALUES (?)", batch
-                        )
-                        batch.clear()
-                if batch:
-                    conn.executemany(
-                        "INSERT OR IGNORE INTO nrd (domain) VALUES (?)", batch
-                    )
-                conn.execute("COMMIT")
-            finally:
-                response.close()
-
-            total_seen.update(list_unique)
-            if dropped:
-                logging.warning("Dropped %d malformed entries from %s", dropped, fetched_from)
-
-            sources_meta.append(
-                {
-                    "url": primary_url,
-                    "fetched_from": fetched_from,
-                    "etag": etag,
-                    "last_modified": last_modified,
-                    "content_length": content_length,
-                    "row_count": len(list_unique),
-                }
-            )
+        for entry in url_lists:
+            source_meta = _ingest_one_list(conn, entry)
+            if source_meta is None:
+                logging.error(
+                    "All URLs (primary + backups) failed for list %s; aborting refresh",
+                    entry.url,
+                )
+                return None
+            if source_meta["fetched_from"] != entry.url:
+                logging.warning(
+                    "Primary URL %s failed; falling back to %s",
+                    entry.url, source_meta["fetched_from"],
+                )
+            sources_meta.append(source_meta)
 
         row_count = conn.execute("SELECT COUNT(*) FROM nrd").fetchone()[0]
         return {"sources": sources_meta, "row_count": row_count}
     finally:
-        conn.execute("PRAGMA optimize")
+        try:
+            conn.execute("PRAGMA optimize")
+        except sqlite3.Error:
+            pass
         conn.close()
 
 
@@ -328,32 +362,12 @@ def _do_full_refresh(db_path: Path, url_lists, config_hash: str, *, reason: str)
     """Execute steps 6-11 of the refresh flow. Returns process exit code."""
     logging.info("Refresh triggered by %s", reason)
 
-    downloads: list[dict] = []
+    new_db_path = db_path.with_suffix(db_path.suffix + ".new")
     try:
-        for entry in url_lists:
-            urls = [entry.url, *entry.backups]
-            result = _download_one(urls)
-            if result is None:
-                logging.error(
-                    "All URLs (primary + backups) failed for list %s; aborting refresh",
-                    entry.url,
-                )
-                # Close any successful downloads we already accumulated.
-                for d in downloads:
-                    d["response"].close()
-                return 1
-            downloads.append(
-                {
-                    "primary_url": entry.url,
-                    "fetched_from": result["fetched_from"],
-                    "response": result["response"],
-                }
-            )
-
-        # Build to a sibling .new file then atomically swap into place.
-        new_db_path = db_path.with_suffix(db_path.suffix + ".new")
         start = time.monotonic()
-        build_result = _build_database(new_db_path, downloads)
+        build_result = _build_database(new_db_path, url_lists)
+        if build_result is None:
+            return 1
         elapsed = time.monotonic() - start
 
         meta = {
@@ -376,6 +390,14 @@ def _do_full_refresh(db_path: Path, url_lists, config_hash: str, *, reason: str)
     except Exception:
         logging.exception("Unexpected failure during NRD refresh; aborting")
         return 1
+    finally:
+        # On any non-success path, the .new file may still be on disk. Drop it
+        # so the next cron run starts clean.
+        if new_db_path.exists():
+            try:
+                new_db_path.unlink()
+            except OSError as exc:
+                logging.warning("could not remove leftover %s: %s", new_db_path, exc)
 
 
 def _heads_match(url_lists, stored_sources: list[dict]) -> bool:
