@@ -833,18 +833,18 @@ class QueryHunt(Hunt):
         self._process_summary_details(query_results, event_submission_map)
 
         # Attach correlation trace to each submission's details for alert persistence.
-        # Each alert only sees the EventTraces for events that contributed to it, so an
+        # Each alert should only see the EventTraces for events that contributed to it, so an
         # analyst opening one alert isn't shown unrelated events from sibling alerts in
         # the same hunt run. Stream events stay shared (timeouts/resets are hunt-level
         # context relevant to every alert from the run).
         if hasattr(self, "correlation_trace") and self.correlation_trace is not None:
             submission_origin_indices: dict[int, set[int]] = {}
-            for post_corr_index, subs_for_event in event_submission_map.items():
-                if post_corr_index >= len(alert_event_origin_indices):
+            for post_correlation_index, submissions_for_event in event_submission_map.items():
+                if post_correlation_index >= len(alert_event_origin_indices):
                     continue
-                origin_index = alert_event_origin_indices[post_corr_index]
-                for sub in subs_for_event:
-                    submission_origin_indices.setdefault(id(sub), set()).add(origin_index)
+                origin_index = alert_event_origin_indices[post_correlation_index]
+                for submission in submissions_for_event:
+                    submission_origin_indices.setdefault(id(submission), set()).add(origin_index)
 
             for submission in submissions:
                 origins = submission_origin_indices.get(id(submission), set())
