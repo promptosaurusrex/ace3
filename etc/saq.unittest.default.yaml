@@ -326,13 +326,6 @@ analysis_module_instance_2:
   enabled: false
   sql: "SELECT * FROM thatonething"
 
-#analysis_module_analysis_cache_test:
-  #name: analysis_cache_test
-  #python_module: saq.modules.test
-  #python_class: CacheTestAnalyzer
-  #enabled: false
-  #cache: true
-
 analysis_module_valid_queues_test:
   name: valid_queues_test
   python_module: saq.modules.test

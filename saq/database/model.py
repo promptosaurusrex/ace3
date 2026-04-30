@@ -29,6 +29,7 @@ from sqlalchemy import (
     desc,
     text,
 )
+from sqlalchemy.dialects.mysql import LONGBLOB
 from sqlalchemy.orm import (
     Mapped,
     aliased,
@@ -2644,6 +2645,89 @@ class SandboxSubmission(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP,
         nullable=True)
+
+
+class AnalysisResultCache(Base):
+    """Per-module analysis delta cache. See docs/design/analysis_diff_tracking.md."""
+
+    __tablename__ = 'analysis_result_cache'
+    __table_args__ = (
+        Index('idx_module_expires', 'module_name', 'expires_at'),
+    )
+
+    cache_key: Mapped[str] = mapped_column(
+        String(64),
+        primary_key=True)
+
+    module_name: Mapped[str] = mapped_column(
+        String(512),
+        nullable=False)
+
+    module_version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False)
+
+    observable_type: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False)
+
+    observable_value: Mapped[str] = mapped_column(
+        Text,
+        nullable=False)
+
+    delta_zstd: Mapped[bytes] = mapped_column(
+        LONGBLOB,
+        nullable=False)
+
+    delta_uncompressed_size: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False)
+
+    has_blob_refs: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text('0'))
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        index=True)
+
+
+class BlobRef(Base):
+    """Explicit reference counting for blobs stored in the analysis blob store.
+
+    Rows are composite-PK'd on (sha256, referrer_kind, referrer_id). Deleting
+    a referrer's row doesn't delete the underlying blob bytes — blob GC is a
+    separate downstream sweep that deletes blobs with zero refs.
+    """
+
+    __tablename__ = 'blob_refs'
+    __table_args__ = (
+        Index('idx_by_referrer', 'referrer_kind', 'referrer_id'),
+    )
+
+    sha256: Mapped[str] = mapped_column(
+        String(64),
+        primary_key=True)
+
+    referrer_kind: Mapped[str] = mapped_column(
+        String(32),
+        primary_key=True)
+
+    referrer_id: Mapped[str] = mapped_column(
+        String(128),
+        primary_key=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'))
 
 
 # NOTE there is no database relationship between these tables

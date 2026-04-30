@@ -82,6 +82,7 @@ WTForms
 xdis
 yacron
 yara-python
+zstandard
 
 # LLM stuff
 numpy

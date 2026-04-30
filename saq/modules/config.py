@@ -1,7 +1,7 @@
 from datetime import timedelta
 from typing import Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class AnalysisModuleConfig(BaseModel):
@@ -28,7 +28,18 @@ class AnalysisModuleConfig(BaseModel):
     required_directives: list[str] = Field(default=[], description="The list of required directives for the analysis module.")
     required_tags: list[str] = Field(default=[], description="The list of required tags for the analysis module.")
     requires_detection_path: bool = Field(default=False, description="Whether the analysis module requires observables to be on a detection path.")
-    cache: bool = Field(default=False, description="Whether caching is enabled for the analysis module.")
     version: int = Field(default=1, description="The version of the analysis module.")
     wide_diff: bool = Field(default=False, description="When True, snapshot all observables before/after module execution for cross-observable mutation tracking.")
+    cache_ttl: Optional[timedelta] = Field(default=None, description="When set, successful module deltas are cached for this duration. None disables caching for this module.")
     default_collapsed: bool = Field(default=False, description="Whether this module's analysis is collapsed by default in the GUI tree view.")
+
+    @model_validator(mode='after')
+    def _cache_ttl_incompatible_with_wide_diff(self) -> 'AnalysisModuleConfig':
+        # Wide-diff modules mutate observables across the tree, violating the
+        # cacheability contract (design doc §A6). Caching them would replay
+        # stale cross-observable state, so the combination is disallowed.
+        if self.cache_ttl is not None and self.wide_diff:
+            raise ValueError(
+                f"analysis module {self.name!r}: cache_ttl cannot be set when wide_diff is True"
+            )
+        return self

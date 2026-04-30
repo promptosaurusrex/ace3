@@ -240,19 +240,24 @@ class AnalysisModule(FileWatcherMixin):
         return False
 
     @property
-    def cache(self):
-        """Returns whether caching is enabled for this module."""
-        return self.config.cache
-
-    @property
     def version(self):
         """Returns the module version for cache validation."""
         return self.config.version
 
     @property
-    def cache_expiration(self):
-        """Returns the cache expiration time."""
-        return self.config.cache_expiration
+    def cache_ttl(self) -> Optional[timedelta]:
+        """Returns the cache TTL for this module. None disables caching."""
+        return self.config.cache_ttl
+
+    @property
+    def extended_version(self) -> dict[str, str]:
+        """Dynamic inputs to mix into the cache key.
+
+        Override in subclasses that depend on external state (rules files, feed
+        versions, model weights, etc.) so the cache key invalidates when those
+        change. Default: empty dict.
+        """
+        return {}
 
     @property
     def shutdown(self):

@@ -7,6 +7,9 @@ import shutil
 from typing import Optional
 
 from ace_api import upload
+from saq.analysis.blob_store import get_blob_store
+from saq.analysis.cache import collect_stats as collect_cache_stats
+from saq.analysis.cache import prune as prune_cache_rows
 from saq.configuration.config import get_config
 from saq.constants import DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE
 from saq.database import Alert, get_db, retry_sql_on_deadlock
@@ -189,5 +192,69 @@ def distribute_old_alerts(days: int, dry_run: bool, distribution_target: str, ma
         logging.info(f"{success_count} alerts would be distributed to {distribution_target}")
     else:
         logging.info(f"uploaded {success_count} alerts ({failure_count} failures)")
+
+    return success_count
+
+
+def prune_analysis_result_cache(dry_run: bool = False) -> int:
+    """Delete expired rows from the analysis_result_cache table.
+
+    Scheduled via yacron (see etc/cron.yaml). On each run, deletes rows whose
+    expires_at is in the past, drops their blob_refs in the same transaction,
+    and notifies the blob store so it can do any backend-specific housekeeping.
+
+    Returns the number of rows deleted. When ``dry_run`` is True, only reports
+    how many rows *would* be deleted and does not modify state.
+    """
+    if dry_run:
+        with get_db_connection() as db:
+            cursor = db.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM analysis_result_cache WHERE expires_at < NOW()"
+            )
+            count = cursor.fetchone()[0]
+        logging.info(f"{count} expired analysis_result_cache rows would be deleted")
+        return count
+
+    started = datetime.datetime.now()
+    try:
+        deleted = prune_cache_rows(get_blob_store())
+    except Exception as e:
+        logging.error(f"error pruning analysis_result_cache: {e}")
+        report_exception()
+        return 0
+
+    elapsed_ms = int((datetime.datetime.now() - started).total_seconds() * 1000)
+    logging.info(
+        f"pruned {deleted} expired analysis_result_cache rows in {elapsed_ms}ms"
+    )
+
+    # Cache-health heartbeat for Splunk. One line per prune run so operators
+    # can trend total_rows / total_uncompressed_bytes over time without
+    # touching MySQL directly.
+    try:
+        stats = collect_cache_stats()
+        logging.info(
+            "cache_stats total_rows=%d expired_rows=%d "
+            "total_uncompressed_bytes=%d blob_refs_rows=%d modules=%d",
+            stats["total_rows"],
+            stats["expired_rows"],
+            stats["total_uncompressed_bytes"],
+            stats["blob_refs_rows"],
+            stats["modules_with_entries"],
+        )
+        # If rows remain expired after the sweep, either the batch size is
+        # too small for the backlog or the sweep ran behind schedule. Either
+        # way, alert on it.
+        if stats["expired_rows"] > 0:
+            logging.warning(
+                "prune_backlog remaining_expired=%d — prune sweep did not "
+                "clear all expired rows this run",
+                stats["expired_rows"],
+            )
+    except Exception as e:
+        logging.warning(f"failed to collect cache_stats: {e}")
+
+    return deleted
 
     return success_count
