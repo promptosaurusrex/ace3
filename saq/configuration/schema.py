@@ -43,12 +43,6 @@ class GlobalConfig(BaseModel):
     maximum_analysis_disk_size: int = Field(..., description="maximum allowed size in bytes for an analysis (JSON + size of file observables); set this to 0 to disable this functionality")
     maximum_observable_count: dict[str, int] = Field(default_factory=dict, description="per-type observable limits; once a type's threshold is met, no more observables of that type can be added; types not listed have no limit")
     default_proxy: Optional[str] = Field(default=None, description="If set, all http/https requests will use this proxy by default")
-    analysis_cache_enabled: bool = Field(default=True, description="Global kill switch for the analysis result cache write path. When false, no deltas are persisted regardless of per-module cache_ttl settings.")
-    blob_store_dir: Optional[str] = Field(default=None, description="Root directory for the content-addressed blob store. If unset, defaults to <data_dir>/blob_store. Relative paths are resolved against SAQ_HOME.")
-    analysis_cache_zstd_level: int = Field(default=3, description="zstd compression level used when serializing cached analysis deltas. Valid range 1-22; level 3 is the default for the near-optimal size/CPU tradeoff on our payload shape.")
-    analysis_cache_details_spill_bytes: int = Field(default=16 * 1024, description="Uncompressed serialized size (bytes) above which a cached analysis delta's analysis.details dict is spilled to the blob store instead of stored inline.")
-    analysis_cache_max_compressed_bytes: int = Field(default=1 * 1024 * 1024, description="Compressed size (bytes) above which a cached analysis delta is refused outright. Intended as a safety net against pathological module outputs; raise if a legitimate module needs more room.")
-    analysis_cache_prune_batch_size: int = Field(default=1000, description="Max rows the analysis_result_cache prune sweep deletes per transaction. Keeps lock windows short; lower this if prune contention becomes visible.")
 
 class ServiceConfig(BaseModel):
     name: str = Field(..., description="The name of the service. Must be unique across all services.")
@@ -433,6 +427,16 @@ class NRDURLList(BaseModel):
     backups: list[str] = Field(default_factory=list, description="ordered list of backup URLs to try if the primary download fails")
 
 
+class AnalysisCacheConfig(BaseModel):
+    """Configuration for the analysis result cache write path and its content-addressed blob store."""
+    enabled: bool = Field(default=True, description="Global kill switch for the analysis result cache write path. When false, no deltas are persisted regardless of per-module cache_ttl settings.")
+    blob_store_dir: Optional[str] = Field(default=None, description="Root directory for the content-addressed blob store. If unset, defaults to <data_dir>/blob_store. Relative paths are resolved against SAQ_HOME.")
+    zstd_level: int = Field(default=3, description="zstd compression level used when serializing cached analysis deltas. Valid range 1-22; level 3 is the default for the near-optimal size/CPU tradeoff on our payload shape.")
+    details_spill_bytes: int = Field(default=16 * 1024, description="Uncompressed serialized size (bytes) above which a cached analysis delta's analysis.details dict is spilled to the blob store instead of stored inline.")
+    max_compressed_bytes: int = Field(default=1 * 1024 * 1024, description="Compressed size (bytes) above which a cached analysis delta is refused outright. Intended as a safety net against pathological module outputs; raise if a legitimate module needs more room.")
+    prune_batch_size: int = Field(default=1000, description="Max rows the analysis_result_cache prune sweep deletes per transaction. Keeps lock windows short; lower this if prune contention becomes visible.")
+
+
 class NRDConfig(BaseModel):
     """Configuration for the newly-registered-domains (NRD) ingestion pipeline."""
     enabled: bool = Field(default=True, description="kill switch for the refresh script; when false, `ace nrd refresh` exits as a no-op before any DB or HTTP work. Does not affect the analyzer (controlled by `analysis_module_nrd_analyzer.enabled`).")
@@ -478,6 +482,7 @@ class ACEConfig(BaseModel):
     sip: Optional[SIPConfig] = None
     shodan: Optional[ShodanConfig] = None
     nrd: Optional[NRDConfig] = Field(default_factory=NRDConfig, description="newly-registered-domains ingestion configuration")
+    analysis_cache: AnalysisCacheConfig = Field(default_factory=AnalysisCacheConfig, description="analysis result cache configuration")
     yara_export: Optional[YaraExportConfig] = None
     yara_export_string_modifiers: Optional[dict[str, str]] = None
     sip_yara_export: Optional[SIPYaraExportConfig] = None
