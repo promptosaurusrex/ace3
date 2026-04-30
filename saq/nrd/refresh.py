@@ -35,11 +35,11 @@ HTTP_RETRY_BACKOFF_SECONDS = 1
 STREAM_RETRY_ATTEMPTS = 2  # initial attempt + one retry per URL on streaming-body failures
 INSERT_BATCH_SIZE = 10_000
 
-# Domains in the source lists are at most ~253 chars (RFC 1035) and contain
-# only LDH (letters, digits, hyphen) plus dots between labels — once they're
-# in their A-label (punycode) form. ``_normalize_domain`` runs ``idna.encode``
-# first so Unicode IDN inputs (e.g. ``001311.企业``) are converted to
-# ``xn--*`` form before this regex validates the encoded result.
+# Domains are at most ~253 chars (RFC 1035) and, in their A-label form, contain
+# only LDH (letters, digits, hyphen) plus dots between labels. ``_normalize_domain``
+# uses this regex twice: as a fast-path acceptance check (most lines are already
+# ASCII LDH) and, on the slow path, as a validation pass on whatever ``idna.encode``
+# produced from a Unicode input.
 _DOMAIN_LINE_RE = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
 
 
@@ -168,16 +168,22 @@ def _normalize_domain(line: str) -> Optional[str]:
     domain = line.strip().lower().rstrip(".")
     if not domain or domain.startswith("#"):
         return None
-    # Encode first so Unicode IDN inputs become A-labels. ``idna.encode``
-    # also rejects almost every shape we don't want (wildcards, URLs,
-    # underscores, spaces, empty/over-length labels) — the LDH regex below
-    # is belt-and-suspenders on the encoded form.
-    try:
-        encoded = idna.encode(domain).decode("ascii")
-    except (idna.IDNAError, UnicodeError):
-        return None
-    if not _DOMAIN_LINE_RE.match(encoded):
-        return None
+    # Fast path: already ASCII LDH. Accepts plain ASCII (example.com) and
+    # already-encoded A-labels including emoji ones (xn--qj8hl9g.st) that
+    # strict IDNA 2008 round-tripping via idna.encode would otherwise reject.
+    if _DOMAIN_LINE_RE.match(domain):
+        encoded = domain
+    else:
+        # Slow path: input contains non-LDH bytes (Unicode IDN, garbage, etc.).
+        # idna.encode converts U-labels to A-labels and rejects shapes we
+        # don't want (wildcards, URLs, underscores, spaces, empty/over-length
+        # labels).
+        try:
+            encoded = idna.encode(domain).decode("ascii")
+        except (idna.IDNAError, UnicodeError):
+            return None
+        if not _DOMAIN_LINE_RE.match(encoded):
+            return None
     # Reject IP-shaped lines: a real domain's rightmost label is the TLD,
     # which is never all digits. This also catches "192.168.1.1" etc.
     labels = encoded.split(".")
@@ -188,6 +194,11 @@ def _normalize_domain(line: str) -> Optional[str]:
 
 def _iter_lines(response: requests.Response) -> Iterable[str]:
     """Yield decoded lines from a streamed HTTP response."""
+    # Some feeds serve text/plain without a charset.
+    # requests follows RFC 7231 and defaults to ISO-8859-1, which mangles
+    # UTF-8 IDN bytes. Force UTF-8 unless the server declared otherwise.
+    if "charset" not in response.headers.get("Content-Type", "").lower():
+        response.encoding = "utf-8"
     for raw in response.iter_lines(decode_unicode=True):
         if raw is None:
             continue
