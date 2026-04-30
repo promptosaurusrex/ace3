@@ -208,7 +208,7 @@ class TestPutCachedDelta:
     @pytest.mark.integration
     def test_large_details_spill_to_blob_store(self, blob_store):
         module = _make_module()
-        # 32 KiB is 2× the default global.analysis_cache_details_spill_bytes,
+        # 32 KiB is 2× the default analysis_cache.details_spill_bytes,
         # so this reliably triggers the blob-store spill path.
         big_details = {"payload": "x" * (32 * 1024)}
         analysis = {
@@ -244,7 +244,7 @@ class TestPutCachedDelta:
         # Drop the cap to something tiny so even a small analysis blows it.
         from saq.configuration.config import get_config
         monkeypatch.setattr(
-            get_config().global_settings, "analysis_cache_max_compressed_bytes", 50
+            get_config().analysis_cache, "max_compressed_bytes", 50
         )
         module = _make_module()
         delta = _make_delta(module)
@@ -258,7 +258,7 @@ class TestKillSwitch:
     def test_global_kill_switch_blocks_writes(self, blob_store, monkeypatch):
         from saq.configuration.config import get_config
         monkeypatch.setattr(
-            get_config().global_settings, "analysis_cache_enabled", False
+            get_config().analysis_cache, "enabled", False
         )
         module = _make_module()
         delta = _make_delta(module)
@@ -300,7 +300,7 @@ class TestPrune:
     @pytest.mark.integration
     def test_prune_drops_blob_refs_in_same_tx(self, blob_store):
         module = _make_module()
-        # 32 KiB is 2× the default global.analysis_cache_details_spill_bytes,
+        # 32 KiB is 2× the default analysis_cache.details_spill_bytes,
         # so this reliably triggers the blob-store spill path.
         big_details = {"payload": "x" * (32 * 1024)}
         analysis = {
@@ -334,7 +334,7 @@ class TestCollectStats:
     @pytest.mark.integration
     def test_stats_reflect_table_state(self, blob_store):
         module = _make_module()
-        # 32 KiB is 2× the default global.analysis_cache_details_spill_bytes,
+        # 32 KiB is 2× the default analysis_cache.details_spill_bytes,
         # so this reliably triggers the blob-store spill path.
         big_details = {"payload": "x" * (32 * 1024)}
         delta_small = _make_delta(module, observable_value="https://small.example/")

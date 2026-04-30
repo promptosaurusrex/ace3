@@ -14,12 +14,12 @@ contain removals (§A4) as a safety net.
 Size discipline (design doc §A3):
 
 - Every delta is zstd-compressed before it hits the DB. Compression level is
-  tunable via ``global.analysis_cache_zstd_level``.
+  tunable via ``analysis_cache.zstd_level``.
 - ``analysis.details`` dicts larger than
-  ``global.analysis_cache_details_spill_bytes`` (uncompressed) are spilled
+  ``analysis_cache.details_spill_bytes`` (uncompressed) are spilled
   to the blob store and replaced with a ``{"__blob_ref__": "<sha>"}``
   pointer in the cached delta.
-- Compressed deltas over ``global.analysis_cache_max_compressed_bytes``
+- Compressed deltas over ``analysis_cache.max_compressed_bytes``
   are refused outright and logged as a warning.
 """
 
@@ -84,7 +84,7 @@ def _maybe_spill_details(delta_dict: dict, blob_store: BlobStore, cache_key: str
 
     # Serialize separately so we can both measure and avoid double-serializing.
     details_bytes = json.dumps(details, sort_keys=True, default=str).encode("utf-8")
-    threshold = get_config().global_settings.analysis_cache_details_spill_bytes
+    threshold = get_config().analysis_cache.details_spill_bytes
     if len(details_bytes) < threshold:
         return False
 
@@ -117,7 +117,7 @@ def put_cached_delta(
                 module.config.name, delta.observable_type, delta.observable_value,
             )
             return False
-        if not get_config().global_settings.analysis_cache_enabled:
+        if not get_config().analysis_cache.enabled:
             return False
 
         cache_key = delta.cache_key
@@ -131,9 +131,9 @@ def put_cached_delta(
         delta_dict = delta.to_dict()
         has_blob_refs = _maybe_spill_details(delta_dict, blob_store, cache_key)
 
-        global_settings = get_config().global_settings
-        zstd_level = global_settings.analysis_cache_zstd_level
-        max_compressed_bytes = global_settings.analysis_cache_max_compressed_bytes
+        analysis_cache = get_config().analysis_cache
+        zstd_level = analysis_cache.zstd_level
+        max_compressed_bytes = analysis_cache.max_compressed_bytes
 
         delta_json = json.dumps(delta_dict, sort_keys=True, default=str).encode("utf-8")
         uncompressed_size = len(delta_json)
@@ -235,7 +235,7 @@ def delete_for_module(module_name: str) -> int:
     module wants to evict stale entries immediately rather than wait for TTL.
     Batched to keep lock windows short.
     """
-    batch_size = get_config().global_settings.analysis_cache_prune_batch_size
+    batch_size = get_config().analysis_cache.prune_batch_size
     total = 0
     while True:
         cache_keys = get_db().scalars(
@@ -275,11 +275,11 @@ def prune(blob_store: BlobStore, batch_size: Optional[int] = None) -> int:
     housekeeping it needs — for the local backend this is a no-op (actual blob
     deletion lives in ``blob_store.gc()``).
 
-    ``batch_size`` defaults to ``global.analysis_cache_prune_batch_size``;
+    ``batch_size`` defaults to ``analysis_cache.prune_batch_size``;
     tests may override it for finer-grained control.
     """
     if batch_size is None:
-        batch_size = get_config().global_settings.analysis_cache_prune_batch_size
+        batch_size = get_config().analysis_cache.prune_batch_size
     total = 0
     while True:
         cache_keys = get_db().scalars(
