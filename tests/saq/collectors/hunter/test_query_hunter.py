@@ -725,6 +725,135 @@ def test_process_query_results_captures_original_events(monkeypatch):
 
 
 @pytest.mark.unit
+def test_correlation_trace_scoped_per_alert_no_grouping(monkeypatch):
+    """Without group_by, two query results become two separate alerts. Each alert's
+    correlation_trace should contain only the EventTrace for the event that produced
+    that alert — not a copy of the whole hunt run's trace."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    correlate = CorrelateConfig.model_validate({
+        "logic": [{"action": "alert"}],
+    })
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="trace_per_alert",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4"},
+        {"src": "5.6.7.8"},
+    ])
+    assert submissions and len(submissions) == 2
+
+    # Hunt-level trace still holds both events (used by the hunt manager API).
+    assert len(hunt.correlation_trace.event_traces) == 2
+
+    # Each submission's trace should contain exactly one event_trace, and its
+    # event_index must match the position of the event that produced it.
+    traces = [s.root.details["correlation_trace"] for s in submissions]
+    assert [len(t["event_traces"]) for t in traces] == [1, 1]
+    assert traces[0]["event_traces"][0]["event_index"] == 0
+    assert traces[1]["event_traces"][0]["event_index"] == 1
+    # Stream events stay shared (hunt-level context); none here, so empty on both.
+    assert traces[0]["stream_events"] == []
+    assert traces[1]["stream_events"] == []
+
+
+@pytest.mark.unit
+def test_correlation_trace_scoped_per_alert_with_grouping(monkeypatch):
+    """When events group into one alert, that alert's correlation_trace should
+    contain every contributing event's EventTrace; sibling alerts in the same run
+    only see their own events."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    correlate = CorrelateConfig.model_validate({
+        "logic": [{"action": "alert"}],
+    })
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="trace_per_grouped_alert",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="msg_id",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+
+    submissions = hunt.process_query_results([
+        {"msg_id": "A", "src": "1.1.1.1"},
+        {"msg_id": "A", "src": "2.2.2.2"},
+        {"msg_id": "B", "src": "3.3.3.3"},
+    ])
+    assert submissions and len(submissions) == 2
+
+    # Map each submission to its trace's set of event_indices.
+    by_msg_id = {}
+    for s in submissions:
+        events_in_alert = s.root.details["events"]
+        msg_id = events_in_alert[0]["msg_id"]
+        by_msg_id[msg_id] = sorted(
+            et["event_index"] for et in s.root.details["correlation_trace"]["event_traces"]
+        )
+
+    # Group A contributed indices 0 and 1; group B contributed index 2.
+    assert by_msg_id == {"A": [0, 1], "B": [2]}
+
+
+@pytest.mark.unit
+def test_correlation_trace_filtered_event_not_attached_to_other_alerts(monkeypatch):
+    """An event that the correlation engine filters out shouldn't appear in any
+    alert's correlation_trace, even though it's still in the hunt-level trace."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    correlate = CorrelateConfig.model_validate({
+        "logic": [
+            {
+                "when": {"type": "equals", "value": "drop", "property": "tag"},
+                "execute": [{"action": "filter"}],
+            },
+        ],
+    })
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="trace_filters_excluded",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+
+    submissions = hunt.process_query_results([
+        {"src": "1.1.1.1", "tag": "keep"},
+        {"src": "2.2.2.2", "tag": "drop"},
+        {"src": "3.3.3.3", "tag": "keep"},
+    ])
+    assert submissions and len(submissions) == 2
+
+    # Hunt-level trace records all three events (one with outcome=filter).
+    outcomes = [et.outcome for et in hunt.correlation_trace.event_traces]
+    assert outcomes == ["alert", "filter", "alert"]
+
+    # Each alert's trace only carries its own event_index — the filtered index 1
+    # never appears in any alert.
+    for s in submissions:
+        indices = [et["event_index"] for et in s.root.details["correlation_trace"]["event_traces"]]
+        assert 1 not in indices
+        assert len(indices) == 1
+
+
+@pytest.mark.unit
 def test_process_query_results_file_observable(monkeypatch, tmpdir):
     """test mapping fields to F_FILE type observables"""
     import saq.collectors.hunter.query_hunter

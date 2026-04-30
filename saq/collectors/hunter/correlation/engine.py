@@ -72,6 +72,9 @@ class CorrelationResult:
     event_actions: dict[int, ActionResult] = field(default_factory=dict)
     discarded: bool = False
     trace: Optional[CorrelationTrace] = None
+    # keeps track of the index of the event from the original stream that produced each kept event.
+    # Lets callers map a post-correlation event back to its EventTrace.event_index.
+    alert_event_origin_indices: list[int] = field(default_factory=list)
 
 
 class CorrelationEngine:
@@ -202,6 +205,7 @@ class CorrelationEngine:
             event_index += 1
 
         result.events = [event for _, event in alert_events]
+        result.alert_event_origin_indices = [idx for idx, _ in alert_events]
         result.trace = trace
         return result
 

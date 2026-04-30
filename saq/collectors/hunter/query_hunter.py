@@ -43,6 +43,7 @@ from saq.query.extraction import (
 )
 from saq.query.summary_detail_rendering import render_jinja_template
 from saq.collectors.hunter.correlation.schema import CorrelateConfig
+from saq.collectors.hunter.correlation.trace import CorrelationTrace
 from saq.util import abs_path, create_timedelta, local_time
 
 QUERY_DETAILS_SEARCH_ID = "search_id"
@@ -656,6 +657,9 @@ class QueryHunt(Hunt):
                 return []
             query_results = result.events
             event_action_overrides = result.event_actions
+            alert_event_origin_indices = result.alert_event_origin_indices
+        else:
+            alert_event_origin_indices = []
 
         submissions: list[Submission] = [] # of Submission objects
 
@@ -828,11 +832,27 @@ class QueryHunt(Hunt):
 
         self._process_summary_details(query_results, event_submission_map)
 
-        # Attach correlation trace to each submission's details for alert persistence
+        # Attach correlation trace to each submission's details for alert persistence.
+        # Each alert should only see the EventTraces for events that contributed to it, so an
+        # analyst opening one alert isn't shown unrelated events from sibling alerts in
+        # the same hunt run. Stream events stay shared (timeouts/resets are hunt-level
+        # context relevant to every alert from the run).
         if hasattr(self, "correlation_trace") and self.correlation_trace is not None:
-            trace_data = self.correlation_trace.model_dump()
+            submission_origin_indices: dict[int, set[int]] = {}
+            for post_correlation_index, submissions_for_event in event_submission_map.items():
+                if post_correlation_index >= len(alert_event_origin_indices):
+                    continue
+                origin_index = alert_event_origin_indices[post_correlation_index]
+                for submission in submissions_for_event:
+                    submission_origin_indices.setdefault(id(submission), set()).add(origin_index)
+
             for submission in submissions:
-                submission.root.details[QUERY_DETAILS_CORRELATION_TRACE] = trace_data
+                origins = submission_origin_indices.get(id(submission), set())
+                per_alert_trace = CorrelationTrace(
+                    event_traces=[et for et in self.correlation_trace.event_traces if et.event_index in origins],
+                    stream_events=self.correlation_trace.stream_events,
+                )
+                submission.root.details[QUERY_DETAILS_CORRELATION_TRACE] = per_alert_trace.model_dump()
 
         # Attach the original (pre-correlation) events to each submission's details
         # so hunt authors can later inspect what came back from the data source
