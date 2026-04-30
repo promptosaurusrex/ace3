@@ -14,3 +14,8 @@ jobs:
     shell: /bin/bash
     schedule: "* * * * *"
     concurrencyPolicy: Forbid
+  - name: prune analysis result cache
+    command: /opt/ace/bin/prune-analysis-cache >> /opt/ace/data/logs/prune-analysis-cache-`date '+%Y-%m-%d'`.log 2>&1
+    shell: /bin/bash
+    schedule: "*/5 * * * *"
+    concurrencyPolicy: Forbid

@@ -1841,6 +1841,18 @@ cleanup_alerts_parsers.add_argument('--ignore-days-old', type=int, required=Fals
     #help='force delete fp alerts instead of archiving them')
 cleanup_alerts_parsers.set_defaults(func=cleanup_alerts)
 
+def prune_analysis_cache(args):
+    """Deletes expired rows from the analysis_result_cache table. Meant to be called from cron."""
+    from saq.util.maintenance import prune_analysis_result_cache
+    prune_analysis_result_cache(dry_run=args.dry_run)
+    sys.exit(0)
+
+prune_analysis_cache_parser = get_cli_subparsers().add_parser('prune-analysis-cache',
+    help="Deletes expired rows from the analysis result cache.")
+prune_analysis_cache_parser.add_argument('--dry-run', required=False, dest='dry_run', default=False, action='store_true',
+    help="Just report how many rows would be deleted.")
+prune_analysis_cache_parser.set_defaults(func=prune_analysis_cache)
+
 cleanup_alerts_parsers = alert_sp.add_parser('cleanup',
     help="Removes alerts dispositioned as ignore or false positive and older than some amount of time.")
 cleanup_alerts_parsers.add_argument('--dry-run', required=False, dest='dry_run', default=False, action='store_true',

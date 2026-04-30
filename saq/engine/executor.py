@@ -10,6 +10,8 @@ from enum import Enum
 
 import iptools
 from saq.analysis.analysis import Analysis
+from saq.analysis.blob_store import get_blob_store
+from saq.analysis.cache import generate_cache_key, put_cached_delta
 from saq.analysis.errors import ExcessiveFileDataSizeError
 from saq.analysis.module_path import MODULE_PATH
 from saq.analysis.observable import Observable
@@ -1135,6 +1137,26 @@ class AnalysisExecutor:
                                 "module %s produced removals in delta for observable %s",
                                 analysis_module.config.name, work_item.observable,
                             )
+
+                        # Phase 2: persist the delta to the analysis result
+                        # cache when the module has opted in. Best-effort —
+                        # put_cached_delta swallows its own exceptions, but we
+                        # guard an extra layer so key-generation or blob-store
+                        # init failures can't break root.save() either.
+                        if (
+                            analysis_module.cache_ttl is not None
+                            and not delta.has_removals
+                            and get_config().global_settings.analysis_cache_enabled
+                        ):
+                            try:
+                                delta.cache_key = generate_cache_key(work_item.observable, analysis_module)
+                                put_cached_delta(delta, analysis_module, get_blob_store())
+                            except Exception:
+                                logging.warning(
+                                    "failed to write analysis cache for %s on %s",
+                                    analysis_module, work_item.observable,
+                                    exc_info=True,
+                                )
                     except Exception:
                         logging.warning(
                             "failed to record module execution delta for %s on %s",
