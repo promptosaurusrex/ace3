@@ -152,6 +152,19 @@ def test_normalize_domain_unicode_idn_to_punycode():
     assert _normalize_domain("例え.テスト") == "xn--r8jz45g.xn--zckzah"
 
 
+@pytest.mark.unit
+def test_normalize_domain_accepts_emoji_punycode():
+    """A-labels containing emoji codepoints must pass through.
+
+    ``xn--qj8hl9g.st`` decodes to U+1F969 (🥩.st) — a real registered domain.
+    Strict IDNA 2008 disallows emoji codepoints, but DNS doesn't care, and
+    these are exactly the kind of novelty NRDs we want flagged. The fast
+    path accepts them by skipping the idna round-trip on already-LDH input.
+    """
+    assert _normalize_domain("xn--qj8hl9g.st") == "xn--qj8hl9g.st"
+    assert _normalize_domain("xn--1p9h.fm") == "xn--1p9h.fm"
+
+
 # ---------------------------------------------------------------------------
 # Full-refresh end-to-end
 # ---------------------------------------------------------------------------
@@ -360,6 +373,38 @@ def test_malformed_lines_dropped_with_warning(nrd_env, requests_mock, caplog):
     assert matching_warnings, "expected a 'Dropped N malformed entries' warning"
     # 4 malformed: wildcard, IP, URL, underscore. Blanks/comments don't count.
     assert "4" in matching_warnings[0].getMessage()
+
+
+@pytest.mark.unit
+def test_iter_lines_forces_utf8_when_charset_missing(nrd_env, requests_mock, caplog):
+    """A text/plain response without a charset must still decode UTF-8 IDN bytes correctly.
+
+    Reproduces the cenk-feed bug: requests follows RFC 7231 and defaults to
+    ISO-8859-1 when no charset is declared, which mangled UTF-8 IDN bytes
+    into Latin-1 garbage and made every IDN line look malformed.
+    """
+    db_path, configure = nrd_env
+    list_url = "https://feed.example/nrd.txt"
+    body = "alpha.example\n001311.企业\nbeta.example\n".encode("utf-8")
+    # Note: Content-Type explicitly omits charset, mirroring dl.cenk.app behavior.
+    requests_mock.get(
+        list_url,
+        content=body,
+        headers={"Content-Type": "text/plain", "ETag": "etag-v1"},
+    )
+
+    configure([_make_url_list(list_url)])
+
+    import logging
+    with caplog.at_level(logging.WARNING):
+        assert refresh() == 0
+
+    assert _domain_count(db_path) == 3
+    rows = {row[0] for row in sqlite3.connect(str(db_path)).execute("SELECT domain FROM nrd")}
+    assert rows == {"alpha.example", "beta.example", "001311.xn--vhquv"}
+    # No "Dropped N malformed entries" warning should have been emitted.
+    drop_warnings = [r for r in caplog.records if "Dropped" in r.getMessage() and "malformed" in r.getMessage()]
+    assert not drop_warnings, "IDN lines were mis-decoded and dropped"
 
 
 @pytest.mark.unit
