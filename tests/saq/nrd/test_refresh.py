@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from requests.exceptions import ChunkedEncodingError
 
 from saq.nrd import refresh as refresh_mod
 from saq.nrd import util as util_mod
@@ -137,6 +138,18 @@ def test_normalize_domain_drops_non_domain_lines():
 @pytest.mark.unit
 def test_normalize_domain_punycode_passthrough():
     assert _normalize_domain("xn--caf-dma.example") == "xn--caf-dma.example"
+
+
+@pytest.mark.unit
+def test_normalize_domain_unicode_idn_to_punycode():
+    """Unicode IDN inputs (U-labels) must be encoded to A-labels, not dropped."""
+    # Real-world example from the cenk feed: 1900+ Chinese-script domains
+    # were being silently dropped because the LDH regex ran before idna.encode.
+    assert _normalize_domain("001311.企业") == "001311.xn--vhquv"
+    # Unicode in the leftmost label, ASCII TLD.
+    assert _normalize_domain("café.example") == "xn--caf-dma.example"
+    # Unicode in both labels.
+    assert _normalize_domain("例え.テスト") == "xn--r8jz45g.xn--zckzah"
 
 
 # ---------------------------------------------------------------------------
@@ -360,3 +373,106 @@ def test_atomic_swap_does_not_leave_new_file(nrd_env, requests_mock):
 
     new_path = db_path.with_suffix(db_path.suffix + ".new")
     assert not new_path.exists(), "leftover .new file means atomic swap failed"
+
+
+# ---------------------------------------------------------------------------
+# Streaming-body failure handling (mid-body ChunkedEncodingError etc.)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_stream_failure_retries_same_url_then_succeeds(nrd_env, requests_mock, monkeypatch):
+    """First stream attempt raises mid-body; same-URL retry succeeds and the partial insert is rolled back."""
+    db_path, configure = nrd_env
+    list_url = "https://feed.example/nrd.txt"
+    requests_mock.get(list_url, text="alpha.example\nbeta.example\n", headers={"ETag": "etag-v1"})
+
+    monkeypatch.setattr(refresh_mod, "HTTP_RETRY_BACKOFF_SECONDS", 0)
+
+    real_iter_lines = refresh_mod._iter_lines
+    calls = {"n": 0}
+
+    def flaky_iter_lines(response):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Yield one valid line so the partial INSERT is visible to ROLLBACK.
+            yield "partial.example"
+            raise ChunkedEncodingError("simulated mid-body cut")
+        yield from real_iter_lines(response)
+
+    monkeypatch.setattr(refresh_mod, "_iter_lines", flaky_iter_lines)
+
+    configure([_make_url_list(list_url)])
+
+    assert refresh() == 0
+    # Only the second attempt's content survives — partial.example was rolled back.
+    assert _domain_count(db_path) == 2
+    rows = {row[0] for row in sqlite3.connect(str(db_path)).execute("SELECT domain FROM nrd")}
+    assert rows == {"alpha.example", "beta.example"}
+    meta = _read_meta(db_path)
+    assert meta["sources"][0]["fetched_from"] == list_url
+    assert calls["n"] == 2
+
+
+@pytest.mark.unit
+def test_stream_failure_falls_back_to_backup(nrd_env, requests_mock, monkeypatch):
+    """Both stream attempts on the primary URL fail; the backup URL succeeds."""
+    db_path, configure = nrd_env
+    primary = "https://primary.example/nrd.txt"
+    backup = "https://backup.example/nrd.txt"
+    requests_mock.get(primary, text="alpha.example\n", headers={"ETag": "etag-p"})
+    requests_mock.get(backup, text="beta.example\n", headers={"ETag": "etag-b"})
+
+    monkeypatch.setattr(refresh_mod, "HTTP_RETRY_BACKOFF_SECONDS", 0)
+
+    real_iter_lines = refresh_mod._iter_lines
+    per_url_calls = {primary: 0, backup: 0}
+
+    def flaky_iter_lines(response):
+        if response.url == primary:
+            per_url_calls[primary] += 1
+            raise ChunkedEncodingError("simulated mid-body cut on primary")
+        per_url_calls[backup] += 1
+        yield from real_iter_lines(response)
+
+    monkeypatch.setattr(refresh_mod, "_iter_lines", flaky_iter_lines)
+
+    configure([_make_url_list(primary, backup)])
+
+    assert refresh() == 0
+    assert _domain_count(db_path) == 1
+    meta = _read_meta(db_path)
+    assert meta["sources"][0]["url"] == primary
+    assert meta["sources"][0]["fetched_from"] == backup
+    assert meta["sources"][0]["etag"] == "etag-b"
+    assert per_url_calls[primary] == 2  # primary attempted twice before falling back
+    assert per_url_calls[backup] == 1
+
+
+@pytest.mark.unit
+def test_stream_failure_all_urls_exhausted_aborts(nrd_env, requests_mock, monkeypatch):
+    """Every URL fails every stream attempt: refresh exits 1, no DB created, no .new left behind."""
+    db_path, configure = nrd_env
+    primary = "https://primary.example/nrd.txt"
+    backup = "https://backup.example/nrd.txt"
+    requests_mock.get(primary, text="alpha.example\n", headers={"ETag": "etag-p"})
+    requests_mock.get(backup, text="beta.example\n", headers={"ETag": "etag-b"})
+
+    monkeypatch.setattr(refresh_mod, "HTTP_RETRY_BACKOFF_SECONDS", 0)
+
+    calls = {"n": 0}
+
+    def always_fail(response):
+        calls["n"] += 1
+        raise ChunkedEncodingError("simulated mid-body cut")
+
+    monkeypatch.setattr(refresh_mod, "_iter_lines", always_fail)
+
+    configure([_make_url_list(primary, backup)])
+
+    assert refresh() == 1
+    assert not db_path.exists()
+    new_path = db_path.with_suffix(db_path.suffix + ".new")
+    assert not new_path.exists()
+    # Two URLs × two attempts each.
+    assert calls["n"] == 4
