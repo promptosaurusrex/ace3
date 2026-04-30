@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+#
+# Refresh the local newly-registered-domains (NRD) database. Invoked by cron
+# every 30 minutes; idempotent and almost always exits as a sub-second no-op.
+#
+source /opt/ace/bin/initialize-environment.sh
+
+exec /opt/ace/ace nrd refresh "$@"

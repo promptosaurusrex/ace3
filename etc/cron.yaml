@@ -14,6 +14,10 @@ jobs:
     shell: /bin/bash
     schedule: "* * * * *"
     concurrencyPolicy: Forbid
+  - name: refresh newly registered domains
+    command: /opt/ace/bin/nrd-refresh >> /opt/ace/data/logs/nrd-refresh-`date '+%Y-%m-%d'`.log 2>&1
+    shell: /bin/bash
+    schedule: "*/30 * * * *"
   - name: prune analysis result cache
     command: /opt/ace/bin/prune-analysis-cache >> /opt/ace/data/logs/prune-analysis-cache-`date '+%Y-%m-%d'`.log 2>&1
     shell: /bin/bash

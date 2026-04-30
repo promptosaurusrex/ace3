@@ -529,6 +529,30 @@ messaging:
 
 message_routing: {}
 
+nrd:
+  # kill switch for the refresh script. When false, `ace nrd refresh`
+  # exits as a no-op before any DB or HTTP work, regardless of database age,
+  # configured url_lists, etc. Does not affect the NRDAnalyzer (which is
+  # toggled separately via analysis_module_nrd_analyzer.enabled below).
+  enabled: true
+  # local SQLite database that maps newly-registered domains for fast O(1) lookup
+  # by NRDAnalyzer. Maintained by `ace nrd refresh` (run via cron;
+  # see etc/cron.yaml). Path is relative to SAQ_HOME unless absolute.
+  database_path: data/external/nrd/nrd_index.db
+  # minimum hours between successful upstream refreshes; once elapsed the
+  # refresh script HEAD-checks every cron firing until upstream actually
+  # changes (only an actual change resets this clock).
+  check_interval_hours: 24
+  # ordered list of upstream URL feeds to ingest. `backups` is optional; if a
+  # primary URL fails the script falls through to backups in order.
+  url_lists: []
+  # example NRD lists:
+  # url_lists:
+  #   - url: "https://example.com/list1.txt"
+  #     backups:
+  #       - "https://backup.example.com/list1.txt"
+  #   - url: "https://example.com/list2.txt"
+
 email_archive:
   target: local # possible values: local, s3
   # if this system is archiving emails, this determines what section to use for the database config
@@ -1131,6 +1155,12 @@ analysis_module_whois_analyzer:
   name: whois_analyzer
   python_module: saq.modules.whois
   python_class: WhoisAnalyzer
+  enabled: true
+
+analysis_module_nrd_analyzer:
+  name: nrd_analyzer
+  python_module: saq.modules.nrd
+  python_class: NRDAnalyzer
   enabled: true
 
 analysis_module_active_directory_analyzer:
@@ -2036,6 +2066,7 @@ module_group_common:
     - command_line_analyzer
     - configuration_defined_tagging
     - correlated_tag_analyzer
+    - nrd_analyzer
     - observable_detection
     - observable_modifier
     - protected_url_analyzer
