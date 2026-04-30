@@ -516,13 +516,13 @@ messaging:
 message_routing: {}
 
 nrd:
-  # kill switch for the refresh script. When false, `python -m saq.nrd.refresh`
+  # kill switch for the refresh script. When false, `ace nrd refresh`
   # exits as a no-op before any DB or HTTP work, regardless of database age,
   # configured url_lists, etc. Does not affect the NRDAnalyzer (which is
   # toggled separately via analysis_module_nrd_analyzer.enabled below).
   enabled: true
   # local SQLite database that maps newly-registered domains for fast O(1) lookup
-  # by NRDAnalyzer. Maintained by `python -m saq.nrd.refresh` (run via cron;
+  # by NRDAnalyzer. Maintained by `ace nrd refresh` (run via cron;
   # see etc/cron.yaml). Path is relative to SAQ_HOME unless absolute.
   database_path: data/external/nrd/nrd_index.db
   # minimum hours between successful upstream refreshes; once elapsed the

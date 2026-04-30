@@ -429,7 +429,7 @@ class NRDURLList(BaseModel):
 
 class NRDConfig(BaseModel):
     """Configuration for the newly-registered-domains (NRD) ingestion pipeline."""
-    enabled: bool = Field(default=True, description="kill switch for the refresh script; when false, `python -m saq.nrd.refresh` exits as a no-op before any DB or HTTP work. Does not affect the analyzer (controlled by `analysis_module_nrd_analyzer.enabled`).")
+    enabled: bool = Field(default=True, description="kill switch for the refresh script; when false, `ace nrd refresh` exits as a no-op before any DB or HTTP work. Does not affect the analyzer (controlled by `analysis_module_nrd_analyzer.enabled`).")
     database_path: str = Field(default="data/external/nrd/nrd_index.db", description="path to the local SQLite NRD database (relative paths resolve against SAQ_HOME)")
     check_interval_hours: int = Field(default=24, description="minimum hours between successful upstream refreshes; once elapsed the refresh script HEAD-checks every cron run until upstream actually changes")
     url_lists: list[NRDURLList] = Field(default_factory=list, description="lists of newly registered domains to ingest")

@@ -5,4 +5,4 @@
 #
 source /opt/ace/bin/initialize-environment.sh
 
-exec python -m saq.nrd.refresh "$@"
+exec /opt/ace/ace nrd refresh "$@"

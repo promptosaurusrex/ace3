@@ -1,11 +1,13 @@
-"""Newly-registered-domains (NRD) refresh script.
+"""Newly-registered-domains (NRD) refresh logic.
 
-Run via cron every 30 minutes. Decides whether a refresh is needed based on
-the conditions in ``docs/design/newly_registered_domains.md`` and, when one
-is, downloads the configured lists, builds a fresh SQLite database, and
-atomically swaps it in place.
+``refresh()`` is the public entry point, exposed via the ``ace nrd refresh``
+subcommand and invoked from cron (see ``etc/cron.yaml``). It decides whether
+a refresh is needed based on the conditions in
+``docs/design/newly_registered_domains.md`` and, when one is, downloads the
+configured lists, builds a fresh SQLite database, and atomically swaps it in
+place.
 
-Idempotent: invoking this script when the database is already up to date is
+Idempotent: invoking ``refresh()`` when the database is already up to date is
 a sub-second no-op.
 """
 
@@ -15,7 +17,6 @@ import logging
 import os
 import re
 import sqlite3
-import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,7 +26,6 @@ import idna
 import requests
 
 from saq.configuration.config import get_config
-from saq.environment import initialize_environment
 from saq.nrd.util import get_database_path
 
 
@@ -482,25 +482,3 @@ def refresh() -> int:
         config_hash,
         reason="HEAD-detected change",
     )
-
-
-def main() -> int:
-    """CLI entry point. Initializes ACE environment and basic logging.
-
-    Uses ``initialize_environment`` (not just ``initialize_configuration``) so
-    that integration YAMLs are merged into the active config before validation
-    runs — otherwise integration-supplied service definitions appear only as
-    the partial overrides users have in ``etc/saq.yaml``, which fail Pydantic
-    validation. This matches what ``bin/ace`` and the engine startup do.
-    """
-    if not logging.getLogger().handlers:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        )
-    initialize_environment()
-    return refresh()
-
-
-if __name__ == "__main__":
-    sys.exit(main())
