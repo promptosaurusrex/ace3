@@ -58,10 +58,6 @@ def add_observable():
                 if d != '' and d in VALID_DIRECTIVES:
                     directives.append(d)
 
-    #if o_type not in VALID_OBSERVABLE_TYPES:
-        #flash("invalid observable type {0}".format(o_type))
-        #return redirection
-
     if o_value == '':
         flash("missing observable value")
         return redirection
