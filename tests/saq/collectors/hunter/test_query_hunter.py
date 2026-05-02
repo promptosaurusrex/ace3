@@ -637,6 +637,122 @@ def test_process_query_results(monkeypatch):
 
 
 @pytest.mark.unit
+def test_group_value_attached_to_submission(monkeypatch):
+    """Each submission produced by a grouped hunt should carry its group_value
+       so the manager can record per-group last_alert_time without re-deriving the grouping."""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_group_value",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="src",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4"},
+        {"src": "5.6.7.8"},
+    ])
+    assert len(submissions) == 2
+    group_values = sorted(s.group_value for s in submissions)
+    assert group_values == ["1.2.3.4", "5.6.7.8"]
+
+    # ALL grouping should produce a single submission tagged with "ALL"
+    hunt.config.group_by = "ALL"
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4"},
+        {"src": "5.6.7.8"},
+    ])
+    assert len(submissions) == 1
+    assert submissions[0].group_value == "ALL"
+
+
+@pytest.mark.unit
+def test_per_group_suppression_filters_recurring_group(monkeypatch):
+    """When a group has alerted within the suppression window, that group's submission
+       should be filtered out on the next run while other groups still pass through."""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_per_group_supp",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        suppression="00:01:00",
+        group_by="src",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+
+    # first run: 1.2.3.4 alerts
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert len(submissions) == 1
+    assert submissions[0].group_value == "1.2.3.4"
+
+    # simulate the manager recording the alert post-execution
+    hunt.set_last_alert_time(local_time(), "1.2.3.4")
+
+    # second run with the same group plus a new one: only the new group passes through
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4"},
+        {"src": "5.6.7.8"},
+    ])
+    assert len(submissions) == 1
+    assert submissions[0].group_value == "5.6.7.8"
+
+
+@pytest.mark.unit
+def test_per_group_suppression_does_not_block_other_groups(monkeypatch):
+    """Suppressing one group must not affect any other group."""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_per_group_isolated",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        suppression="00:01:00",
+        group_by="src",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+
+    hunt.set_last_alert_time(local_time(), "1.2.3.4")
+
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4"},
+        {"src": "5.6.7.8"},
+        {"src": "9.10.11.12"},
+    ])
+    group_values = sorted(s.group_value for s in submissions)
+    assert group_values == ["5.6.7.8", "9.10.11.12"]
+
+
+@pytest.mark.unit
+def test_suppressed_property_false_when_group_by_set(monkeypatch):
+    """Hunt.suppressed must return False for grouped hunts so HuntManager.execute
+       does not gate-skip the entire hunt; per-group filtering happens after the query runs."""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_suppressed_grouped",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        suppression="01:00:00",
+        group_by="src",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+
+    # write a recent hunt-level last_alert_time. for an ungrouped hunt this would mean
+    # `suppressed` is True; for a grouped hunt the property must return False.
+    hunt.last_alert_time = local_time()
+    assert hunt.group_by is not None
+    assert hunt.suppressed is False
+    assert hunt.suppression_end is None
+
+
+@pytest.mark.unit
 def test_process_query_results_captures_original_events(monkeypatch):
     """When correlation is configured, the hunter should snapshot the raw event list
     before correlation mutates/filters it. When correlation is not configured, the
