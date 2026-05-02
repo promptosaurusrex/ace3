@@ -364,6 +364,24 @@ class QueryHunt(Hunt):
         By default this returns the event that is passed in."""
         return event
 
+    def _render_name(self, event: dict) -> str:
+        """Renders self.name as a Jinja2 template against the given event.
+
+        Falls back to the raw config name when the template has no Jinja markers
+        (fast path) or when rendering fails."""
+        raw_name = self.name
+        if "{{" not in raw_name and "{%" not in raw_name:
+            return raw_name
+
+        rendered = render_jinja_template(raw_name, event, strict=False)
+        if rendered is None:
+            logging.warning(
+                "falling back to raw name for hunt uuid=%s name=%s due to template render failure",
+                self.uuid, raw_name,
+            )
+            return raw_name
+        return rendered
+
     def create_root_analysis(self, event: dict) -> RootAnalysis:
         import uuid as uuidlib
         root_uuid = str(uuidlib.uuid4())
@@ -390,7 +408,7 @@ class QueryHunt(Hunt):
         root = RootAnalysis(
             uuid=root_uuid,
             storage_dir=os.path.join(get_temp_dir(), root_uuid),
-            desc=self.name,
+            desc=self._render_name(event),
             instructions=self.description,
             analysis_mode=self.analysis_mode,
             tool=f'hunter-{self.type}',
@@ -711,7 +729,7 @@ class QueryHunt(Hunt):
             signature_id_observable = create_observable(F_SIGNATURE_ID, self.uuid)
 
             if signature_id_observable is not None:
-                signature_id_observable.display_value = self.name
+                signature_id_observable.display_value = self._render_name(event)
                 observables.append(signature_id_observable)
 
             # if we are NOT grouping then each row is an alert by itself
