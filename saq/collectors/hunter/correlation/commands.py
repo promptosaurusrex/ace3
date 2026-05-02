@@ -26,6 +26,7 @@ def execute_command(
     stream_query_cache: Optional[dict] = None,
     secrets: dict | None = None,
     config: dict | None = None,
+    current_source: Optional[str] = None,
 ) -> str:
     """Execute a command and return its output as a string.
 
@@ -40,14 +41,17 @@ def execute_command(
         stream_query_cache: Cache for stream query results (memoization within a correlation run).
         secrets: Decrypted secrets dict for jinja context.
         config: Configuration dict for jinja context.
+        current_source: Name of the source that produced the current event stream;
+            used to supply default `relative_time_field`/`relative_time_format` when
+            the YAML omits them.
 
     Returns:
         Command output as a string.
     """
     if command.type == "defined":
-        return _execute_defined(command, event, events, transform_type, predefined_commands, hunt_time, temp_dir, stream_query_cache, secrets, config)
+        return _execute_defined(command, event, events, transform_type, predefined_commands, hunt_time, temp_dir, stream_query_cache, secrets, config, current_source)
     elif command.type == "query":
-        return _execute_query(command, event, events, transform_type, hunt_time, stream_query_cache, secrets, config)
+        return _execute_query(command, event, events, transform_type, hunt_time, stream_query_cache, secrets, config, current_source)
     elif command.type == "executable":
         return _execute_executable(command, event, events, transform_type, temp_dir, secrets, config)
     else:
@@ -65,6 +69,7 @@ def _execute_defined(
     stream_query_cache: Optional[dict],
     secrets: dict | None = None,
     config: dict | None = None,
+    current_source: Optional[str] = None,
 ) -> str:
     """Execute a predefined command by name."""
     predef = None
@@ -77,7 +82,7 @@ def _execute_defined(
         raise ValueError(f"predefined command not found: {command.name!r}")
 
     resolved = predef.to_command_config(command.arguments)
-    return execute_command(resolved, event, events, transform_type, predefined_commands, hunt_time, temp_dir, stream_query_cache, secrets, config)
+    return execute_command(resolved, event, events, transform_type, predefined_commands, hunt_time, temp_dir, stream_query_cache, secrets, config, current_source)
 
 
 def _execute_query(
@@ -89,6 +94,7 @@ def _execute_query(
     stream_query_cache: Optional[dict],
     secrets: dict | None = None,
     config: dict | None = None,
+    current_source: Optional[str] = None,
 ) -> str:
     """Execute a query command."""
     # For stream transforms, memoize the result
@@ -105,7 +111,7 @@ def _execute_query(
             return cached
 
     # Build time range
-    start_time, end_time = _resolve_time_range(command, event, transform_type, hunt_time)
+    start_time, end_time = _resolve_time_range(command, event, transform_type, hunt_time, current_source)
 
     # Render query with jinja
     context = build_jinja_context(event, events, secrets, config)
@@ -137,14 +143,32 @@ def _resolve_time_range(
     event: dict,
     transform_type: str,
     hunt_time: datetime.datetime,
+    current_source: Optional[str] = None,
 ) -> tuple[datetime.datetime, datetime.datetime]:
-    """Resolve the time range for a query command."""
+    """Resolve the time range for a query command.
+
+    Field/format resolution precedence:
+      - explicit value on `command.time_range` -> default from `current_source`
+      - QuerySource (if registered) -> None.
+
+    For event transforms, when a field is resolved (explicit or default) the
+    event must contain that key; otherwise a KeyError is raised so the failure
+    surfaces as a step error and the affected event short-circuits to alert.
+
+    For stream transforms, or when no field can be resolved, the reference time
+    falls back to `hunt_time`.
+    """
     reference_time = hunt_time
 
-    if transform_type == "event" and command.time_range and command.time_range.relative_time_field:
-        field_value = event.get(command.time_range.relative_time_field)
-        if field_value is not None:
-            reference_time = _parse_time_value(field_value, command.time_range.relative_time_format)
+    field, fmt = _resolve_time_field_and_format(command, current_source)
+
+    if transform_type == "event" and field is not None:
+        if field not in event:
+            raise KeyError(
+                f"event missing time field {field} required by query time_range "
+                f"(source={current_source})"
+            )
+        reference_time = _parse_time_value(event[field], fmt)
 
     before = parse_timespec(command.time_range.before) if command.time_range and command.time_range.before else datetime.timedelta(0)
     after = parse_timespec(command.time_range.after) if command.time_range and command.time_range.after else datetime.timedelta(0)
@@ -153,6 +177,34 @@ def _resolve_time_range(
     end_time = reference_time + after
 
     return start_time, end_time
+
+
+def _resolve_time_field_and_format(
+    command: CommandConfig,
+    current_source: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """Resolve relative_time_field and relative_time_format using source defaults."""
+    explicit_field = command.time_range.relative_time_field if command.time_range else None
+    explicit_format = command.time_range.relative_time_format if command.time_range else None
+
+    if explicit_field is not None and explicit_format is not None:
+        return explicit_field, explicit_format
+
+    source_default_field = None
+    source_default_format = None
+    if current_source is not None:
+        try:
+            source = get_query_source(current_source)
+        except ValueError:
+            source = None
+        if source is not None:
+            source_default_field = getattr(source, "default_time_field", None)
+            source_default_format = getattr(source, "default_time_format", None)
+
+    field = explicit_field if explicit_field is not None else source_default_field
+    fmt = explicit_format if explicit_format is not None else source_default_format
+
+    return field, fmt
 
 
 def _parse_time_value(value, format_str: Optional[str] = None) -> datetime.datetime:

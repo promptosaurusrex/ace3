@@ -633,6 +633,7 @@ class QueryHunt(Hunt):
                 predefined_commands=getattr(self.config, "_predefined_commands", []),
                 hunt_time=local_time(),
                 max_result_count=self.max_result_count,
+                hunt_source_type=self.type,
             )
             result = engine.execute(query_results)
             self.correlation_trace = result.trace

@@ -114,3 +114,9 @@ class TestRegisterDefaultSources:
         register_default_sources()
         source = get_query_source("splunk")
         assert isinstance(source, SplunkQuerySource)
+
+    def test_default_time_field_and_format(self):
+        # the splunk source declares the conventional defaults so hunts can omit
+        # relative_time_field / relative_time_format on splunk-anchored time_ranges
+        assert SplunkQuerySource.default_time_field == "_time"
+        assert SplunkQuerySource.default_time_format == "iso8601"
