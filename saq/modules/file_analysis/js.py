@@ -194,6 +194,8 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
         # parse std.out / std.err / exit.code / report.json and pick out
         # the deobfuscated.js file
         deobfuscated_src = None
+        blob_filenames: list[str] = []
+        result_by_basename = {os.path.basename(p): p for p in result_files}
         for result_file in result_files:
             basename = os.path.basename(result_file)
             if basename == "std.out":
@@ -216,6 +218,10 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
                     analysis.secondary_script_count = int(report.get("secondary_script_count", 0) or 0)
                     if report.get("error"):
                         analysis.error = report["error"]
+                    blob_filenames = [
+                        b for b in (report.get("blob_files") or [])
+                        if isinstance(b, str)
+                    ]
                 except (OSError, json.JSONDecodeError) as e:
                     logging.debug(f"failed to read report.json from deobfuscator: {e}")
             elif basename == "deobfuscated.js":
@@ -266,5 +272,26 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
             o_file.add_yara_meta("type", "script.javascript")
             o_file.add_directive(DIRECTIVE_EXTRACT_URLS)
             analysis.extracted_files.append(o_file.file_path)
+
+        # Materialize any side-channel Blob payloads the harness wrote out
+        # (text/html, image/svg+xml, text/javascript). Naming preserves the
+        # blob's MIME-derived extension at the tail so html_js_extraction's
+        # extension gate picks up .html / .svg blobs and JS deob recurses
+        # into .js blobs naturally — no recursion limits needed beyond
+        # ACE's existing analysis-tree depth.
+        for blob_filename in blob_filenames:
+            blob_src = result_by_basename.get(blob_filename)
+            if not blob_src or not os.path.exists(blob_src):
+                continue
+            blob_target = os.path.join(target_dir, f"{_file.file_name}.{blob_filename}")
+            if os.path.exists(blob_target):
+                logging.debug(f"blob target {blob_target} already exists; skipping")
+                continue
+            shutil.move(blob_src, blob_target)
+            blob_obs = analysis.add_file_observable(blob_target, volatile=True)
+            if blob_obs:
+                blob_obs.add_relationship(R_EXTRACTED_FROM, _file)
+                blob_obs.add_directive(DIRECTIVE_EXTRACT_URLS)
+                analysis.extracted_files.append(blob_obs.file_path)
 
         return AnalysisExecutionResult.COMPLETED

@@ -17,6 +17,7 @@
 // and continue with the dynamic pass so the module still produces output.
 
 import fs from 'node:fs';
+import path from 'node:path';
 import vm from 'node:vm';
 
 const [, , INPUT_PATH, OUTPUT_PATH] = process.argv;
@@ -84,6 +85,64 @@ try {
 // ---------------------------------------------------------------------------
 const events = [];
 const secondaryScripts = [];
+
+// Side-channel: when the sample constructs a Blob with a recognized text
+// MIME type (e.g. `new Blob([decoded_html], {type:'text/html'})` — the
+// dominant SVG → blob URL → document.location.replace redirect pattern),
+// we materialize the payload as a sibling output file so ACE's existing
+// extraction pipeline can recurse: the .html / .svg blob feeds back into
+// html_js_extraction → another JS deob pass on the inner script. Without
+// this, the decoded HTML survives only inside the trace's `new Blob([...])`
+// argument dump, which doesn't go through html_js_extraction.
+const OUTPUT_DIR = path.dirname(OUTPUT_PATH);
+const BLOB_MIME_TO_EXT = {
+  'text/html': 'html',
+  'image/svg+xml': 'svg',
+  'text/javascript': 'js',
+  'application/javascript': 'js',
+};
+const MAX_BLOB_FILES = 10;     // bound disk + downstream observable count
+const MAX_BLOB_BYTES = 1024 * 1024;  // truncate single-blob payloads at 1MB
+const blobFiles = [];
+
+function maybeWriteBlobPayload(args) {
+  if (blobFiles.length >= MAX_BLOB_FILES) return;
+  if (!Array.isArray(args) || args.length === 0) return;
+  const parts = args[0];
+  const opts = args[1];
+  if (!Array.isArray(parts)) return;
+  const rawType = (opts && typeof opts === 'object' && typeof opts.type === 'string')
+    ? opts.type.toLowerCase().trim()
+    : '';
+  const ext = BLOB_MIME_TO_EXT[rawType];
+  if (!ext) return;
+  // Concatenate string parts; skip recorder Proxies and other non-strings —
+  // they don't represent real bytes the malware author authored.
+  let content = '';
+  for (const part of parts) {
+    if (typeof part === 'string') {
+      content += part;
+      if (content.length >= MAX_BLOB_BYTES) {
+        content = content.slice(0, MAX_BLOB_BYTES);
+        break;
+      }
+    }
+  }
+  if (!content) return;
+  const filename = `blob_${blobFiles.length}.${ext}`;
+  try {
+    fs.writeFileSync(path.join(OUTPUT_DIR, filename), content, 'utf8');
+    blobFiles.push(filename);
+  } catch (e) {
+    events.push({ kind: 'blob.write.error', error: e && (e.message || String(e)) });
+  }
+}
+
+// Per-label hooks invoked from the recorder's construct trap. Adding new
+// entries here surfaces extra side effects without touching recorder().
+const constructHooks = {
+  Blob: maybeWriteBlobPayload,
+};
 
 function safeStringify(value) {
   if (value === null) return 'null';
@@ -159,6 +218,12 @@ function recorder(label) {
     },
     construct(_t, args) {
       events.push({ kind: 'new', label, args: args.map(safeStringify) });
+      const hook = constructHooks[label];
+      if (hook) {
+        try { hook(args); } catch (e) {
+          events.push({ kind: 'construct.hook.error', label, error: e && (e.message || String(e)) });
+        }
+      }
       return recorder(`new ${label}()`);
     },
     has() { return true; },
@@ -214,6 +279,15 @@ for (const name of [
   'sessionStorage', 'fetch', 'XMLHttpRequest', 'WebSocket', 'crypto',
   'indexedDB', 'performance', 'Image', 'Audio', 'HTMLElement', 'Element',
   'Node', 'MutationObserver', 'alert', 'prompt', 'confirm',
+  // Web APIs commonly used to stage a payload before redirecting. The
+  // SVG-redirect family does `new Blob([decoded_html], {type:'text/html'})`
+  // → `URL.createObjectURL` → `document.location.replace`. node:vm doesn't
+  // expose Blob/File/etc., so without a recorder the construct call throws
+  // ReferenceError mid-trace and the analyst sees nothing. With the
+  // recorder, the construct trap captures the decoded HTML in plaintext
+  // via safeStringify, and downstream URL extraction picks up the URLs
+  // from inside the trace's `new Blob([...])` line.
+  'Blob', 'File', 'FileReader', 'FormData',
   // Adobe Acrobat / PDF JavaScript — top-level objects plus commonly used
   // "this.*" methods that PDF scripts dereference as unqualified names after
   // obfuscation (e.g. `this[a0_0x471eff(0x128)]()` resolving to `getField`)
@@ -316,4 +390,5 @@ process.stdout.write(JSON.stringify({
   error: runError,
   webcrack_status: webcrackStatus,
   webcrack_error: webcrackError,
+  blob_files: blobFiles,
 }));
