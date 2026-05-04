@@ -345,3 +345,63 @@ class TestCorrelationIntegration:
         events = [{"id": 1}]
         result = engine.execute(events)
         assert result.events[0]["result"] == "s3cret"
+
+    def test_splunk_hunt_omits_relative_time_field_uses_default(self):
+        """End-to-end: a splunk hunt's correlate query omits relative_time_field/format
+        and the engine fills them in from SplunkQuerySource's class defaults so the
+        query window is anchored to the event's `_time`."""
+
+        class _RecordingSplunkSource(QuerySource):
+            default_time_field = "_time"
+            default_time_format = "iso8601"
+
+            def __init__(self):
+                self.calls = []
+
+            def execute_query(self, query, start_time, end_time, timeout):
+                self.calls.append({"start_time": start_time, "end_time": end_time})
+                return [{"matched": True}]
+
+        # prevent engine.__init__ from re-registering the real SplunkQuerySource and
+        # overwriting our mock under the same name
+        import saq.collectors.hunter.correlation.engine as engine_mod
+        engine_mod._sources_registered = True
+
+        splunk = _RecordingSplunkSource()
+        register_query_source("splunk", splunk)
+
+        # YAML-equivalent dict: time_range has only before/after; no relative_time_field/format
+        config_data = {
+            "timeout": "5m",
+            "logic": [
+                {
+                    "transform": {
+                        "type": "event",
+                        "method": "property",
+                        "property_name": "context",
+                        "property_type": "list",
+                        "command": {
+                            "type": "query",
+                            "source": "splunk",
+                            "query": "search context lookup",
+                            "time_range": {"before": "1h", "after": "1h"},
+                        },
+                    },
+                },
+            ],
+        }
+        config = CorrelateConfig.model_validate(config_data)
+        engine = CorrelationEngine(
+            config, [], datetime.datetime(2099, 1, 1, tzinfo=datetime.timezone.utc),
+            hunt_source_type="splunk",
+        )
+
+        events = [{"_time": "2024-06-01T12:00:00+00:00", "host": "web1"}]
+        result = engine.execute(events)
+
+        assert len(splunk.calls) == 1
+        ref = datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc)
+        # window anchored to the event's _time (NOT the hunt_time of 2099) proves defaults applied
+        assert splunk.calls[0]["start_time"] == ref - datetime.timedelta(hours=1)
+        assert splunk.calls[0]["end_time"] == ref + datetime.timedelta(hours=1)
+        assert result.events[0]["context"] == [{"matched": True}]
