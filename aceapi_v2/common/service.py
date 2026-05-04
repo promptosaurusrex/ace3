@@ -6,13 +6,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.observable_types.service import get_observable_types
-from saq.constants import (
-    DEPRECATED_OBSERVABLES,
-    DIRECTIVE_DESCRIPTIONS,
-    OBSERVABLE_DESCRIPTIONS,
-    VALID_DIRECTIVES,
-)
+from saq.constants import DIRECTIVE_DESCRIPTIONS, VALID_DIRECTIVES
 from saq.database.model import Company
+from saq.observables.type_hierarchy import get_type_hierarchy
 
 
 async def get_valid_companies(session: AsyncSession) -> list[Company]:
@@ -22,9 +18,10 @@ async def get_valid_companies(session: AsyncSession) -> list[Company]:
 
 async def get_valid_observables(session: AsyncSession) -> list[dict]:
     all_types = await get_observable_types(session)
-    active = [t for t in all_types if t not in DEPRECATED_OBSERVABLES]
+    hierarchy = get_type_hierarchy()
+    active = [t for t in all_types if not hierarchy.is_deprecated(t)]
     return [
-        {"name": t, "description": OBSERVABLE_DESCRIPTIONS.get(t, "unknown")}
+        {"name": t, "description": hierarchy.description_for(t) or "unknown"}
         for t in active
     ]
 

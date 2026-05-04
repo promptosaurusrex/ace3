@@ -433,6 +433,11 @@ class NRDURLList(BaseModel):
     backups: list[str] = Field(default_factory=list, description="ordered list of backup URLs to try if the primary download fails")
 
 
+class ObservableTypesConfig(BaseModel):
+    """Configuration for the per-observable-type registry (inheritance, default display types, ...)."""
+    config_path: str = Field(default="", description="path to a YAML file providing per-observable-type configuration; blank disables YAML-defined config (Python-class inheritance still applies)")
+
+
 class NRDConfig(BaseModel):
     """Configuration for the newly-registered-domains (NRD) ingestion pipeline."""
     enabled: bool = Field(default=True, description="kill switch for the refresh script; when false, `ace nrd refresh` exits as a no-op before any DB or HTTP work. Does not affect the analyzer (controlled by `analysis_module_nrd_analyzer.enabled`).")
@@ -478,6 +483,7 @@ class ACEConfig(BaseModel):
     sip: Optional[SIPConfig] = None
     shodan: Optional[ShodanConfig] = None
     nrd: Optional[NRDConfig] = Field(default_factory=NRDConfig, description="newly-registered-domains ingestion configuration")
+    observable_types: ObservableTypesConfig = Field(default_factory=ObservableTypesConfig, description="per-observable-type configuration (inheritance, default display types, ...)")
     yara_export: Optional[YaraExportConfig] = None
     yara_export_string_modifiers: Optional[dict[str, str]] = None
     sip_yara_export: Optional[SIPYaraExportConfig] = None

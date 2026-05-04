@@ -553,6 +553,51 @@ nrd:
   #       - "https://backup.example.com/list1.txt"
   #   - url: "https://example.com/list2.txt"
 
+observable_types:
+  # Path (relative to SAQ_HOME) to a YAML file providing per-observable-type
+  # configuration: descriptions, deprecation flags, inheritance, and default
+  # display labels. Leave blank to disable YAML loading entirely; Python-class
+  # inheritance derived from Observable subclass MRO still applies regardless.
+  #
+  # The shipped default points at etc/observable_types.yaml, which contains
+  # the full set of built-in types (formerly hardcoded in saq/constants.py).
+  # Production deployments typically override this to a single file of their
+  # own (e.g., signatures/analyst_data/observable_types.yaml). There is no
+  # multi-path layering today, so a deployment override must include any
+  # built-in entries it still wants — copy etc/observable_types.yaml as a
+  # starting point.
+  #
+  # Schema is validated by saq.observables.type_hierarchy.ObservableTypesFile
+  # (Pydantic, extra fields rejected). Errors are logged at startup; a bad
+  # file leaves the prior in-memory state intact.
+  #
+  # The referenced file should look like:
+  #
+  #   types:
+  #     return_path:
+  #       extends: email_address
+  #       default_display_type: "Mail Return Path"
+  #       description: "email Return-Path address"
+  #     pdf_file:
+  #       extends: file
+  #       description: "PDF document"
+  #     azure_user_id:
+  #       extends: user
+  #       default_display_type: "Azure User ID"
+  #     yara:
+  #       description: "yara scan result *** DEPRECATED (use yara_rule instead)"
+  #       deprecated: true
+  #
+  # Per-entry fields (all optional):
+  #   extends              -- parent observable type. Chains are walked at
+  #                           dispatch time; cycles are rejected at load time.
+  #   default_display_type -- fallback label used when no code sets
+  #                           Observable.display_type explicitly.
+  #   description          -- human-readable description, surfaced via the API.
+  #   deprecated           -- if true, the type is recognized but should not be
+  #                           offered to analysts in pickers/forms.
+  config_path: "etc/observable_types.yaml"
+
 email_archive:
   target: local # possible values: local, s3
   # if this system is archiving emails, this determines what section to use for the database config

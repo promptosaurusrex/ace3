@@ -714,8 +714,11 @@ class Observable(BaseNode):
     def display_type(self) -> str:
         if self._display_type is not None:
             return f"{self._display_type} ({self.type})"
-        else:
-            return self.type
+        from saq.observables.type_hierarchy import get_type_hierarchy
+        default = get_type_hierarchy().default_display_type_for(self.type)
+        if default is not None:
+            return f"{default} ({self.type})"
+        return self.type
 
     @display_type.setter
     def display_type(self, value: str):

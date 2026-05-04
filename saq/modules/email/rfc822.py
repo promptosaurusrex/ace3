@@ -1,29 +1,100 @@
-from datetime import datetime
 import email
-from functools import cached_property
 import hashlib
 import logging
 import os
 import re
 import shutil
+import uuid
+from datetime import datetime
+from functools import cached_property
 from subprocess import PIPE, Popen
 from typing import Type, override
-import uuid
 
 import dateutil
 import pytz
+from pydantic import Field
+
 from saq.analysis.analysis import Analysis
-from saq.analysis.presenter.analysis_presenter import AnalysisPresenter, register_analysis_presenter
-from saq.constants import DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, DIRECTIVE_RENDER, F_EMAIL_ADDRESS, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_SUBJECT, F_EMAIL_X_MAILER, F_FILE, F_FQDN, F_IP, F_MESSAGE_ID, F_USER_AGENT, AnalysisExecutionResult, create_email_conversation, create_email_delivery
-from saq.email import decode_rfc2822, is_local_email_domain, normalize_email_address, normalize_message_id
+from saq.analysis.presenter.analysis_presenter import (
+    AnalysisPresenter,
+    register_analysis_presenter,
+)
+from saq.constants import (
+    DIRECTIVE_EXTRACT_URLS,
+    DIRECTIVE_ORIGINAL_EMAIL,
+    DIRECTIVE_PREVIEW,
+    DIRECTIVE_REMEDIATE,
+    DIRECTIVE_RENAME_ANALYSIS,
+    DIRECTIVE_RENDER,
+    F_EMAIL_ADDRESS,
+    F_EMAIL_CC,
+    F_EMAIL_CONVERSATION,
+    F_EMAIL_DELIVERY,
+    F_EMAIL_ENVELOPE_MAIL_FROM,
+    F_EMAIL_ENVELOPE_RCPT_TO,
+    F_EMAIL_FROM,
+    F_EMAIL_REPLY_TO,
+    F_EMAIL_RETURN_PATH,
+    F_EMAIL_SUBJECT,
+    F_EMAIL_TO,
+    F_EMAIL_X_AUTH_ID,
+    F_EMAIL_X_MAILER,
+    F_EMAIL_X_ORIGINAL_SENDER,
+    F_EMAIL_X_SENDER,
+    F_EMAIL_X_SENDER_ID,
+    F_FILE,
+    F_IP,
+    F_MESSAGE_ID,
+    F_USER_AGENT,
+    AnalysisExecutionResult,
+    create_email_conversation,
+    create_email_delivery,
+)
+from saq.observables.type_hierarchy import get_type_hierarchy
+from saq.email import (
+    decode_rfc2822,
+    is_local_email_domain,
+    normalize_email_address,
+    normalize_message_id,
+)
 from saq.environment import get_base_dir, get_data_dir, get_local_timezone
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
-from saq.modules.email.constants import KEY_CC, KEY_DECODED_SUBJECT, KEY_EMAIL, KEY_ENV_MAIL_FROM, KEY_ENV_RCPT_TO, KEY_EXTRACTION_ERRORS, KEY_FROM, KEY_FROM_ADDRESS, KEY_HEADERS, KEY_LOG_ENTRY, KEY_MESSAGE_ID, KEY_ORIGINATING_IP, KEY_PARSING_ERROR, KEY_REPLY_TO, KEY_REPLY_TO_ADDRESS, KEY_RETURN_PATH, KEY_SUBJECT, KEY_TO, KEY_TO_ADDRESSES, KEY_USER_AGENT, KEY_X_AUTH_ID, KEY_X_MAILER, KEY_X_ORIGINAL_SENDER, KEY_X_SENDER, KEY_X_SENDER_ID, KEY_X_SENDER_IP
+from saq.modules.email.constants import (
+    KEY_CC,
+    KEY_DECODED_SUBJECT,
+    KEY_EMAIL,
+    KEY_ENV_MAIL_FROM,
+    KEY_ENV_RCPT_TO,
+    KEY_EXTRACTION_ERRORS,
+    KEY_FROM,
+    KEY_FROM_ADDRESS,
+    KEY_HEADERS,
+    KEY_LOG_ENTRY,
+    KEY_MESSAGE_ID,
+    KEY_ORIGINATING_IP,
+    KEY_PARSING_ERROR,
+    KEY_REPLY_TO,
+    KEY_REPLY_TO_ADDRESS,
+    KEY_RETURN_PATH,
+    KEY_SUBJECT,
+    KEY_TO,
+    KEY_TO_ADDRESSES,
+    KEY_USER_AGENT,
+    KEY_X_AUTH_ID,
+    KEY_X_MAILER,
+    KEY_X_ORIGINAL_SENDER,
+    KEY_X_SENDER,
+    KEY_X_SENDER_ID,
+    KEY_X_SENDER_IP,
+)
 from saq.observables.file import FileObservable
-from saq.whitelist import WHITELIST_TYPE_SMTP_FROM, WHITELIST_TYPE_SMTP_TO, BrotexWhitelist
-from pydantic import Field
+from saq.whitelist import (
+    WHITELIST_TYPE_SMTP_FROM,
+    WHITELIST_TYPE_SMTP_TO,
+    BrotexWhitelist,
+)
 
 TAG_OUTBOUND_EMAIL = 'outbound_email'
 TAG_OUTBOUND_EXCEPTION_EMAIL = 'outbound_email_exception'
@@ -41,6 +112,33 @@ def get_received_time(received_header):
             logging.debug(f"unable to parse {m.group(1)} as date time: {e}")
 
     return None
+
+def add_email_address_observable(analysis, otype, address, *, conversation_source=None):
+    """Add an email-address subtype observable, plus an optional supporting observable.
+
+    The display_type for the email address observable comes from the
+    observable_types.yaml registry (default_display_type per subtype) — no
+    explicit setter is needed.
+
+    Args:
+        analysis: the Analysis to add the observable to.
+        otype: one of the F_EMAIL_* subtypes (e.g., F_EMAIL_FROM, F_EMAIL_TO).
+        address: the (already-normalized) email address.
+        conversation_source: if set, also add an F_EMAIL_CONVERSATION observable
+            for `conversation_source` -> `address`.
+
+    Returns the email address observable (or None if creation failed).
+    """
+    obs = analysis.add_observable_by_spec(otype, address)
+    if obs is None:
+        return None
+    if conversation_source:
+        analysis.add_observable_by_spec(
+            F_EMAIL_CONVERSATION,
+            create_email_conversation(conversation_source, address),
+        )
+    return obs
+
 
 def get_address_list(email_obj, header_name):
     # decode each header to str so email.utils.getaddresses doesn't see the
@@ -673,15 +771,16 @@ class EmailAnalyzer(AnalysisModule):
 
             logging.info(f"unable to find meta block for message-id {message_id} in {self.get_root().storage_dir}")
 
-        # emails that come from the SMTP collector should already have observables added with tags smtp_mail_from and 
+        # emails that come from the SMTP collector should already have observables added with tags smtp_mail_from and
         # smtp_rctp_to
+        hierarchy = get_type_hierarchy()
         for smtp_rcpt_to in [o.value for o in self.get_root().find_observables(
-                lambda o: o.type == F_EMAIL_ADDRESS and o.has_tag('smtp_rcpt_to'))]:
+                lambda o: hierarchy.is_subtype(o.type, F_EMAIL_ADDRESS) and o.has_tag('smtp_rcpt_to'))]:
             if smtp_rcpt_to not in env_rcpt_to:
                 env_rcpt_to.append(smtp_rcpt_to)
 
         mail_from = self.get_root().find_observable(
-                lambda o: o.type == F_EMAIL_ADDRESS and o.has_tag('smtp_mail_from'))
+                lambda o: hierarchy.is_subtype(o.type, F_EMAIL_ADDRESS) and o.has_tag('smtp_mail_from'))
         if mail_from:
             env_mail_from = mail_from.value
 
@@ -753,15 +852,7 @@ class EmailAnalyzer(AnalysisModule):
             address = normalize_email_address(email_details[KEY_FROM])
             if address:
                 mail_from = address
-
-                from_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
-                if from_address:
-                    from_address.display_type = "Mail From"
-
-                    if '@' in address:
-                        from_domain = analysis.add_observable_by_spec(F_FQDN, address.split('@')[1])
-                        if from_domain:
-                            from_domain.display_type = "Mail From Domain"
+                add_email_address_observable(analysis, F_EMAIL_FROM, address)
 
         email_details[KEY_ENV_RCPT_TO] = env_rcpt_to
         email_details[KEY_ENV_MAIL_FROM] = env_mail_from
@@ -771,11 +862,7 @@ class EmailAnalyzer(AnalysisModule):
             if address:
                 if mail_to is None:
                     mail_to = address
-
-                to_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
-                if to_address and mail_from:
-                    to_address.display_type = "Envelope Recipient"
-                    analysis.add_observable_by_spec(F_EMAIL_CONVERSATION, create_email_conversation(mail_from, address))
+                add_email_address_observable(analysis, F_EMAIL_ENVELOPE_RCPT_TO, address, conversation_source=mail_from)
 
         email_details[KEY_TO] = [decode_rfc2822(h) for h in target_email.get_all('to', [])]
         email_details[KEY_TO_ADDRESSES] = get_address_list(target_email, 'to')
@@ -785,12 +872,7 @@ class EmailAnalyzer(AnalysisModule):
                 # if we don't know who it was delivered to yet then we grab the first To:
                 if mail_to is None:
                     mail_to = address
-
-                to_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
-                if to_address:
-                    to_address.display_type = "Mail To"
-                    if mail_from:
-                        analysis.add_observable_by_spec(F_EMAIL_CONVERSATION, create_email_conversation(mail_from, address))
+                add_email_address_observable(analysis, F_EMAIL_TO, address, conversation_source=mail_from)
 
         if 'subject' in target_email:
             # KEY_SUBJECT keeps the raw (possibly RFC 2822-encoded) value as a str;
@@ -838,62 +920,45 @@ class EmailAnalyzer(AnalysisModule):
             address = normalize_email_address(decode_rfc2822(target_email['x-sender']))
             if address:
                 email_details[KEY_X_SENDER] = address
-                x_sender_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
-                if x_sender_address:
-                    x_sender_address.display_type = "Mail X-Sender"
+                add_email_address_observable(analysis, F_EMAIL_X_SENDER, address)
 
         if 'x-sender-id' in target_email:
             address = normalize_email_address(decode_rfc2822(target_email['x-sender-id']))
             if address:
                 email_details[KEY_X_SENDER_ID] = address
-                x_sender_id_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
-                if x_sender_id_address:
-                    x_sender_id_address.display_type = "Mail X-Sender ID"
+                add_email_address_observable(analysis, F_EMAIL_X_SENDER_ID, address)
 
         if 'x-auth-id' in target_email:
             address = normalize_email_address(decode_rfc2822(target_email['x-auth-id']))
             if address:
                 email_details[KEY_X_AUTH_ID] = address
-                x_auth_id_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
-                if x_auth_id_address:
-                    x_auth_id_address.display_type = "Mail X-Auth ID"
+                add_email_address_observable(analysis, F_EMAIL_X_AUTH_ID, address)
 
         if 'x-original-sender' in target_email:
             address = normalize_email_address(decode_rfc2822(target_email['x-original-sender']))
             if address:
                 email_details[KEY_X_ORIGINAL_SENDER] = address
-                x_original_sender_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
-                if x_original_sender_address:
-                    x_original_sender_address.display_type = "Mail X-Original Sender"
+                add_email_address_observable(analysis, F_EMAIL_X_ORIGINAL_SENDER, address)
 
         if 'reply-to' in target_email:
             address = normalize_email_address(decode_rfc2822(target_email['reply-to']))
             if address:
                 email_details[KEY_REPLY_TO] = address
                 email_details[KEY_REPLY_TO_ADDRESS] = address
-                reply_to = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
-                if reply_to:
-                    reply_to.display_type = "Mail Reply To"
+                add_email_address_observable(analysis, F_EMAIL_REPLY_TO, address)
 
         if 'return-path' in target_email:
             address = normalize_email_address(decode_rfc2822(target_email['return-path']))
             email_details[KEY_RETURN_PATH] = address
             if address:
-                return_path = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
-                if return_path:
-                    return_path.display_type = "Mail Return Path"
+                add_email_address_observable(analysis, F_EMAIL_RETURN_PATH, address)
 
         # we add these last since there could be a lot of them
 
         if 'cc' in target_email:
             email_details[KEY_CC] = get_address_list(target_email, 'cc')
             for address in email_details[KEY_CC]:
-
-                cc_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
-                if cc_address:
-                    cc_address.display_type = "Mail CC"
-                    if mail_from:
-                        analysis.add_observable_by_spec(F_EMAIL_CONVERSATION, create_email_conversation(mail_from, address))
+                add_email_address_observable(analysis, F_EMAIL_CC, address, conversation_source=mail_from)
 
         # the rest of these details are for the generate logging output
         # (there may be a limit configured for the maximum number of observables)
@@ -1323,15 +1388,15 @@ class EmailAnalyzer(AnalysisModule):
             if mailfrom:
                 mailfrom_n = normalize_email_address(mailfrom)
                 if mailfrom_n:
-                    analysis.add_observable_by_spec(F_EMAIL_ADDRESS, mailfrom_n)
+                    add_email_address_observable(analysis, F_EMAIL_ENVELOPE_MAIL_FROM, mailfrom_n)
                     if self.whitelist.is_whitelisted(WHITELIST_TYPE_SMTP_FROM, mailfrom_n):
                         _file.whitelist()
-            
+
             for address in rcptto:
                 if address:
                     address_n = normalize_email_address(address)
                     if address_n:
-                        analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address_n)
+                        add_email_address_observable(analysis, F_EMAIL_ENVELOPE_RCPT_TO, address_n)
                         if mailfrom_n:
                             analysis.add_observable_by_spec(F_EMAIL_CONVERSATION, create_email_conversation(mailfrom,
                                                     address_n))
@@ -1342,14 +1407,14 @@ class EmailAnalyzer(AnalysisModule):
             if from_:
                 from_n = normalize_email_address(from_)
                 if from_n:
-                    analysis.add_observable_by_spec(F_EMAIL_ADDRESS, from_n)
+                    add_email_address_observable(analysis, F_EMAIL_FROM, from_n)
                     if self.whitelist.is_whitelisted(WHITELIST_TYPE_SMTP_FROM, from_n):
                         _file.whitelist()
 
             for address in to_:
                 address_n = normalize_email_address(address_n)
                 if address_n:
-                    analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address_n)
+                    add_email_address_observable(analysis, F_EMAIL_TO, address_n)
                     if self.whitelist.is_whitelisted(WHITELIST_TYPE_SMTP_TO, address_n):
                         _file.whitelist()
 
@@ -1366,8 +1431,8 @@ class EmailAnalyzer(AnalysisModule):
 
     def execute_analysis(self, _file) -> AnalysisExecutionResult:
 
-        from saq.modules.file_analysis import FileTypeAnalysis
         from saq.modules.email.stream import pattern_brotex_missing_stream_package
+        from saq.modules.file_analysis import FileTypeAnalysis
 
         # is this a "missing stream archive" that gets generated by the BrotexSMTPPackageAnalyzer module?
         if pattern_brotex_missing_stream_package.match(os.path.basename(_file.file_name)):

@@ -86,13 +86,24 @@ F_COMMAND_LINE = 'command_line'
 F_COMPROMISED_ACCOUNT = 'compromised_account'
 F_COOKIE= 'cookie'
 F_EMAIL_ADDRESS = 'email_address'
-F_EMAIL_CONTACT = 'contact'
 F_EMAIL_BODY = 'email_body'
+F_EMAIL_CC = 'email_cc'
+F_EMAIL_CONTACT = 'contact'
 F_EMAIL_CONVERSATION = 'email_conversation'
 F_EMAIL_DELIVERY = 'email_delivery'
+F_EMAIL_ENVELOPE_MAIL_FROM = 'email_envelope_mail_from'
+F_EMAIL_ENVELOPE_RCPT_TO = 'email_envelope_rcpt_to'
+F_EMAIL_FROM = 'email_from'
 F_EMAIL_HEADER = 'email_header'
+F_EMAIL_REPLY_TO = 'email_reply_to'
+F_EMAIL_RETURN_PATH = 'email_return_path'
 F_EMAIL_SUBJECT = 'email_subject'
+F_EMAIL_TO = 'email_to'
+F_EMAIL_X_AUTH_ID = 'email_x_auth_id'
 F_EMAIL_X_MAILER = 'email_x_mailer'
+F_EMAIL_X_ORIGINAL_SENDER = 'email_x_original_sender'
+F_EMAIL_X_SENDER = 'email_x_sender'
+F_EMAIL_X_SENDER_ID = 'email_x_sender_id'
 F_EXTERNAL_UID = 'external_uid'
 F_FILE = 'file'
 F_FILE_LOCATION = 'file_location'
@@ -110,11 +121,11 @@ F_IDS_STREETNAME = 'ids_streetname'
 F_IMPHASH = 'imphash'
 F_INDICATOR = 'indicator'
 F_IP = 'ip'
+F_IP_CONVERSATION = 'ip_conversation'
+F_IP_FULL_CONVERSATION = 'ip_full_conversation'
 F_IPV4 = 'ipv4'
 F_IPV4_CONVERSATION = 'ipv4_conversation'
 F_IPV4_FULL_CONVERSATION = 'ipv4_full_conversation'
-F_IP_CONVERSATION = 'ip_conversation'
-F_IP_FULL_CONVERSATION = 'ip_full_conversation'
 F_JA3 = 'ja3'
 F_JA3S = 'ja3s'
 F_JARM_HASH = 'jarm_hash'
@@ -123,8 +134,8 @@ F_MD5 = 'md5'
 F_MESSAGE_ID = 'message_id'
 F_MUTEX = 'mutex'
 F_O365_FILE = 'o365_file'
-F_O365_GROUP = 'o365_group'
 F_O365_FILE_CONVERSATION = 'o365_file_conversation'
+F_O365_GROUP = 'o365_group'
 F_O365_SECURITY_ALERT = 'o365_security_alert'
 F_PAN_PCAP_ID = 'pan_pcap_id'
 F_PCAP = 'pcap'
@@ -164,210 +175,9 @@ F_YARA = 'yara'
 F_YARA_RULE = 'yara_rule'
 F_YARA_STRING = 'yara_string'
 
-OBSERVABLE_DESCRIPTIONS = {
-    F_ASSET: 'a F_IPV4 identified to be a managed asset',
-    F_AV_STREETNAME: 'anti-virus vendor name for a malware family',
-    F_AWS_ACCESS_KEY_ID: 'an access key ID assigned to a user identity',
-    F_AWS_ACCOUNT_ID: 'id of an AWS account',
-    F_AWS_AMI_ID: 'id of an AWS AMI',
-    F_AWS_INSTANCE_ID: 'id of an AWS instance',
-    F_AWS_NETWORK_INTERFACE_ID: 'eni id',
-    F_AWS_PRINCIPAL_ID: 'principal ID for an aws user',
-    F_AWS_PRIVATE_DNS_NAME: 'private DNS Name for an AWS entity',
-    F_AWS_SECURITY_GROUP_ID: 'id of an AWS security group',
-    F_AWS_SUBNET_ID: 'AWS subnet id',
-    F_AWS_USERNAME: 'username associated with an AWS account',
-    F_AWS_VPC_ID: 'virtual private cloud (VPC) id',
-    F_CIDR: 'IPv4 range in CIDR notation',
-    F_COMMAND_LINE: 'command line options to a command that was executed',
-    F_COMPROMISED_ACCOUNT: 'a username + password that may have been compromised',
-    F_COOKIE: 'cookie',
-    F_EMAIL_ADDRESS: 'email address',
-    F_EMAIL_CONTACT: 'email contact e.g. "Last, First <email@domain.com>"',
-    F_EMAIL_BODY: 'string from an email body',
-    F_EMAIL_CONVERSATION: 'a conversation between a source email address (MAIL FROM) and a destination email address (RCPT TO)',
-    F_EMAIL_DELIVERY: 'a delivery of a an email to a target mailbox',
-    F_EMAIL_HEADER: 'string from an email header',
-    F_EMAIL_SUBJECT: 'the subject of an email',
-    F_EMAIL_X_MAILER: 'email x-mailer',
-    F_EXTERNAL_UID: 'unique identifier for something that is stored in an external tool. Format: tool_name:uid',
-    F_FILE: 'path to an attached file',
-    F_FILE_LOCATION: 'the location of file with format hostname@full_path',
-    F_FILE_NAME: 'a file name (no directory path)',
-    F_FILE_PATH: 'a file path',
-    F_FIREEYE_UUID: 'UUID used to identify a FireEye alert',
-    F_FORUM_AUTHOR: 'author of forum post (used for intel tracking)',
-    F_FORUM_CHANNEL: 'channel of forum post (used for intel tracking)',
-    F_FORUM_CHAT_TYPE: 'type of forum post (used for intel tracking)',
-    F_FQDN: 'fully qualified domain name',
-    F_HOSTNAME: 'host or workstation name',
-    F_HTTP_REQUEST: 'a single HTTP request',
-    F_HUNT: 'the name of a hunt',
-    F_IDS_STREETNAME: 'ids vendor name for a network attack or vulnerability',
-    F_IMPHASH: 'hash of the imported functions of a PE file',
-    F_INDICATOR: 'indicator id',
-    F_IP: 'IP address (version 4 or 6)',
-    F_IPV4: 'IP address (version 4)',
-    F_IPV4_CONVERSATION: 'two F_IPV4 that were communicating formatted as aaa.bbb.ccc.ddd_aaa.bbb.ccc.ddd',
-    F_IPV4_FULL_CONVERSATION: 'two F_IPV4 that were communicating formatted as src_ipv4:src_port:dest_ipv4:dest_port',
-    F_IP_CONVERSATION: 'two F_IP that were communicating formatted as src_dst',
-    F_IP_FULL_CONVERSATION: 'two F_IP that were communicating formatted as src_ip!src_port!dest_ip!dest_port',
-    F_MAC_ADDRESS: 'network card mac address',
-    F_MD5: 'MD5 hash',
-    F_MESSAGE_ID: 'email Message-ID',
-    F_MUTEX: 'mutex created during sample execution',
-    F_O365_FILE: 'graph api path to a file in o365',
-    F_O365_GROUP: 'graph api id of a group in o365',
-    F_O365_FILE_CONVERSATION: 'two users sharing o365 files',
-    F_O365_SECURITY_ALERT: 'The alert uuID',
-    F_PAN_PCAP_ID: 'PaloAlto PCAP identification',
-    F_PCAP: 'path to a pcap formatted file *** DEPRECATED (use F_FILE instead)',
-    F_PRINTER: 'name of a printer',
-    F_PROOFPOINT_CAMPAIGN_ID: 'Proofpoint Campaign ID',
-    F_PROOFPOINT_GUID: 'Proofpoint Email GUID',
-    F_PROOFPOINT_THREAT_ID: 'Proofpoint Threat ID',
-    F_PROOFPOINT_TRAP_INCIDENT_ID: 'Proofpoint TRAP Incident ID',
-    F_SCAN_ID: 'an identifer for a scan by some remote system',
-    F_SHA1: 'SHA1 hash',
-    F_SHA256: 'SHA256 hash',
-    F_SHAREPOINT_FILE: 'sharepoint file path',
-    F_SIGNATURE_ID: 'the UUID of a signature',
-    F_SNORT_SIGNATURE: 'snort signature ID',
-    F_STRING_EPS: 'string in an eps file',
-    F_STRING_HTML: 'string in an html file',
-    F_STRING_JAVA: 'string in java source code',
-    F_STRING_JS: 'string in javascript code',
-    F_STRING_OFFICE: 'string in a microsoft office file',
-    F_STRING_PDF: 'string in a pdf file',
-    F_STRING_PE: 'string in a portable executable file',
-    F_STRING_RTF: 'string in an rtf file',
-    F_STRING_SWF: 'string in a shockwave/flash file',
-    F_STRING_UNIX_SHELL: 'string from unix command line',
-    F_STRING_VBS: 'string in a vbs file',
-    F_STRING_WINDOWS_SHELL: 'string from windows command line',
-    F_SUSPECT_FILE: 'path to an attached file that might be malicious *** DEPRECATED (use directives instead)',
-    F_TEST: 'unit testing observable',
-    F_URI_PATH: 'URI path from a URL',
-    F_URL: 'a URL',
-    F_USER: 'an NT user ID identified to have used a given asset in the given period of time',
-    F_USER_AGENT: 'user agent used in web requests',
-    F_WINDOWS_REGISTRY: 'a windows registry key',
-    F_WINDOWS_SERVICE: 'name of a windows service',
-    F_YARA: 'yara scan result *** DEPRECATED (use F_YARA_RULE instead)',
-    F_YARA_RULE: 'yara rule name',
-    F_YARA_STRING: 'yara rule and string name',
-}
-
-OBSERVABLE_VALUE_TEMPLATES = {
-    F_EMAIL_DELIVERY: 'message_id|mailbox',
-    F_FILE_LOCATION: 'hostname@full_path',
-    F_IPV4_CONVERSATION: 'src_dst',
-    F_IPV4_FULL_CONVERSATION: 'src_ipv4:src_port:dst_ipv4:dst_port',
-    F_MAC_ADDRESS: '00:00:00:00:00:00',
-    F_SHA256: 'sha256',
-    F_YARA_STRING: 'rule:string',
-}
-
-VALID_OBSERVABLE_TYPES = sorted([
-    F_ASSET,
-    F_AV_STREETNAME,
-    F_AWS_ACCESS_KEY_ID,
-    F_AWS_ACCOUNT_ID,
-    F_AWS_AMI_ID,
-    F_AWS_INSTANCE_ID,
-    F_AWS_NETWORK_INTERFACE_ID,
-    F_AWS_PRINCIPAL_ID,
-    F_AWS_PRIVATE_DNS_NAME,
-    F_AWS_SECURITY_GROUP_ID,
-    F_AWS_SUBNET_ID,
-    F_AWS_USERNAME,
-    F_AWS_VPC_ID,
-    F_CIDR,
-    F_COMMAND_LINE,
-    F_COMPROMISED_ACCOUNT,
-    F_COOKIE,
-    F_EMAIL_ADDRESS,
-    F_EMAIL_CONTACT,
-    F_EMAIL_BODY,
-    F_EMAIL_CONVERSATION,
-    F_EMAIL_DELIVERY,
-    F_EMAIL_HEADER,
-    F_EMAIL_SUBJECT,
-    F_EMAIL_X_MAILER,
-    F_EXTERNAL_UID,
-    F_FILE,
-    F_FILE_LOCATION,
-    F_FILE_NAME,
-    F_FILE_PATH,
-    F_FIREEYE_UUID,
-    F_FORUM_AUTHOR,
-    F_FORUM_CHANNEL,
-    F_FORUM_CHAT_TYPE,
-    F_FQDN,
-    F_HOSTNAME,
-    F_HTTP_REQUEST,
-    F_HUNT,
-    F_IMPHASH,
-    F_INDICATOR,
-    F_IP,
-    F_IPV4,
-    F_IPV4_CONVERSATION,
-    F_IPV4_FULL_CONVERSATION,
-    F_IP_CONVERSATION,
-    F_IP_FULL_CONVERSATION,
-    F_MAC_ADDRESS,
-    F_MD5,
-    F_MESSAGE_ID,
-    F_MUTEX,
-    F_O365_FILE,
-    F_O365_GROUP,
-    F_O365_FILE_CONVERSATION,
-    F_O365_SECURITY_ALERT,
-    F_PAN_PCAP_ID,
-    F_PCAP,
-    F_PRINTER,
-    F_PROOFPOINT_CAMPAIGN_ID,
-    F_PROOFPOINT_GUID,
-    F_PROOFPOINT_THREAT_ID,
-    F_PROOFPOINT_TRAP_INCIDENT_ID,
-    F_SCAN_ID,
-    F_SHA1,
-    F_SHA256,
-    F_SHAREPOINT_FILE,
-    F_SIGNATURE_ID,
-    F_SNORT_SIGNATURE,
-    F_STRING_EPS,
-    F_STRING_HTML,
-    F_STRING_JAVA,
-    F_STRING_JS,
-    F_STRING_OFFICE,
-    F_STRING_PDF,
-    F_STRING_PE,
-    F_STRING_RTF,
-    F_STRING_SWF,
-    F_STRING_UNIX_SHELL,
-    F_STRING_VBS,
-    F_STRING_WINDOWS_SHELL,
-    F_SUSPECT_FILE,
-    F_TEST,
-    F_URI_PATH,
-    F_URL,
-    F_USER,
-    F_USER_AGENT,
-    F_WINDOWS_REGISTRY,
-    F_WINDOWS_SERVICE,
-    F_YARA,
-    F_YARA_RULE,
-    F_YARA_STRING,
-])
-
-DEPRECATED_OBSERVABLES = sorted([
-    F_CIDR,
-    F_PCAP,
-    F_HTTP_REQUEST,
-    F_SUSPECT_FILE,
-    F_YARA
-])
+# Observable type metadata (descriptions, deprecated flags, valid-types list)
+# now lives in etc/observable_types.yaml. Look up at runtime via
+# saq.observables.get_all_valid_types() and saq.observables.type_hierarchy.get_type_hierarchy().
 
 # see docs/files.txt TODO
 HARDCOPY_SUBDIR = "hardcopies"
