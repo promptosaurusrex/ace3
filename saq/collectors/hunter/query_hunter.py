@@ -769,6 +769,9 @@ class QueryHunt(Hunt):
                     if grouping_target not in event_grouping:
                         event_grouping[grouping_target] = _create_submission(event)
                         event_grouping[grouping_target].key = _compute_dedup_key(event)
+                        # associate the submission with its group value so the manager can record
+                        # per-group last_alert_time without re-deriving the grouping
+                        event_grouping[grouping_target].group_value = grouping_target
                         if grouping_target != "ALL":
                             if self.description_field is not None and self.description_field in event:
                                 description_value = event[self.description_field]
@@ -859,5 +862,21 @@ class QueryHunt(Hunt):
         if self.original_query_results is not None:
             for submission in submissions:
                 submission.root.details[QUERY_DETAILS_ORIGINAL_EVENTS] = self.original_query_results
+
+        # filter out groups whose suppression window has not yet elapsed.
+        # the hunt is run as a whole because we cannot know which groups are present
+        # until after the query executes; suppression then drops the per-group alerts.
+        if self.group_by is not None and self.suppression is not None:
+            kept = []
+            for submission in submissions:
+                group_value = getattr(submission, "group_value", None)
+                if group_value is not None and self.is_group_suppressed(group_value):
+                    logging.info(
+                        "suppressed alert for hunt %s (uuid=%s, type=%s) group_by=%s group_value=%s",
+                        self.name, self.uuid, self.type, self.group_by, group_value,
+                    )
+                    continue
+                kept.append(submission)
+            submissions = kept
 
         return submissions
