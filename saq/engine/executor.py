@@ -297,7 +297,9 @@ class AnalysisExecutor:
             os.path.join(context.root.storage_dir, "saq.log")
         )
         logging_handler.setLevel(logging.getLogger().level)
-        logging_handler.setFormatter(logging.getLogger().handlers[0].formatter)
+        logging_handler.setFormatter(logging.Formatter(
+            "[%(asctime)s] [%(filename)s:%(lineno)d] [%(threadName)s] [%(process)d] [%(levelname)s] - %(message)s"
+        ))
         logging.getLogger().addHandler(logging_handler)
 
         try:
