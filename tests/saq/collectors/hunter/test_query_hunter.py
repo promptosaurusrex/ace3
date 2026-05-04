@@ -3732,3 +3732,186 @@ def test_query_with_empty_string_prefix_and_suffix():
     """test that empty strings are treated the same as None (no stray newlines)"""
     hunt = default_hunt(query="index=test sourcetype=test", query_prefix="", query_suffix="")
     assert hunt.query == "index=test sourcetype=test"
+
+
+# ---------------------------------------------------------------------------
+# tests for Jinja2 interpolation of the hunt name field
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_name_jinja_plain_name_unchanged(monkeypatch):
+    """plain (non-jinja) names render through unchanged — regression check"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="static name",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert len(submissions) == 1
+    assert submissions[0].root.description == "static name"
+
+
+@pytest.mark.unit
+def test_name_jinja_per_event_no_group(monkeypatch):
+    """jinja name interpolates per-event when group_by is None"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="dns lookup of {{ query }} from {{ src }}",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4", "query": "evil.com"},
+        {"src": "5.6.7.8", "query": "bad.org"},
+    ])
+    assert len(submissions) == 2
+    descriptions = sorted(s.root.description for s in submissions)
+    assert descriptions == [
+        "dns lookup of bad.org from 5.6.7.8",
+        "dns lookup of evil.com from 1.2.3.4",
+    ]
+
+
+@pytest.mark.unit
+def test_name_jinja_with_group_by_field(monkeypatch):
+    """jinja name + group_by=<field> still gets the ': <group_value> (N events)' suffix"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="lookup of {{ query }}",
+        group_by="src",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4", "query": "evil.com"},
+        {"src": "1.2.3.4", "query": "evil.com"},
+        {"src": "5.6.7.8", "query": "bad.org"},
+    ])
+    assert len(submissions) == 2
+    descriptions = sorted(s.root.description for s in submissions)
+    assert descriptions == [
+        "lookup of bad.org: 5.6.7.8 (1 event)",
+        "lookup of evil.com: 1.2.3.4 (2 events)",
+    ]
+
+
+@pytest.mark.unit
+def test_name_jinja_with_group_by_all(monkeypatch):
+    """jinja name + group_by=ALL renders from the first event and gets the count suffix only"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="hunt for {{ tag }}",
+        group_by="ALL",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4", "tag": "first"},
+        {"src": "5.6.7.8", "tag": "second"},
+    ])
+    assert len(submissions) == 1
+    assert submissions[0].root.description == "hunt for first (2 events)"
+
+
+@pytest.mark.unit
+def test_name_jinja_with_description_field(monkeypatch):
+    """jinja name + description_field still appends ': <description_field_value>'"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="hunt for {{ src }}",
+        group_by=None,
+        description_field="alert_title",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4", "alert_title": "Suspicious Login"},
+    ])
+    assert len(submissions) == 1
+    assert submissions[0].root.description == "hunt for 1.2.3.4: Suspicious Login"
+
+
+@pytest.mark.unit
+def test_name_jinja_missing_field_renders_empty(monkeypatch):
+    """missing fields referenced in the name template render as empty (permissive mode)"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="lookup of [{{ no_such_field }}] from {{ src }}",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert len(submissions) == 1
+    assert submissions[0].root.description == "lookup of [] from 1.2.3.4"
+
+
+@pytest.mark.unit
+def test_name_jinja_syntax_error_falls_back_to_raw(monkeypatch, caplog):
+    """a malformed jinja template falls back to the raw config name and logs a warning"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    raw_name = "broken {{ unterminated"
+    hunt = default_hunt(
+        manager=MockManager(),
+        name=raw_name,
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+
+    with caplog.at_level(logging.WARNING):
+        submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+
+    assert len(submissions) == 1
+    assert submissions[0].root.description == raw_name
+    assert any("falling back to raw name" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.unit
+def test_name_jinja_signature_id_display_value_matches(monkeypatch):
+    """signature_id observable display_value uses the same rendered name"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="hunt for {{ src }}",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert len(submissions) == 1
+    sig = next(o for o in submissions[0].root.observables if o.type == F_SIGNATURE_ID)
+    assert sig._display_value == "hunt for 1.2.3.4"
