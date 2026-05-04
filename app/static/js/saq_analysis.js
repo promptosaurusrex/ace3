@@ -352,13 +352,37 @@ $(document).ready(function() {
     // Handle "Jump To Analysis" links with smooth scrolling and highlight
     function scrollToAndHighlight(targetId) {
         var target = document.getElementById(targetId);
-        if (target) {
-            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        if (!target) return;
+
+        var applyHighlight = function() {
             target.classList.add('jump-highlight');
             setTimeout(function() {
                 target.classList.remove('jump-highlight');
-            }, 1500);
+            }, 2000);
+        };
+
+        // If already in view, scrollIntoView is a no-op and 'scrollend'
+        // may never fire — flash now and skip the listener.
+        var rect = target.getBoundingClientRect();
+        if (rect.top >= 0 && rect.bottom <= window.innerHeight) {
+            applyHighlight();
+            return;
         }
+
+        // Defer the highlight until smooth scrolling lands. Listen for
+        // 'scrollend' (one-shot) with a fallback timer in case the event
+        // isn't supported or never fires.
+        var fired = false;
+        var onEnd = function() {
+            if (fired) return;
+            fired = true;
+            window.removeEventListener('scrollend', onEnd);
+            applyHighlight();
+        };
+        window.addEventListener('scrollend', onEnd, { once: true });
+        setTimeout(onEnd, 1200);
+
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 
     // Handle clicks on "Jump To Analysis" links
