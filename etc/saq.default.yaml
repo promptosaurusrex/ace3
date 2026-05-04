@@ -1186,6 +1186,12 @@ analysis_module_user_analyzer:
   python_class: UserAnalyzer
   enabled: false
 
+analysis_module_email_address_fqdn_analyzer:
+  name: email_address_fqdn_analyzer
+  python_module: saq.modules.email.address
+  python_class: EmailAddressFQDNAnalyzer
+  enabled: true
+
 analysis_module_email_conversation_frequency_analyzer:
   name: email_conversation_frequency_analyzer
   python_module: saq.modules.email.fa
@@ -2068,6 +2074,7 @@ module_group_common:
     - command_line_analyzer
     - configuration_defined_tagging
     - correlated_tag_analyzer
+    - email_address_fqdn_analyzer
     - nrd_analyzer
     - observable_detection
     - observable_modifier
