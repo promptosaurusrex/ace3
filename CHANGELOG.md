@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.42] - 2026-05-04
+
+- [Show a per-alert correlation trace](https://github.com/ACE-Collective/ace3/pull/185)
+- [Adds newly registered domain system](https://github.com/ACE-Collective/ace3/pull/186)
+- [Implements second phase of analysis caching](https://github.com/ACE-Collective/ace3/pull/149)
+- [Moves analysis cache config into dedicated section](https://github.com/ACE-Collective/ace3/pull/187)
+- [Add support for per-group suppression in Hunt class](https://github.com/ACE-Collective/ace3/pull/188)
+- [Adds Jinja interpolation for hunt name](https://github.com/ACE-Collective/ace3/pull/189)
+- [Default time fields and time format by source for correlated queries](https://github.com/ACE-Collective/ace3/pull/190)
+- [Fixed logging issue](https://github.com/ACE-Collective/ace3/pull/191)
+
 ## [3.0.41] - 2026-04-28
 
 - [Migrates Flask 'common' API endpoints to FastAPI](https://github.com/ACE-Collective/ace3/pull/164)
