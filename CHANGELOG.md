@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.43] - 2026-05-05
+
+- [Observable type inheritance](https://github.com/ACE-Collective/ace3/pull/193)
+- [Adds email address fqdn module](https://github.com/ACE-Collective/ace3/pull/194)
+- [Fixes observable/detection point scrolling](https://github.com/ACE-Collective/ace3/pull/195)
+- [Fixes JS deobfuscator issues and recurses](https://github.com/ACE-Collective/ace3/pull/196)
+- [configuration defined correlated hunt query sources](https://github.com/ACE-Collective/ace3/pull/198)
+- [Bumps urlfinderlib version](https://github.com/ACE-Collective/ace3/pull/199)
+- [Adds siblings scope to observable modifier](https://github.com/ACE-Collective/ace3/pull/200)
+
 ## [3.0.42] - 2026-05-04
 
 - [Show a per-alert correlation trace](https://github.com/ACE-Collective/ace3/pull/185)
@@ -15,6 +25,7 @@ and this project (tries to) adheres to [Semantic Versioning](https://semver.org/
 - [Adds Jinja interpolation for hunt name](https://github.com/ACE-Collective/ace3/pull/189)
 - [Default time fields and time format by source for correlated queries](https://github.com/ACE-Collective/ace3/pull/190)
 - [Fixed logging issue](https://github.com/ACE-Collective/ace3/pull/191)
+
 
 ## [3.0.41] - 2026-04-28
 
