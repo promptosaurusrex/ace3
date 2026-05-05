@@ -279,8 +279,7 @@
 
                 {# add detection points #}
                 {% for dp in node.obj.detections %}
-                    <a name="detection_{{ dp.id }}"></a>
-                    <button type="button" class="btn btn-danger btn-xs" data-bs-toggle="tooltip" data-placement="right" title="{{dp.display_description | e}}">
+                    <button type="button" id="detection_{{ dp.id }}" class="btn btn-danger btn-xs" data-bs-toggle="tooltip" data-placement="right" title="{{dp.display_description | e}}">
                         <span class="bi bi-fire" aria-hidden="true"></span>
                     </button>
                 {% endfor %}
