@@ -362,11 +362,6 @@ class TestCorrelationIntegration:
                 self.calls.append({"start_time": start_time, "end_time": end_time})
                 return [{"matched": True}]
 
-        # prevent engine.__init__ from re-registering the real SplunkQuerySource and
-        # overwriting our mock under the same name
-        import saq.collectors.hunter.correlation.engine as engine_mod
-        engine_mod._sources_registered = True
-
         splunk = _RecordingSplunkSource()
         register_query_source("splunk", splunk)
 

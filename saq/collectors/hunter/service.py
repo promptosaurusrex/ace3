@@ -10,6 +10,7 @@ from pydantic import Field
 from saq.analysis.root import Submission
 from saq.collectors.base_collector import Collector, CollectorExecutionMode, CollectorService
 from saq.collectors.collector_configuration import CollectorServiceConfiguration
+from saq.collectors.hunter.correlation.sources import load_query_sources_from_config
 from saq.collectors.hunter.manager import HuntManager
 from saq.configuration import get_config
 from saq.configuration.config import get_service_config
@@ -98,6 +99,8 @@ class HunterService(ACEServiceInterface):
     def load_hunt_managers(self, execution_mode: ExecutionMode = ExecutionMode.CONTINUOUS):
         """Loads all configured hunt managers."""
         logging.info("loading hunt managers")
+
+        load_query_sources_from_config()
 
         for hunt_type_config in get_config().hunt_types:
 

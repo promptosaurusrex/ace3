@@ -235,18 +235,11 @@ class _EpochSource(QuerySource):
 
 @pytest.fixture
 def _clean_registry():
-    # also flip the engine's "default sources registered" flag so engine.__init__
-    # doesn't overwrite our test mocks. flag is restored on teardown so other tests
-    # see normal lazy-registration behavior.
-    import saq.collectors.hunter.correlation.engine as engine_mod
-    prior = engine_mod._sources_registered
-    engine_mod._sources_registered = True
     clear_query_sources()
     try:
         yield
     finally:
         clear_query_sources()
-        engine_mod._sources_registered = prior
 
 
 @pytest.mark.unit

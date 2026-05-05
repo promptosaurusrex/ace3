@@ -1,7 +1,7 @@
 import importlib
 import sys
 from typing import TYPE_CHECKING, Any, Optional
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 if TYPE_CHECKING:
     from saq.configuration.yaml_parser import YAMLConfig
@@ -161,6 +161,22 @@ class CollectionConfig(BaseModel):
 class QueryHunterConfig(BaseModel):
     max_result_count: int = Field(..., description="maximum number of results queries should return")
     query_timeout: str = Field(..., description="maximum amount of time (in HH:MM:SS format) to wait for a query to complete")
+
+class QuerySourceConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(..., description="registry name used by hunt YAMLs (e.g. 'splunk', 'logscale')")
+    python_module: str = Field(..., description="dotted module path containing the QuerySource subclass")
+    python_class: str = Field(..., description="QuerySource subclass name within python_module")
+    kwargs: dict[str, Any] = Field(default_factory=dict, description="constructor kwargs passed to the QuerySource subclass")
+
+class CorrelationConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    query_sources: list[QuerySourceConfig] = Field(default_factory=list, description="query sources to register at hunter startup")
+
+class HunterConfig(BaseModel):
+    """top-level config for the hunting engine (distinct from service_hunter, which configures the service lifecycle)"""
+    model_config = ConfigDict(extra="forbid")
+    correlation: CorrelationConfig = Field(default_factory=CorrelationConfig, description="correlated hunt configuration")
 
 class SSLConfig(BaseModel):
     ca_chain_path: str = Field(..., description="path to SSL CA chain certificate")
@@ -461,6 +477,7 @@ class ACEConfig(BaseModel):
     encryption: Optional[EncryptionConfig] = None
     collection: Optional[CollectionConfig] = None
     query_hunter: Optional[QueryHunterConfig] = None
+    hunter: HunterConfig = Field(default_factory=HunterConfig, description="hunting engine configuration (distinct from service_hunter, which configures the service lifecycle)")
     node_translation: Optional[dict[str, str]] = None
     node_translation_gui: Optional[dict[str, str]] = None
     SSL: Optional[SSLConfig] = None
