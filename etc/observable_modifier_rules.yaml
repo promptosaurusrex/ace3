@@ -38,7 +38,7 @@
 #       # Analysis tree conditions
 #       tree_conditions:
 #         - analysis_type: "saq.modules.email.rfc822:EmailAnalysis"
-#           scope: ancestors  # "ancestors" (default), "descendants" (analyses on observables produced transitively below this one), "global" (searches entire tree), "self" (analyses on this observable), or "parent" (direct parent analyses only)
+#           scope: ancestors  # "ancestors" (default), "descendants" (analyses on observables produced transitively below this one), "global" (searches entire tree), "self" (analyses on this observable), "parent" (direct parent analyses only), or "siblings" (analyses on the observable(s) that directly produced this one — e.g. peer analyses on the file that yielded this URL)
 #           negate: false     # invert the result of this condition (default false)
 #           match_count: 1    # optional: require exactly this many matching analyses.
 #                             # Omitted (default) means "at least one". Useful for

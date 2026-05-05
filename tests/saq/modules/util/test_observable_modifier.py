@@ -2758,6 +2758,124 @@ def test_final_analysis_fast_path_no_match():
 
 
 # ============================================================
+# TreeCondition siblings scope tests
+# ============================================================
+
+
+@pytest.mark.unit
+def test_tree_condition_siblings_scope_match():
+    """Siblings scope should find a peer analysis on the observable that produced this observable."""
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    parent_file = _add_file_observable(root, "invite.ics", content="BEGIN:VCALENDAR")
+
+    class FileTypeAnalysisStubSibMatch(Analysis):
+        pass
+
+    file_type_analysis = FileTypeAnalysisStubSibMatch()
+    file_type_analysis.details = {"mime": "text/calendar"}
+    file_type_analysis.details_modified = True
+    parent_file.add_analysis(file_type_analysis)
+
+    class URLExtractionAnalysisSibMatch(Analysis):
+        pass
+
+    producer = URLExtractionAnalysisSibMatch()
+    producer.details_modified = True
+    parent_file.add_analysis(producer)
+    target = producer.add_observable_by_spec(F_URL, "https://example.com/x")
+
+    module_path = f"{FileTypeAnalysisStubSibMatch.__module__}:{FileTypeAnalysisStubSibMatch.__name__}"
+    tc = TreeCondition(
+        analysis_type=module_path,
+        scope="siblings",
+        details_match={"mime": re.compile(r"^text/calendar$")},
+    )
+    assert tc.evaluate(target, root) is True
+
+
+@pytest.mark.unit
+def test_tree_condition_siblings_scope_no_match_when_details_differ():
+    """Siblings scope should not match when the peer analysis's details don't match."""
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    parent_file = _add_file_observable(root, "page.html", content="<html></html>")
+
+    class FileTypeAnalysisStubSibNoMatch(Analysis):
+        pass
+
+    file_type_analysis = FileTypeAnalysisStubSibNoMatch()
+    file_type_analysis.details = {"mime": "text/html"}
+    file_type_analysis.details_modified = True
+    parent_file.add_analysis(file_type_analysis)
+
+    class URLExtractionAnalysisSibNoMatch(Analysis):
+        pass
+
+    producer = URLExtractionAnalysisSibNoMatch()
+    producer.details_modified = True
+    parent_file.add_analysis(producer)
+    target = producer.add_observable_by_spec(F_URL, "https://example.com/y")
+
+    module_path = f"{FileTypeAnalysisStubSibNoMatch.__module__}:{FileTypeAnalysisStubSibNoMatch.__name__}"
+    tc = TreeCondition(
+        analysis_type=module_path,
+        scope="siblings",
+        details_match={"mime": re.compile(r"^text/calendar$")},
+    )
+    assert tc.evaluate(target, root) is False
+
+
+@pytest.mark.unit
+def test_tree_condition_siblings_scope_does_not_walk_grandparents():
+    """Siblings scope only inspects the direct parent's observable, not deeper ancestors."""
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    # Grandparent file has the FileTypeAnalysis we'd otherwise look for.
+    grandparent_file = _add_file_observable(root, "outer.eml", content="From: a@b")
+
+    class FileTypeAnalysisStubGrand(Analysis):
+        pass
+
+    grand_file_type = FileTypeAnalysisStubGrand()
+    grand_file_type.details = {"mime": "text/calendar"}
+    grand_file_type.details_modified = True
+    grandparent_file.add_analysis(grand_file_type)
+
+    # Direct parent is a different file (e.g. an extracted attachment) with no FileTypeAnalysis match.
+    class ExtractAnalysis(Analysis):
+        pass
+
+    extract = ExtractAnalysis()
+    extract.details_modified = True
+    grandparent_file.add_analysis(extract)
+    parent_file = extract.add_observable_by_spec(F_FQDN, "intermediate.example")
+
+    class URLExtractionAnalysisGrand(Analysis):
+        pass
+
+    producer = URLExtractionAnalysisGrand()
+    producer.details_modified = True
+    parent_file.add_analysis(producer)
+    target = producer.add_observable_by_spec(F_URL, "https://example.com/z")
+
+    module_path = f"{FileTypeAnalysisStubGrand.__module__}:{FileTypeAnalysisStubGrand.__name__}"
+    tc = TreeCondition(
+        analysis_type=module_path,
+        scope="siblings",
+        details_match={"mime": re.compile(r"^text/calendar$")},
+    )
+    # Must be False — the matching analysis is on a grandparent observable, not a sibling.
+    assert tc.evaluate(target, root) is False
+
+
+# ============================================================
 # TreeCondition self scope tests
 # ============================================================
 
@@ -3595,3 +3713,104 @@ def test_multiple_matching_rules_emit_distinct_signature_ids():
     assert analysis is not None
     emitted = {o.value for o in analysis.observables if o.type == F_SIGNATURE_ID}
     assert emitted == {uuid_a, uuid_b}
+
+
+# ============================================================
+# Crawl URLs from iCalendar files (analyst_data rule)
+# ============================================================
+
+
+@pytest.mark.unit
+def test_crawl_url_extracted_from_ical_file():
+    """URL whose ancestor file has FileTypeAnalysis mime=text/calendar should get crawl directive."""
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    ical_file = _add_file_observable(root, "invite.ics", content="BEGIN:VCALENDAR")
+
+    class FileTypeAnalysisStubICal(Analysis):
+        pass
+
+    file_type_analysis = FileTypeAnalysisStubICal()
+    file_type_analysis.details = {"mime": "text/calendar", "type": "iCalendar calendar file"}
+    file_type_analysis.details_modified = True
+    ical_file.add_analysis(file_type_analysis)
+
+    class URLExtractionAnalysisStub(Analysis):
+        pass
+
+    url_extraction = URLExtractionAnalysisStub()
+    url_extraction.details_modified = True
+    ical_file.add_analysis(url_extraction)
+    target_url = url_extraction.add_observable_by_spec(F_URL, "https://calendly.com/d/cx4j-xpc-9b5")
+
+    file_type_module_path = f"{FileTypeAnalysisStubICal.__module__}:{FileTypeAnalysisStubICal.__name__}"
+    rules = [{
+        "name": "Crawl URLs extracted from iCalendar files",
+        "conditions": {
+            "observable_types": ["url"],
+            "tree_conditions": [{
+                "analysis_type": file_type_module_path,
+                "scope": "siblings",
+                "details_match": {"mime": r"^text/calendar$"},
+            }],
+        },
+        "actions": {
+            "add_directives": ["crawl"],
+        },
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(target_url)
+    result = adapter.analyze(target_url, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert target_url.has_directive("crawl")
+
+
+@pytest.mark.unit
+def test_crawl_ical_rule_does_not_match_non_ical_ancestor():
+    """URL whose ancestor file has a non-calendar mime type should NOT get the crawl directive."""
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    html_file = _add_file_observable(root, "page.html", content="<html></html>")
+
+    class FileTypeAnalysisStubHTML(Analysis):
+        pass
+
+    file_type_analysis = FileTypeAnalysisStubHTML()
+    file_type_analysis.details = {"mime": "text/html", "type": "HTML document"}
+    file_type_analysis.details_modified = True
+    html_file.add_analysis(file_type_analysis)
+
+    class URLExtractionAnalysisStub2(Analysis):
+        pass
+
+    url_extraction = URLExtractionAnalysisStub2()
+    url_extraction.details_modified = True
+    html_file.add_analysis(url_extraction)
+    target_url = url_extraction.add_observable_by_spec(F_URL, "https://example.com/page")
+
+    file_type_module_path = f"{FileTypeAnalysisStubHTML.__module__}:{FileTypeAnalysisStubHTML.__name__}"
+    rules = [{
+        "name": "Crawl URLs extracted from iCalendar files",
+        "conditions": {
+            "observable_types": ["url"],
+            "tree_conditions": [{
+                "analysis_type": file_type_module_path,
+                "scope": "siblings",
+                "details_match": {"mime": r"^text/calendar$"},
+            }],
+        },
+        "actions": {
+            "add_directives": ["crawl"],
+        },
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(target_url)
+    result = adapter.analyze(target_url, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert not target_url.has_directive("crawl")
