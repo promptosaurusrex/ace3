@@ -481,7 +481,10 @@ class CorrelationEngine:
         """Return the query source name a command resolves to, or None if not a query."""
         if command.type == "query":
             return command.source
-
+        if command.type == "defined" and command.name:
+            for predef in self.predefined_commands:
+                if predef.name == command.name and predef.type == "query":
+                    return predef.source
         return None
 
     def _render_command_summary(
