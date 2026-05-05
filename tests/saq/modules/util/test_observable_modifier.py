@@ -200,6 +200,61 @@ def test_conditions_observable_types_match():
     assert cond.evaluate(MockObservable(type="ip"), MockRoot()) is False
 
 
+@pytest.fixture
+def hierarchy_with_synthetic_subtype():
+    """Seed and restore a synthetic subtype relationship in the global hierarchy.
+
+    Mirrors the snapshot/restore pattern used by
+    tests/saq/modules/test_base_module_subtype_dispatch.py so the test stays
+    hermetic regardless of what the YAML config has loaded into the registry.
+    """
+    from saq.observables.type_hierarchy import get_type_hierarchy
+    h = get_type_hierarchy()
+    parent_snapshot = dict(h._parent)
+    h._parent["__pytest_child__"] = "__pytest_parent__"
+    h._ancestors_cache.clear()
+    try:
+        yield h
+    finally:
+        h._parent = parent_snapshot
+        h._ancestors_cache.clear()
+
+
+@pytest.mark.unit
+def test_conditions_observable_types_match_subtype(hierarchy_with_synthetic_subtype):
+    """A rule targeting the parent type matches observables of any subtype."""
+    cond = RuleConditions(observable_types=["__pytest_parent__"])
+    assert cond.evaluate(MockObservable(type="__pytest_child__"), MockRoot()) is True
+    assert cond.evaluate(MockObservable(type="__pytest_parent__"), MockRoot()) is True
+    assert cond.evaluate(MockObservable(type="ip"), MockRoot()) is False
+
+
+@pytest.mark.unit
+def test_conditions_evaluate_early_observable_types_match_subtype(hierarchy_with_synthetic_subtype):
+    """The early-eval path also honors subtype matching."""
+    cond = RuleConditions(observable_types=["__pytest_parent__"])
+    assert cond.evaluate_early(MockObservable(type="__pytest_child__"), MockRoot()) is True
+    assert cond.evaluate_early(MockObservable(type="__pytest_parent__"), MockRoot()) is True
+    assert cond.evaluate_early(MockObservable(type="ip"), MockRoot()) is False
+
+
+@pytest.mark.unit
+def test_conditions_observable_types_match_real_email_subtype():
+    """A rule targeting email_address matches subtypes loaded from etc/observable_types.yaml.
+
+    The dev/CI default config_path points at etc/observable_types.yaml which
+    declares email_from -> email_address (and several other email subtypes).
+    """
+    from saq.observables.type_hierarchy import get_type_hierarchy
+    if not get_type_hierarchy().is_subtype("email_from", "email_address"):
+        pytest.skip("email_from -> email_address not loaded in this environment")
+
+    cond = RuleConditions(observable_types=["email_address"])
+    assert cond.evaluate(MockObservable(type="email_from"), MockRoot()) is True
+    assert cond.evaluate(MockObservable(type="email_address"), MockRoot()) is True
+    assert cond.evaluate(MockObservable(type="ip"), MockRoot()) is False
+
+
 @pytest.mark.unit
 def test_conditions_alert_tags():
     cond = RuleConditions(alert_tags=["phishing", "external"])

@@ -1,0 +1,359 @@
+# Built-in observable type metadata.
+#
+# Authoritative for descriptions, deprecated flags, default display types, and
+# the inheritance hierarchy of the observable types ACE ships with.
+# F_* string identifiers stay in code, but everything
+# else about each type lives here.
+#
+# Loaded by saq.observables.type_hierarchy.bootstrap_type_hierarchy at startup.
+# The path is configured by observable_types.config_path in saq.default.yaml
+# and defaults to this file. 
+
+# *** NOTE *** 
+# Production deployments may override config_path
+# to a single file of their own; that file becomes the *ONLY* one loaded, so
+# include any entries from this file you still want.
+#
+# Schema is validated by saq.observables.type_hierarchy.ObservableTypesFile
+# (Pydantic, extra fields rejected).
+#
+# Per-entry fields (all optional):
+#   extends              -- parent observable type. Module dispatch treats this
+#                           type as a subtype of the parent. Cycles rejected at
+#                           load time.
+#   default_display_type -- fallback label for Observable.display_type when no
+#                           explicit value is set on the observable.
+#   description          -- human-readable description, surfaced via the API.
+#   deprecated           -- if true, the type is recognized but should not be
+#                           offered to analysts in pickers/forms.
+
+types:    
+  asset:
+    description: "a F_IPV4 identified to be a managed asset"
+
+  av_streetname:
+    description: "anti-virus vendor name for a malware family"
+
+  aws_access_key_id:
+    description: "an access key ID assigned to a user identity"
+
+  aws_account_id:
+    description: "id of an AWS account"
+
+  aws_ami_id:
+    description: "id of an AWS AMI"
+
+  aws_instance_id:
+    description: "id of an AWS instance"
+
+  aws_network_interface_id:
+    description: "eni id"
+
+  aws_principal_id:
+    description: "principal ID for an aws user"
+
+  aws_private_dns_name:
+    description: "private DNS Name for an AWS entity"
+
+  aws_security_group_id:
+    description: "id of an AWS security group"
+
+  aws_subnet_id:
+    description: "AWS subnet id"
+
+  aws_username:
+    description: "username associated with an AWS account"
+
+  aws_vpc_id:
+    description: "virtual private cloud (VPC) id"
+
+  cidr:
+    description: "IPv4 range in CIDR notation"
+    deprecated: true
+
+  command_line:
+    description: "command line options to a command that was executed"
+
+  compromised_account:
+    description: "a username + password that may have been compromised"
+
+  contact:
+    description: "email contact e.g. \"Last, First <email@domain.com>\""
+
+  cookie:
+    description: "cookie"
+
+  email_address:
+    description: "email address"
+
+  email_body:
+    description: "string from an email body"
+
+  email_cc:
+    extends: email_address
+    default_display_type: "Mail CC"
+    description: "email Cc: header address"
+
+  email_conversation:
+    description: "a conversation between a source email address (MAIL FROM) and a destination email address (RCPT TO)"
+
+  email_delivery:
+    description: "a delivery of a an email to a target mailbox"
+
+  email_envelope_mail_from:
+    extends: email_address
+    default_display_type: "Envelope Mail From"
+    description: "envelope MAIL FROM address from the SMTP transaction"
+
+  email_envelope_rcpt_to:
+    extends: email_address
+    default_display_type: "Envelope Recipient"
+    description: "envelope RCPT TO address from the SMTP transaction"
+
+  email_from:
+    extends: email_address
+    default_display_type: "Mail From"
+    description: "email From: header address"
+
+  email_header:
+    description: "string from an email header"
+
+  email_reply_to:
+    extends: email_address
+    default_display_type: "Mail Reply To"
+    description: "email Reply-To: header address"
+
+  email_return_path:
+    extends: email_address
+    default_display_type: "Mail Return Path"
+    description: "email Return-Path address"
+
+  email_subject:
+    description: "the subject of an email"
+
+  email_to:
+    extends: email_address
+    default_display_type: "Mail To"
+    description: "email To: header address"
+
+  email_x_auth_id:
+    extends: email_address
+    default_display_type: "Mail X-Auth ID"
+    description: "email X-Auth-Id: header address"
+
+  email_x_mailer:
+    description: "email x-mailer"
+
+  email_x_original_sender:
+    extends: email_address
+    default_display_type: "Mail X-Original Sender"
+    description: "email X-Original-Sender: header address"
+
+  email_x_sender:
+    extends: email_address
+    default_display_type: "Mail X-Sender"
+    description: "email X-Sender: header address"
+
+  email_x_sender_id:
+    extends: email_address
+    default_display_type: "Mail X-Sender ID"
+    description: "email X-Sender-Id: header address"
+
+  external_uid:
+    description: "unique identifier for something that is stored in an external tool. Format: tool_name:uid"
+
+  file:
+    description: "path to an attached file"
+
+  file_location:
+    description: "the location of file with format hostname@full_path"
+
+  file_name:
+    description: "a file name (no directory path)"
+
+  file_path:
+    description: "a file path"
+
+  fireeye_uuid:
+    description: "UUID used to identify a FireEye alert"
+
+  forum_author:
+    description: "author of forum post (used for intel tracking)"
+
+  forum_channel:
+    description: "channel of forum post (used for intel tracking)"
+
+  forum_chat_type:
+    description: "type of forum post (used for intel tracking)"
+
+  fqdn:
+    description: "fully qualified domain name"
+
+  hostname:
+    description: "host or workstation name"
+
+  http_request:
+    description: "a single HTTP request"
+    deprecated: true
+
+  hunt:
+    description: "the name of a hunt"
+
+  imphash:
+    description: "hash of the imported functions of a PE file"
+
+  indicator:
+    description: "indicator id"
+
+  ip:
+    description: "IP address (version 4 or 6)"
+
+  ip_conversation:
+    description: "two F_IP that were communicating formatted as src_dst"
+
+  ip_full_conversation:
+    description: "two F_IP that were communicating formatted as src_ip!src_port!dest_ip!dest_port"
+
+  ipv4:
+    description: "IP address (version 4)"
+
+  ipv4_conversation:
+    description: "two F_IPV4 that were communicating formatted as aaa.bbb.ccc.ddd_aaa.bbb.ccc.ddd"
+
+  ipv4_full_conversation:
+    description: "two F_IPV4 that were communicating formatted as src_ipv4:src_port:dest_ipv4:dest_port"
+
+  mac_address:
+    description: "network card mac address"
+
+  md5:
+    description: "MD5 hash"
+
+  message_id:
+    description: "email Message-ID"
+
+  mutex:
+    description: "mutex created during sample execution"
+
+  o365_file:
+    description: "graph api path to a file in o365"
+
+  o365_file_conversation:
+    description: "two users sharing o365 files"
+
+  o365_group:
+    description: "graph api id of a group in o365"
+
+  o365_security_alert:
+    description: "The alert uuID"
+
+  pan_pcap_id:
+    description: "PaloAlto PCAP identification"
+
+  pcap:
+    description: "path to a pcap formatted file *** DEPRECATED (use F_FILE instead)"
+    deprecated: true
+
+  pp_campaign_id:
+    description: "Proofpoint Campaign ID"
+
+  pp_guid:
+    description: "Proofpoint Email GUID"
+
+  pp_threat_id:
+    description: "Proofpoint Threat ID"
+
+  pp_trap_incident_id:
+    description: "Proofpoint TRAP Incident ID"
+
+  printer:
+    description: "name of a printer"
+
+  scan_id:
+    description: "an identifer for a scan by some remote system"
+
+  sha1:
+    description: "SHA1 hash"
+
+  sha256:
+    description: "SHA256 hash"
+
+  sharepoint_file:
+    description: "sharepoint file path"
+
+  signature_id:
+    description: "the UUID of a signature"
+
+  snort_sig:
+    description: "snort signature ID"
+
+  string_eps:
+    description: "string in an eps file"
+
+  string_html:
+    description: "string in an html file"
+
+  string_java:
+    description: "string in java source code"
+
+  string_js:
+    description: "string in javascript code"
+
+  string_office:
+    description: "string in a microsoft office file"
+
+  string_pdf:
+    description: "string in a pdf file"
+
+  string_pe:
+    description: "string in a portable executable file"
+
+  string_rtf:
+    description: "string in an rtf file"
+
+  string_swf:
+    description: "string in a shockwave/flash file"
+
+  string_unix_shell:
+    description: "string from unix command line"
+
+  string_vbs:
+    description: "string in a vbs file"
+
+  string_windows_shell:
+    description: "string from windows command line"
+
+  suspect_file:
+    description: "path to an attached file that might be malicious *** DEPRECATED (use directives instead)"
+    deprecated: true
+
+  test:
+    description: "unit testing observable"
+
+  uri_path:
+    description: "URI path from a URL"
+
+  url:
+    description: "a URL"
+
+  user:
+    description: "an NT user ID identified to have used a given asset in the given period of time"
+
+  user_agent:
+    description: "user agent used in web requests"
+
+  windows_registry:
+    description: "a windows registry key"
+
+  windows_service:
+    description: "name of a windows service"
+
+  yara:
+    description: "yara scan result *** DEPRECATED (use F_YARA_RULE instead)"
+    deprecated: true
+
+  yara_rule:
+    description: "yara rule name"
+
+  yara_string:
+    description: "yara rule and string name"

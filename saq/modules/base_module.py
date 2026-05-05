@@ -18,6 +18,7 @@ from saq.environment import get_base_dir, get_data_dir
 from saq.filesystem.notification import FileWatcherMixin
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.context import AnalysisModuleContext
+from saq.observables.type_hierarchy import get_type_hierarchy
 
 if TYPE_CHECKING:
     pass
@@ -25,6 +26,12 @@ if TYPE_CHECKING:
 
 class AnalysisModule(FileWatcherMixin):
     """The base class of all analysis logic.  All your custom analysis modules extend this class."""
+
+    # When True (the default), valid_observable_types matching is subtype-aware:
+    # a module declaring valid_observable_types = "email_address" will also
+    # accept observables whose type extends email_address (e.g. "return_path").
+    # Set False on a subclass that genuinely requires an exact type match.
+    valid_observable_subtypes: bool = True
 
     def __init__(
         self,
@@ -407,9 +414,13 @@ class AnalysisModule(FileWatcherMixin):
                 valid_types = [valid_types]
 
             try:
-                if obj.type not in valid_types:
-                    # logging.debug("{} is not a valid type for {}".format(obj.type, self))
-                    return False
+                if self.valid_observable_subtypes:
+                    hierarchy = get_type_hierarchy()
+                    if not any(hierarchy.is_subtype(obj.type, vt) for vt in valid_types):
+                        return False
+                else:
+                    if obj.type not in valid_types:
+                        return False
             except Exception:
                 logging.error(
                     "valid_observable_types returned invalid data type {} for {}".format(

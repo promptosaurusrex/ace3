@@ -14,6 +14,7 @@ from saq.constants import DIRECTIVE_YARA_META_PREFIX, F_SIGNATURE_ID, AnalysisEx
 from saq.environment import get_base_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
+from saq.observables.type_hierarchy import get_type_hierarchy
 
 
 class ObservableModifierConfig(AnalysisModuleConfig):
@@ -181,7 +182,8 @@ class RuleConditions:
         """Check only immutable conditions known at analysis start.
         Returns False if the rule cannot match, True if it might."""
         if self.observable_types:
-            if observable.type not in self.observable_types:
+            hierarchy = get_type_hierarchy()
+            if not any(hierarchy.is_subtype(observable.type, t) for t in self.observable_types):
                 return False
         if self.alert_type is not None:
             if root.alert_type != self.alert_type:
@@ -207,9 +209,11 @@ class RuleConditions:
     def evaluate(self, observable: Observable, root: RootAnalysis) -> bool:
         # Cheapest checks first for short-circuit efficiency
 
-        # Observable type check
+        # Observable type check (subtype-aware: a rule targeting "email_address"
+        # also matches subtypes like "email_from", "email_return_path", etc.)
         if self.observable_types:
-            if observable.type not in self.observable_types:
+            hierarchy = get_type_hierarchy()
+            if not any(hierarchy.is_subtype(observable.type, t) for t in self.observable_types):
                 return False
 
         # Alert-level checks

@@ -177,10 +177,12 @@ def initialize_environment(
         resolve_configuration,
     )
     from saq.integration.integration_loader import load_integrations, initialize_integrations
+    from saq.observables.type_hierarchy import bootstrap_type_hierarchy
 
     load_integrations()
     initialize_configuration(config_paths=config_paths)
     initialize_integrations()
+    bootstrap_type_hierarchy()
 
     get_global_runtime_settings().data_dir = data_dir if data_dir else os.path.join(
         get_base_dir(), get_config().global_settings.data_dir

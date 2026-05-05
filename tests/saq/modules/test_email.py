@@ -10,6 +10,7 @@ import pytz
 from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_config, get_analysis_module_config
 from saq.constants import ANALYSIS_MODULE_EMAIL_LOGGER, ANALYSIS_TYPE_BRO_SMTP, ANALYSIS_TYPE_MAILBOX, DB_BROCESS, DB_EMAIL_ARCHIVE, DIRECTIVE_ARCHIVE, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, EVENT_TIME_FORMAT_JSON_TZ, F_EMAIL_ADDRESS, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_FILE, F_MESSAGE_ID, F_URL, create_email_conversation, create_email_delivery
+from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.crypto import decrypt
 from saq.database.model import load_alert
 from saq.database.pool import get_db_connection
@@ -678,7 +679,8 @@ def test_basic_email_parsing(root_analysis, datadir):
     assert isinstance(email_analysis.attachments, list)
     assert len(email_analysis.attachments) == 0
 
-    email_address_obervables = email_analysis.get_observables_by_type(F_EMAIL_ADDRESS)
+    hierarchy = get_type_hierarchy()
+    email_address_obervables = [o for o in email_analysis.observables if hierarchy.is_subtype(o.type, F_EMAIL_ADDRESS)]
     assert set([_.value for _ in email_address_obervables]) == set(['jwdavison@company.com', 'unixfreak0037@gmail.com'])
 
     email_conversation_obervables = email_analysis.get_observables_by_type(F_EMAIL_CONVERSATION)
@@ -748,7 +750,8 @@ def test_basic_smtp_email_parsing(root_analysis, datadir):
     assert len(email_analysis.mail_to) == 1
     assert email_analysis.mail_to[0] == '"Davison, John" <John.Davison@company.com>'
 
-    email_address_obervables = email_analysis.get_observables_by_type(F_EMAIL_ADDRESS)
+    hierarchy = get_type_hierarchy()
+    email_address_obervables = [o for o in email_analysis.observables if hierarchy.is_subtype(o.type, F_EMAIL_ADDRESS)]
     assert set([_.value for _ in email_address_obervables]) == set(['john.davison@company.com', 'unixfreak0037@gmail.com', 'jane.doe@company.com'])
 
     email_conversation_obervables = email_analysis.get_observables_by_type(F_EMAIL_CONVERSATION)

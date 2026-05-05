@@ -443,6 +443,11 @@ class NRDURLList(BaseModel):
     backups: list[str] = Field(default_factory=list, description="ordered list of backup URLs to try if the primary download fails")
 
 
+class ObservableTypesConfig(BaseModel):
+    """Configuration for the per-observable-type registry (inheritance, default display types, ...)."""
+    config_path: str = Field(default="", description="path to a YAML file providing per-observable-type configuration; blank disables YAML-defined config (Python-class inheritance still applies)")
+
+
 class AnalysisCacheConfig(BaseModel):
     """Configuration for the analysis result cache write path and its content-addressed blob store."""
     enabled: bool = Field(default=True, description="Global kill switch for the analysis result cache write path. When false, no deltas are persisted regardless of per-module cache_ttl settings.")
@@ -499,6 +504,7 @@ class ACEConfig(BaseModel):
     sip: Optional[SIPConfig] = None
     shodan: Optional[ShodanConfig] = None
     nrd: Optional[NRDConfig] = Field(default_factory=NRDConfig, description="newly-registered-domains ingestion configuration")
+    observable_types: ObservableTypesConfig = Field(default_factory=ObservableTypesConfig, description="per-observable-type configuration (inheritance, default display types, ...)")
     analysis_cache: AnalysisCacheConfig = Field(default_factory=AnalysisCacheConfig, description="analysis result cache configuration")
     yara_export: Optional[YaraExportConfig] = None
     yara_export_string_modifiers: Optional[dict[str, str]] = None

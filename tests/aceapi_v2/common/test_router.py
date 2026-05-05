@@ -4,13 +4,9 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from saq.constants import (
-    DEPRECATED_OBSERVABLES,
-    DIRECTIVE_DESCRIPTIONS,
-    OBSERVABLE_DESCRIPTIONS,
-    VALID_DIRECTIVES,
-)
+from saq.constants import DIRECTIVE_DESCRIPTIONS, VALID_DIRECTIVES
 from saq.database.model import Company
+from saq.observables.type_hierarchy import get_all_valid_types, get_type_hierarchy
 
 pytestmark = pytest.mark.integration
 
@@ -89,8 +85,10 @@ class TestValidObservables:
         names = [o["name"] for o in data["data"]]
 
         # no deprecated types are returned
-        for dep in DEPRECATED_OBSERVABLES:
-            assert dep not in names
+        hierarchy = get_type_hierarchy()
+        for t in get_all_valid_types():
+            if hierarchy.is_deprecated(t):
+                assert t not in names
 
         # every item has name + description
         for item in data["data"]:
@@ -98,10 +96,11 @@ class TestValidObservables:
             assert isinstance(item["name"], str)
             assert isinstance(item["description"], str)
 
-        # items that have an OBSERVABLE_DESCRIPTIONS entry expose it
+        # items that have a configured description expose it
         for item in data["data"]:
-            if item["name"] in OBSERVABLE_DESCRIPTIONS:
-                assert item["description"] == OBSERVABLE_DESCRIPTIONS[item["name"]]
+            configured = hierarchy.description_for(item["name"])
+            if configured is not None:
+                assert item["description"] == configured
 
 
 class TestValidDirectives:

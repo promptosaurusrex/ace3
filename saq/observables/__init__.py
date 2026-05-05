@@ -19,3 +19,5 @@ from saq.observables.network.ipv4 import IPv4Observable, IPv4ConversationObserva
 from saq.observables.network.layer2 import MacAddressObservable
 
 from saq.observables.cloud.aws import AWSAccessKeyIdObservable, AWSAccountObservable, AWSInstanceID, AWSPrincipalIdObservable, AWSPrivateDNSName, AWSSecurityGroupID, AWSUsername
+
+from saq.observables.type_hierarchy import get_all_valid_types  # noqa: F401
