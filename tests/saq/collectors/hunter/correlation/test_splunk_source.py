@@ -3,10 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from saq.collectors.hunter.correlation.registry import (
-    clear_query_sources,
-    get_query_source,
-)
+from saq.collectors.hunter.correlation.registry import clear_query_sources
 from saq.collectors.hunter.correlation.sources.splunk import SplunkQuerySource
 
 
@@ -106,14 +103,7 @@ class TestSplunkQuerySource:
 
 
 @pytest.mark.unit
-class TestRegisterDefaultSources:
-
-    def test_register_default_sources(self):
-        from saq.collectors.hunter.correlation.sources import register_default_sources
-
-        register_default_sources()
-        source = get_query_source("splunk")
-        assert isinstance(source, SplunkQuerySource)
+class TestSplunkSourceMetadata:
 
     def test_default_time_field_and_format(self):
         # the splunk source declares the conventional defaults so hunts can omit

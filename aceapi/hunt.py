@@ -14,6 +14,7 @@ from aceapi.auth import api_auth_check
 from aceapi.blueprints import hunt_bp
 from hunt_compiler import CompiledHunt, load_compiled_hunt
 from saq.analysis.root import RootAnalysis
+from saq.collectors.hunter.correlation.sources import load_query_sources_from_config
 from saq.collectors.hunter.loader import peek_hunt_type
 from saq.collectors.hunter.query_hunter import QueryHunt
 from saq.collectors.hunter.service import HunterService
@@ -73,6 +74,11 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
     Returns:
         Flask response tuple (response, status_code).
     """
+    # ensure correlation query sources are registered before any hunt execution.
+    # mocking HunterService in tests bypasses load_hunt_managers (the other call
+    # site), so the validation API needs its own explicit trigger.
+    load_query_sources_from_config()
+
     try:
         hunt_type = peek_hunt_type(target_file_path)
     except FileNotFoundError:

@@ -10,7 +10,7 @@ from saq.collectors.hunter.correlation.actions import ActionResult, execute_acti
 from saq.collectors.hunter.correlation.commands import execute_command
 from saq.configuration.config import get_config
 from saq.configuration.encryption import export_encrypted_passwords
-from saq.collectors.hunter.correlation.expressions import build_jinja_context, evaluate_expression, evaluate_expression_traced
+from saq.collectors.hunter.correlation.expressions import build_jinja_context, evaluate_expression_traced
 from saq.collectors.hunter.correlation.schema import (
     ActionConfig,
     CommandConfig,
@@ -20,7 +20,6 @@ from saq.collectors.hunter.correlation.schema import (
     StepConfig,
     TransformConfig,
 )
-from saq.collectors.hunter.correlation.sources import register_default_sources
 from saq.collectors.hunter.correlation.timespec import parse_timespec
 from saq.collectors.hunter.correlation.trace import (
     ActionTrace,
@@ -35,7 +34,6 @@ from saq.collectors.hunter.correlation.trace import (
 from saq.collectors.hunter.correlation.transforms import apply_transform
 
 _jinja_env = SandboxedEnvironment()
-_sources_registered = False
 
 _MAX_REPR_LENGTH = 200
 
@@ -88,11 +86,6 @@ class CorrelationEngine:
         max_result_count: Optional[int] = None,
         hunt_source_type: Optional[str] = None,
     ):
-        global _sources_registered
-        if not _sources_registered:
-            register_default_sources()
-            _sources_registered = True
-
         self.config = correlate_config
         self.predefined_commands = predefined_commands or []
         self.hunt_time = hunt_time

@@ -1,8 +1,6 @@
-from saq.collectors.hunter.correlation.registry import register_query_source
+from saq.collectors.hunter.correlation.sources.loader import load_query_sources_from_config, reset_query_sources_loaded_flag
 
-
-def register_default_sources():
-    """Register the built-in query sources."""
-    from saq.collectors.hunter.correlation.sources.splunk import SplunkQuerySource
-
-    register_query_source("splunk", SplunkQuerySource())
+__all__ = [
+    "load_query_sources_from_config",
+    "reset_query_sources_loaded_flag",
+]
