@@ -70,9 +70,14 @@ def _local_deobfuscate_file(file_path, output_dir, is_async=False, timeout=60, s
     with open(os.path.join(output_dir, "report.json"), "w") as fp:
         json.dump(report, fp)
 
+    fixed_names = ("deobfuscated.js", "std.out", "std.err", "exit.code", "report.json")
+    blob_names = sorted(
+        n for n in os.listdir(output_dir)
+        if n.startswith("blob_") and n.endswith((".html", ".svg", ".js"))
+    )
     return [
         os.path.join(output_dir, name)
-        for name in ("deobfuscated.js", "std.out", "std.err", "exit.code", "report.json")
+        for name in (*fixed_names, *blob_names)
         if os.path.exists(os.path.join(output_dir, name))
     ]
 
@@ -210,6 +215,79 @@ def test_window_property_is_resolved_in_url(datadir, monkeypatch, patched_deobfu
         body = fp.read()
     assert "https://evil.com/?e=user@example.com" in body
     assert "[window.abcd]" not in body
+
+
+@pytest.mark.unit
+def test_blob_redirect_records_decoded_html(datadir, monkeypatch, patched_deobfuscate):
+    """SVG-style redirect via `new Blob([decoded_html], {type:'text/html'})`
+    + `URL.createObjectURL` + `document.location.replace`. The harness's
+    Blob recorder both records the construct event AND materializes the
+    decoded HTML payload as a sibling .html file so html_js_extraction can
+    recurse into the inner script."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(datadir / "svg_blob_redirect.js")
+    observable.add_directive(YARA_META_JS)
+
+    analyzer = _build_analyzer(root)
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    assert analysis.exit_code == 0
+    assert analysis.error is None
+
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    # one for the deobfuscated trace, one for the extracted blob payload
+    assert len(file_observables) == 2
+
+    deob_obs = next(o for o in file_observables if o.file_name.startswith(DEOBFUSCATED_PREFIX))
+    blob_obs = next(o for o in file_observables if o.file_name.endswith(".blob_0.html"))
+
+    with open(deob_obs.full_path, "r", encoding="utf-8") as fp:
+        body = fp.read()
+    assert "new Blob(" in body
+    assert "https://evil.example.com/login" in body
+
+    # The blob payload must be the raw decoded HTML — html_js_extraction
+    # gates on extension (.html / .svg / .htm), so the trailing `.html`
+    # part of the filename is what makes the recursion work end-to-end.
+    assert blob_obs.file_name.endswith(".html")
+    with open(blob_obs.full_path, "r", encoding="utf-8") as fp:
+        blob_body = fp.read()
+    assert blob_body == '<a href="https://evil.example.com/login">click</a>'
+    assert blob_obs.has_directive(DIRECTIVE_EXTRACT_URLS)
+    assert blob_obs.has_relationship(R_EXTRACTED_FROM)
+
+
+@pytest.mark.unit
+def test_blob_extracts_svg_and_js_mime_types(tmpdir, monkeypatch, patched_deobfuscate):
+    """Beyond text/html, image/svg+xml and text/javascript blobs should be
+    materialized too — those are the next-most-common MIME types in
+    SVG-redirect and Function-ctor staging samples."""
+    sample_path = tmpdir / "multi_blob.js"
+    sample_path.write(
+        "var _svg = new Blob(['<svg><script>x=1</script></svg>'], {type:'image/svg+xml'});\n"
+        "var _js = new Blob(['document.location.href=\"https://evil.example.org/p\"'], {type:'text/javascript'});\n"
+    )
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(str(sample_path))
+    observable.add_directive(YARA_META_JS)
+
+    analyzer = _build_analyzer(root)
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    assert analysis.exit_code == 0
+
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    blob_names = sorted(o.file_name for o in file_observables if ".blob_" in o.file_name)
+    assert any(name.endswith(".blob_0.svg") for name in blob_names)
+    assert any(name.endswith(".blob_1.js") for name in blob_names)
 
 
 @pytest.mark.unit
