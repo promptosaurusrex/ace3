@@ -6,7 +6,16 @@ _query_source_registry: dict[str, "QuerySource"] = {}
 
 
 class QuerySource(ABC):
-    """Abstract base class for query sources used by correlation commands."""
+    """Abstract base class for query sources used by correlation commands.
+
+    Subclasses must declare class-level defaults `default_time_field` and
+    `default_time_format`. These describe how events returned by this source
+    encode their event time, and are used by the correlation engine to anchor
+    relative time ranges when the hunt YAML omits explicit values.
+    """
+
+    default_time_field: str
+    default_time_format: str
 
     @abstractmethod
     def execute_query(

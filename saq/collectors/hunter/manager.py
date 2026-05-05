@@ -379,7 +379,26 @@ class HuntManager:
         try:
             submissions = hunt.execute_with_lock(execution_mode=self.execution_mode)
             if submissions:
-                hunt.last_alert_time = local_time()
+                if hunt.group_by is None:
+                    hunt.last_alert_time = local_time()
+                else:
+                    # record last_alert_time per-group so each group_by value gets its own
+                    # suppression window. dedupe so we only write once per group even if
+                    # multiple submissions somehow share a group_value.
+                    now = local_time()
+                    seen_groups = set()
+                    for submission in submissions:
+                        group_value = getattr(submission, "group_value", None)
+                        if group_value is None or group_value in seen_groups:
+                            continue
+                        seen_groups.add(group_value)
+                        hunt.set_last_alert_time(now, group_value)
+
+            # explicit maintenance pass: keep last_alert_times bounded for hunts with
+            # high-cardinality group_by (e.g. src_ip). intentionally not folded into the
+            # setter so set_last_alert_time stays a do-one-thing function.
+            if hunt.group_by is not None:
+                hunt.prune_expired_last_alert_times()
         except Exception as e:
             logging.error(f"uncaught exception: {e}")
             report_exception()

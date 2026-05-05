@@ -200,13 +200,13 @@ _blob_store_singleton: Optional[BlobStore] = None
 def get_blob_store() -> BlobStore:
     """Return the process-wide blob store singleton.
 
-    Lazy-initialized on first call — reads ``global.blob_store_dir`` from
-    config. Defaults to ``<data_dir>/blob_store`` when unset.
+    Lazy-initialized on first call — reads ``analysis_cache.blob_store_dir``
+    from config. Defaults to ``<data_dir>/blob_store`` when unset.
     """
     global _blob_store_singleton
     if _blob_store_singleton is None:
         from saq.environment import get_data_dir
-        configured = getattr(get_config().global_settings, 'blob_store_dir', None)
+        configured = get_config().analysis_cache.blob_store_dir
         if configured:
             root = configured if os.path.isabs(configured) else os.path.join(get_base_dir(), configured)
         else:

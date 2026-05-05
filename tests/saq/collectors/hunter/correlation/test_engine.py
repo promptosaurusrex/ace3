@@ -4,7 +4,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from saq.collectors.hunter.correlation.engine import CorrelationEngine, CorrelationResult
-from saq.collectors.hunter.correlation.schema import CorrelateConfig, StepConfig
+from saq.collectors.hunter.correlation.registry import (
+    QuerySource,
+    clear_query_sources,
+    register_query_source,
+)
+from saq.collectors.hunter.correlation.schema import CorrelateConfig, PredefinedCommandConfig, StepConfig
 
 
 def _make_config(logic_data, timeout="15m"):
@@ -200,3 +205,184 @@ class TestCorrelationEngine:
         traces_by_index = {et.event_index: et for et in result.trace.event_traces}
         for origin in result.alert_event_origin_indices:
             assert traces_by_index[origin].outcome == "alert"
+
+
+class _RecordingSource(QuerySource):
+    default_time_field = "_time"
+    default_time_format = "iso8601"
+
+    def __init__(self, results=None):
+        self.results = results or []
+        self.calls = []
+
+    def execute_query(self, query, start_time, end_time, timeout):
+        self.calls.append({"query": query, "start_time": start_time, "end_time": end_time})
+        return list(self.results)
+
+
+class _EpochSource(QuerySource):
+    default_time_field = "ts"
+    default_time_format = "epoch"
+
+    def __init__(self, results=None):
+        self.results = results or []
+        self.calls = []
+
+    def execute_query(self, query, start_time, end_time, timeout):
+        self.calls.append({"query": query, "start_time": start_time, "end_time": end_time})
+        return list(self.results)
+
+
+@pytest.fixture
+def _clean_registry():
+    # also flip the engine's "default sources registered" flag so engine.__init__
+    # doesn't overwrite our test mocks. flag is restored on teardown so other tests
+    # see normal lazy-registration behavior.
+    import saq.collectors.hunter.correlation.engine as engine_mod
+    prior = engine_mod._sources_registered
+    engine_mod._sources_registered = True
+    clear_query_sources()
+    try:
+        yield
+    finally:
+        clear_query_sources()
+        engine_mod._sources_registered = prior
+
+
+@pytest.mark.unit
+class TestSourceAwareTimeDefaults:
+    """Verify that the engine threads hunt_source_type into query commands so
+    relative_time_field/format can be omitted on YAML when the source declares defaults."""
+
+    def test_hunt_source_type_supplies_default_field_for_event_query(self, _clean_registry, tmpdir):
+        splunk = _RecordingSource(results=[])
+        register_query_source("splunk", splunk)
+
+        # event-transform query with time_range that omits relative_time_field/format;
+        # engine must default to splunk's `_time` / iso8601 because hunt_source_type is "splunk".
+        config = _make_config([
+            {
+                "transform": {
+                    "type": "event",
+                    "method": "property",
+                    "property_name": "lookup",
+                    "command": {
+                        "type": "query",
+                        "source": "splunk",
+                        "query": "search index=main",
+                        "time_range": {"before": "1h", "after": "1h"},
+                    },
+                },
+            },
+        ])
+        hunt_time = datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc)
+        engine = CorrelationEngine(config, [], hunt_time, hunt_source_type="splunk")
+        events = [{"_time": "2024-06-01T00:00:00+00:00"}]
+        engine.execute(events)
+
+        assert len(splunk.calls) == 1
+        ref = datetime.datetime(2024, 6, 1, 0, 0, tzinfo=datetime.timezone.utc)
+        assert splunk.calls[0]["start_time"] == ref - datetime.timedelta(hours=1)
+        assert splunk.calls[0]["end_time"] == ref + datetime.timedelta(hours=1)
+
+    def test_missing_default_field_routes_event_to_alert_with_error(self, _clean_registry, tmpdir):
+        splunk = _RecordingSource(results=[])
+        register_query_source("splunk", splunk)
+
+        config = _make_config([
+            {
+                "transform": {
+                    "type": "event",
+                    "method": "property",
+                    "property_name": "lookup",
+                    "command": {
+                        "type": "query",
+                        "source": "splunk",
+                        "query": "search index=main",
+                        "time_range": {"before": "1h", "after": "1h"},
+                    },
+                },
+            },
+        ])
+        hunt_time = datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc)
+        engine = CorrelationEngine(config, [], hunt_time, hunt_source_type="splunk")
+        # event lacks the default `_time` field
+        events = [{"host": "web1"}]
+        result = engine.execute(events)
+
+        assert len(splunk.calls) == 0  # query never reached because resolution failed
+        assert len(result.trace.event_traces) == 1
+        assert result.trace.event_traces[0].outcome == "error"
+        # event still produces an alert per the fail-safe error policy
+        assert len(result.events) == 1
+
+    def test_stream_mutate_query_switches_current_source(self, _clean_registry, tmpdir):
+        splunk = _RecordingSource(results=[{"_time": "2099-01-01T00:00:00+00:00"}])
+        epoch = _EpochSource(results=[{"ts": "1717200000"}])  # 2024-06-01 00:00:00 UTC
+        register_query_source("splunk", splunk)
+        register_query_source("epoch_src", epoch)
+
+        # step 1: stream-mutate query against epoch_src replaces the stream and
+        # switches current source to epoch_src.
+        # step 2: event-transform query against splunk; because current source is now
+        # epoch_src, default field is `ts` (epoch). The new event's `ts` should anchor
+        # the time range; if defaults still pointed to splunk's `_time` we'd fail
+        # because the new event has no `_time`.
+        config = _make_config([
+            {
+                "transform": {
+                    "type": "stream",
+                    "method": "mutate",
+                    "command": {
+                        "type": "query",
+                        "source": "epoch_src",
+                        "query": "epoch search",
+                        "time_range": {"before": "1h"},
+                    },
+                },
+            },
+            {
+                "transform": {
+                    "type": "event",
+                    "method": "property",
+                    "property_name": "context",
+                    "command": {
+                        "type": "query",
+                        "source": "splunk",
+                        "query": "search lookup",
+                        "time_range": {"before": "30m", "after": "30m"},
+                    },
+                },
+            },
+        ])
+        hunt_time = datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc)
+        engine = CorrelationEngine(config, [], hunt_time, hunt_source_type="splunk")
+        # initial event has _time so the stream-mutate query (anchored to hunt_time) runs fine
+        engine.execute([{"_time": "2024-05-31T00:00:00+00:00"}])
+
+        # second query (after the stream mutate) should be anchored to ts=1717200000
+        assert len(splunk.calls) == 1
+        ref = datetime.datetime.fromtimestamp(1717200000, tz=datetime.timezone.utc)
+        assert splunk.calls[0]["start_time"] == ref - datetime.timedelta(minutes=30)
+        assert splunk.calls[0]["end_time"] == ref + datetime.timedelta(minutes=30)
+
+    def test_resolve_command_source_handles_defined_query(self, _clean_registry):
+        splunk = _RecordingSource()
+        register_query_source("splunk", splunk)
+
+        from saq.collectors.hunter.correlation.schema import CommandConfig
+
+        predef = PredefinedCommandConfig(
+            name="splunk_lookup", type="query", source="splunk", query="search foo",
+        )
+        engine = CorrelationEngine(
+            _make_config([]), [predef], datetime.datetime.now(datetime.timezone.utc),
+            hunt_source_type="splunk",
+        )
+        defined_cmd = CommandConfig(type="defined", name="splunk_lookup")
+        assert engine._resolve_command_source(defined_cmd) == "splunk"
+        # executable defined commands return None (don't switch source on stream mutate)
+        exec_predef = PredefinedCommandConfig(name="ext", type="executable", path="/bin/true")
+        engine.predefined_commands = [exec_predef]
+        defined_exec = CommandConfig(type="defined", name="ext")
+        assert engine._resolve_command_source(defined_exec) is None

@@ -821,6 +821,72 @@ def test_initialize_last_execution_time(monkeypatch, tmpdir):
     assert hunt.ready
 
 @pytest.mark.unit
+def test_last_alert_times_persistence(monkeypatch, tmpdir):
+    class MockManager:
+        @property
+        def hunt_type(self):
+            return "test"
+
+    data_dir = tmpdir / "data"
+    data_dir.mkdir()
+    p_dir = data_dir / "p"
+    p_dir.mkdir()
+    monkeypatch.setattr(get_global_runtime_settings(), "data_dir", str(data_dir))
+    monkeypatch.setattr(get_config().collection, "persistence_dir", "p")
+
+    hunt = Hunt(manager=MockManager(),
+                config=default_hunt_config(name="test_persist", suppression="00:01:00"))
+    now = local_time()
+
+    hunt.set_last_alert_time(now, "bob")
+    hunt.set_last_alert_time(now, "alice")
+
+    # rehydrate from disk by constructing a fresh Hunt with the same name
+    fresh = Hunt(manager=MockManager(),
+                 config=default_hunt_config(name="test_persist", suppression="00:01:00"))
+
+    bob_time = fresh.get_last_alert_time("bob")
+    alice_time = fresh.get_last_alert_time("alice")
+
+    assert bob_time is not None
+    assert alice_time is not None
+    assert bob_time.tzinfo is not None
+    assert alice_time.tzinfo is not None
+    assert bob_time == now
+    assert alice_time == now
+    assert fresh.get_last_alert_time("never_seen") is None
+
+@pytest.mark.unit
+def test_prune_expired_last_alert_times(monkeypatch, tmpdir):
+    class MockManager:
+        @property
+        def hunt_type(self):
+            return "test"
+
+    data_dir = tmpdir / "data"
+    data_dir.mkdir()
+    p_dir = data_dir / "p"
+    p_dir.mkdir()
+    monkeypatch.setattr(get_global_runtime_settings(), "data_dir", str(data_dir))
+    monkeypatch.setattr(get_config().collection, "persistence_dir", "p")
+
+    hunt = Hunt(manager=MockManager(),
+                config=default_hunt_config(name="test_prune", suppression="00:01:00"))
+    now = local_time()
+
+    # one expired entry (10 minutes ago vs 1-minute suppression) and one current entry
+    hunt.set_last_alert_time(now - timedelta(minutes=10), "expired")
+    hunt.set_last_alert_time(now, "current")
+
+    hunt.prune_expired_last_alert_times()
+
+    # rehydrate to confirm the prune was persisted to disk
+    fresh = Hunt(manager=MockManager(),
+                 config=default_hunt_config(name="test_prune", suppression="00:01:00"))
+    assert fresh.get_last_alert_time("expired") is None
+    assert fresh.get_last_alert_time("current") is not None
+
+@pytest.mark.unit
 def test_initialize_last_execution_time_cron(monkeypatch, tmpdir):
     class MockManager:
         @property

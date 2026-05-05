@@ -7,6 +7,9 @@ from saq.collectors.hunter.correlation.registry import QuerySource
 class SplunkQuerySource(QuerySource):
     """Query source adapter for Splunk, wrapping the existing Splunk client."""
 
+    default_time_field = "_time"
+    default_time_format = "iso8601"
+
     def __init__(self, config_name: str = "default"):
         self.config_name = config_name
 

@@ -278,8 +278,19 @@ class Hunt:
             #return None
 
     @property
+    def group_by(self) -> Optional[str]:
+        """The field used to group results into separate alerts, or None if the hunt is not grouped.
+           Subclasses (e.g. QueryHunt) override this; the base class has no concept of grouping."""
+        return None
+
+    @property
     def suppressed(self):
         """Returns True if this hunt is currently suppressed."""
+        # grouped hunts manage suppression per group_value inside process_query_results,
+        # so the hunt as a whole is never globally suppressed
+        if self.group_by is not None:
+            return False
+
         if not self.last_alert_time:
             return False
 
@@ -291,6 +302,10 @@ class Hunt:
     @property
     def suppression_end(self):
         """Returns the time at which suppression for this hunt ends, or None if the hunt is not currently suppressed."""
+        # grouped hunts do not have a single hunt-level suppression window
+        if self.group_by is not None:
+            return None
+
         if not self.suppressed:
             return None
 
@@ -336,6 +351,97 @@ class Hunt:
 
         self._last_alert_time = value
         write_persistence_data(self.type, self.name, 'last_alert_time', value)
+
+    @property
+    def last_alert_times(self) -> dict[str, datetime.datetime]:
+        """Per-group last alert times, used when group_by is configured.
+           Returns a dict mapping group_by value -> last alert time (tz-aware UTC).
+           Independent of the singular last_alert_time which is used for ungrouped hunts."""
+        if hasattr(self, '_last_alert_times'):
+            return self._last_alert_times
+
+        loaded = read_persistence_data(self.type, self.name, 'last_alert_times')
+        if loaded is None:
+            self._last_alert_times = {}
+        else:
+            # ensure tz info is preserved across legacy pickles where datetimes may be naive
+            self._last_alert_times = {
+                k: (pytz.utc.localize(v) if v.tzinfo is None else v)
+                for k, v in loaded.items()
+            }
+
+        return self._last_alert_times
+
+    @last_alert_times.setter
+    def last_alert_times(self, value: dict[str, datetime.datetime]):
+        normalized = {
+            k: (pytz.utc.localize(v) if v.tzinfo is None else v)
+            for k, v in value.items()
+        }
+        self._last_alert_times = normalized
+        write_persistence_data(self.type, self.name, 'last_alert_times', normalized)
+
+    def get_last_alert_time(self, group_value: Optional[str]) -> Optional[datetime.datetime]:
+        """Returns the last alert time for the given group_value, or None if no alert has been recorded.
+           When group_value is None, returns the singular hunt-level last_alert_time."""
+        if group_value is None:
+            return self.last_alert_time
+
+        return self.last_alert_times.get(group_value)
+
+    def set_last_alert_time(self, value: datetime.datetime, group_value: Optional[str]):
+        """Sets the last alert time for the given group_value.
+           When group_value is None, sets the singular hunt-level last_alert_time.
+           This method does exactly one thing: it sets the value. Pruning of expired entries
+           is handled separately by prune_expired_last_alert_times()."""
+        if group_value is None:
+            self.last_alert_time = value
+            return
+
+        if value.tzinfo is None:
+            value = pytz.utc.localize(value)
+
+        # access through the property to ensure _last_alert_times is loaded
+        current = dict(self.last_alert_times)
+        current[group_value] = value
+        self.last_alert_times = current
+
+    def is_group_suppressed(self, group_value: str) -> bool:
+        """Returns True if alerts for the given group_value are currently suppressed."""
+        if not self.suppression:
+            return False
+
+        last = self.get_last_alert_time(group_value)
+        if not last:
+            return False
+
+        return local_time() < last + self.suppression
+
+    def prune_expired_last_alert_times(self):
+        """Drops entries from last_alert_times whose suppression window has already ended.
+           Writes the pruned dict back to disk. No-op if suppression is not configured or
+           the dict is empty. Intended to be called explicitly (not as a side effect of a setter)."""
+        if not self.suppression:
+            return
+
+        current = self.last_alert_times
+        if not current:
+            return
+
+        now = local_time()
+        suppression = self.suppression
+        pruned = {k: v for k, v in current.items() if now < v + suppression}
+
+        if len(pruned) == len(current):
+            # nothing to prune; avoid an unnecessary disk write
+            return
+
+        removed_count = len(current) - len(pruned)
+        logging.debug(
+            "pruned %s expired last_alert_times entries for hunt %s (uuid=%s, type=%s)",
+            removed_count, self.name, self.uuid, self.type,
+        )
+        self.last_alert_times = pruned
 
     #
     # misc

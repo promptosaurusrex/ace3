@@ -112,20 +112,22 @@ global:
   # optional default proxy to use for all http/https requests
   # leave empty to not use a proxy at all
   default_proxy:
-  # global kill switch for the analysis result cache (Phase 2+)
-  # set to false to stop all cache writes without touching per-module cache_ttl settings
-  analysis_cache_enabled: true
-  # root directory for the content-addressed blob store used by the analysis cache
+
+# analysis result cache (Phase 2+) configuration
+analysis_cache:
+  # global kill switch — set to false to stop all cache writes without touching per-module cache_ttl settings
+  enabled: true
+  # root directory for the content-addressed blob store
   # unset = <data_dir>/blob_store; relative paths are resolved against SAQ_HOME
   blob_store_dir:
   # zstd compression level for cached analysis deltas (1-22; 3 is near-optimal)
-  analysis_cache_zstd_level: 3
+  zstd_level: 3
   # spill analysis.details to the blob store once its serialized size exceeds this many bytes
-  analysis_cache_details_spill_bytes: 16384
+  details_spill_bytes: 16384
   # refuse to cache deltas whose compressed payload exceeds this many bytes
-  analysis_cache_max_compressed_bytes: 1048576
+  max_compressed_bytes: 1048576
   # prune sweep batch size — keep lock windows short
-  analysis_cache_prune_batch_size: 1000
+  prune_batch_size: 1000
 
 # directives that cannot be copied between observables via copy_directives_to
 fixed_directives:

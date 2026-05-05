@@ -364,6 +364,24 @@ class QueryHunt(Hunt):
         By default this returns the event that is passed in."""
         return event
 
+    def _render_name(self, event: dict) -> str:
+        """Renders self.name as a Jinja2 template against the given event.
+
+        Falls back to the raw config name when the template has no Jinja markers
+        (fast path) or when rendering fails."""
+        raw_name = self.name
+        if "{{" not in raw_name and "{%" not in raw_name:
+            return raw_name
+
+        rendered = render_jinja_template(raw_name, event, strict=False)
+        if rendered is None:
+            logging.warning(
+                "falling back to raw name for hunt uuid=%s name=%s due to template render failure",
+                self.uuid, raw_name,
+            )
+            return raw_name
+        return rendered
+
     def create_root_analysis(self, event: dict) -> RootAnalysis:
         import uuid as uuidlib
         root_uuid = str(uuidlib.uuid4())
@@ -390,7 +408,7 @@ class QueryHunt(Hunt):
         root = RootAnalysis(
             uuid=root_uuid,
             storage_dir=os.path.join(get_temp_dir(), root_uuid),
-            desc=self.name,
+            desc=self._render_name(event),
             instructions=self.description,
             analysis_mode=self.analysis_mode,
             tool=f'hunter-{self.type}',
@@ -633,6 +651,7 @@ class QueryHunt(Hunt):
                 predefined_commands=getattr(self.config, "_predefined_commands", []),
                 hunt_time=local_time(),
                 max_result_count=self.max_result_count,
+                hunt_source_type=self.type,
             )
             result = engine.execute(query_results)
             self.correlation_trace = result.trace
@@ -711,7 +730,7 @@ class QueryHunt(Hunt):
             signature_id_observable = create_observable(F_SIGNATURE_ID, self.uuid)
 
             if signature_id_observable is not None:
-                signature_id_observable.display_value = self.name
+                signature_id_observable.display_value = self._render_name(event)
                 observables.append(signature_id_observable)
 
             # if we are NOT grouping then each row is an alert by itself
@@ -769,6 +788,9 @@ class QueryHunt(Hunt):
                     if grouping_target not in event_grouping:
                         event_grouping[grouping_target] = _create_submission(event)
                         event_grouping[grouping_target].key = _compute_dedup_key(event)
+                        # associate the submission with its group value so the manager can record
+                        # per-group last_alert_time without re-deriving the grouping
+                        event_grouping[grouping_target].group_value = grouping_target
                         if grouping_target != "ALL":
                             if self.description_field is not None and self.description_field in event:
                                 description_value = event[self.description_field]
@@ -859,5 +881,21 @@ class QueryHunt(Hunt):
         if self.original_query_results is not None:
             for submission in submissions:
                 submission.root.details[QUERY_DETAILS_ORIGINAL_EVENTS] = self.original_query_results
+
+        # filter out groups whose suppression window has not yet elapsed.
+        # the hunt is run as a whole because we cannot know which groups are present
+        # until after the query executes; suppression then drops the per-group alerts.
+        if self.group_by is not None and self.suppression is not None:
+            kept = []
+            for submission in submissions:
+                group_value = getattr(submission, "group_value", None)
+                if group_value is not None and self.is_group_suppressed(group_value):
+                    logging.info(
+                        "suppressed alert for hunt %s (uuid=%s, type=%s) group_by=%s group_value=%s",
+                        self.name, self.uuid, self.type, self.group_by, group_value,
+                    )
+                    continue
+                kept.append(submission)
+            submissions = kept
 
         return submissions

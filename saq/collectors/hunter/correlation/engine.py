@@ -86,6 +86,7 @@ class CorrelationEngine:
         predefined_commands: list[PredefinedCommandConfig],
         hunt_time: datetime.datetime,
         max_result_count: Optional[int] = None,
+        hunt_source_type: Optional[str] = None,
     ):
         global _sources_registered
         if not _sources_registered:
@@ -98,9 +99,18 @@ class CorrelationEngine:
         self.max_result_count = max_result_count
         self.timeout = parse_timespec(correlate_config.timeout)
         self.stream_query_cache: dict[str, str] = {}
+        # name of the source that produced the current event stream; starts as the
+        # hunt's primary type (e.g. "splunk") and updates when a stream-mutate query
+        # command replaces the stream from a different source. used to supply
+        # default relative_time_field/format when the YAML omits them.
+        self.hunt_source_type = hunt_source_type
+        self._current_source: Optional[str] = hunt_source_type
 
     def execute(self, events: list[dict]) -> CorrelationResult:
         """Execute correlation logic on the event stream."""
+        # reset source tracking so a reused engine instance starts from the hunt's primary type
+        self._current_source = self.hunt_source_type
+
         # Fetch secrets and config once per execution
         try:
             self._secrets = export_encrypted_passwords()
@@ -399,6 +409,7 @@ class CorrelationEngine:
                     self.stream_query_cache,
                     self._secrets,
                     self._config,
+                    self._current_source,
                 )
 
             # Count result rows from command output
@@ -408,6 +419,14 @@ class CorrelationEngine:
             updated_event, new_stream = apply_transform(transform, output, event, events)
 
             if new_stream is not None:
+                # a stream mutate driven by a query replaces the stream's origin;
+                # update the tracked source so subsequent default lookups use the new system.
+                # mutate by executable / merge by query / merge by executable leave the source unchanged.
+                if transform.method == "mutate":
+                    new_source = self._resolve_command_source(transform.command)
+                    if new_source is not None:
+                        self._current_source = new_source
+
                 # Append trace before raising since the exception skips the caller's append
                 if parent_trace_steps is not None:
                     parent_trace_steps.append(step_trace)
@@ -457,6 +476,16 @@ class CorrelationEngine:
                 is_interrupt=action_result.is_interrupt,
             ),
         )
+
+    def _resolve_command_source(self, command: CommandConfig) -> Optional[str]:
+        """Return the query source name a command resolves to, or None if not a query."""
+        if command.type == "query":
+            return command.source
+        if command.type == "defined" and command.name:
+            for predef in self.predefined_commands:
+                if predef.name == command.name and predef.type == "query":
+                    return predef.source
+        return None
 
     def _render_command_summary(
         self,

@@ -299,7 +299,9 @@ class AnalysisExecutor:
             os.path.join(context.root.storage_dir, "saq.log")
         )
         logging_handler.setLevel(logging.getLogger().level)
-        logging_handler.setFormatter(logging.getLogger().handlers[0].formatter)
+        logging_handler.setFormatter(logging.Formatter(
+            "[%(asctime)s] [%(filename)s:%(lineno)d] [%(threadName)s] [%(process)d] [%(levelname)s] - %(message)s"
+        ))
         logging.getLogger().addHandler(logging_handler)
 
         try:
@@ -1146,7 +1148,7 @@ class AnalysisExecutor:
                         if (
                             analysis_module.cache_ttl is not None
                             and not delta.has_removals
-                            and get_config().global_settings.analysis_cache_enabled
+                            and get_config().analysis_cache.enabled
                         ):
                             try:
                                 delta.cache_key = generate_cache_key(work_item.observable, analysis_module)
