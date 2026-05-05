@@ -607,6 +607,19 @@ observable_types:
   #                           offered to analysts in pickers/forms.
   config_path: "etc/observable_types.yaml"
 
+  # How often (in seconds) registry accessors stat the YAML and reload it if
+  # the mtime has changed. Lets analysts add or deprecate types in YAML and
+  # have ACE pick up the change without a container restart. The check is
+  # debounced per process: at most one os.stat() call per worker per
+  # interval, regardless of how many accessor calls happen in between.
+  #
+  # The deployed signatures repo is typically pulled by cron every 15 min,
+  # so 60s gives a worst-case staleness of ~16 min. Set to 0 (or any
+  # non-positive value) to disable runtime reload — the registry then
+  # behaves exactly as it did before this feature: load once at startup,
+  # never reload.
+  reload_check_interval_seconds: 60.0
+
 email_archive:
   target: local # possible values: local, s3
   # if this system is archiving emails, this determines what section to use for the database config

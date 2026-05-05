@@ -15,7 +15,11 @@ from aceapi_v2.schemas import ListResponse
 # All routes in this router require authentication
 router = APIRouter(dependencies=[Security(get_current_auth)])
 
-_cache = TTLCache()
+# 60s aligns with the registry's mtime-based reload window
+# (observable_types.reload_check_interval_seconds in saq.default.yaml), so
+# worst-case GUI staleness when an analyst adds a type to the YAML is
+# ~2 min rather than the previous 5–6.
+_cache = TTLCache(ttl=60)
 
 
 @router.get("/", response_model=ListResponse[ObservableTypeRead])

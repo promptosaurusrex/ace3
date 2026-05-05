@@ -446,6 +446,7 @@ class NRDURLList(BaseModel):
 class ObservableTypesConfig(BaseModel):
     """Configuration for the per-observable-type registry (inheritance, default display types, ...)."""
     config_path: str = Field(default="", description="path to a YAML file providing per-observable-type configuration; blank disables YAML-defined config (Python-class inheritance still applies)")
+    reload_check_interval_seconds: float = Field(default=60.0, description="how often (in seconds) accessors stat the YAML and reload if mtime changed; set to 0 (or negative) to disable runtime reload entirely")
 
 
 class AnalysisCacheConfig(BaseModel):

@@ -37,6 +37,8 @@ label of a given type.
 
 import logging
 import os
+import threading
+import time
 from typing import Optional
 
 import yaml
@@ -88,14 +90,25 @@ class TypeHierarchy:
         self._deprecated_types: set[str] = set()
         self._yaml_declared_types: set[str] = set()
         self._ancestors_cache: dict[str, tuple[str, ...]] = {}
+        # Runtime reload state. _config_path is set by load_yaml_config and is
+        # what _maybe_reload re-stats. _reload_check_interval <= 0 disables it.
+        self._config_path: Optional[str] = None
+        self._last_mtime: Optional[float] = None
+        self._next_reload_check: Optional[float] = None
+        self._reload_check_interval: float = 60.0
+        self._reload_lock = threading.Lock()
 
     def load_yaml_config(self, path: str) -> None:
         """Load the per-type YAML config and rebuild.
 
         Errors (missing file, bad YAML, cycles, schema violations) are logged
         and the prior state is preserved.
+
+        Also records ``path`` and the file's mtime so :meth:`_maybe_reload`
+        can detect changes on subsequent accessor calls.
         """
         try:
+            mtime = os.stat(path).st_mtime
             with open(path, "r") as f:
                 raw = yaml.safe_load(f) or {}
             config = ObservableTypesFile.model_validate(raw)
@@ -133,6 +146,10 @@ class TypeHierarchy:
             and new_deprecated_types == self._deprecated_types
             and new_yaml_declared_types == self._yaml_declared_types
         ):
+            # State unchanged, but still anchor the path + mtime so the
+            # runtime-reload check keeps the right baseline.
+            self._config_path = path
+            self._last_mtime = mtime
             return
 
         try:
@@ -151,6 +168,8 @@ class TypeHierarchy:
         self._deprecated_types = new_deprecated_types
         self._yaml_declared_types = new_yaml_declared_types
         self._ancestors_cache.clear()
+        self._config_path = path
+        self._last_mtime = mtime
 
         logging.info(
             "loaded %d observable type entries from %s "
@@ -226,6 +245,51 @@ class TypeHierarchy:
         self._deprecated_types.clear()
         self._yaml_declared_types.clear()
         self._ancestors_cache.clear()
+        self._config_path = None
+        self._last_mtime = None
+        self._next_reload_check = None
+
+    def _maybe_reload(self) -> None:
+        """Reload the YAML if its mtime has changed and the debounce has elapsed.
+
+        No-op when the registry was never bootstrapped from a file
+        (``_config_path is None``) or when ``_reload_check_interval`` is not
+        positive. Bails immediately if another thread is already reloading.
+        Errors during reload preserve prior state via :meth:`load_yaml_config`.
+        """
+        if self._config_path is None:
+            return
+        if self._reload_check_interval <= 0:
+            return
+
+        now = time.monotonic()
+        if self._next_reload_check is not None and now < self._next_reload_check:
+            return
+
+        if not self._reload_lock.acquire(blocking=False):
+            return
+        try:
+            # Recheck inside the lock; another thread may have just finished.
+            now = time.monotonic()
+            if self._next_reload_check is not None and now < self._next_reload_check:
+                return
+
+            try:
+                current_mtime = os.stat(self._config_path).st_mtime
+            except FileNotFoundError:
+                logging.warning(
+                    "observable types config %s vanished; keeping prior state",
+                    self._config_path,
+                )
+                self._next_reload_check = now + self._reload_check_interval
+                return
+
+            if self._last_mtime is None or current_mtime > self._last_mtime:
+                self.load_yaml_config(self._config_path)
+
+            self._next_reload_check = now + self._reload_check_interval
+        finally:
+            self._reload_lock.release()
 
 
 class _CycleError(RuntimeError):
@@ -247,7 +311,13 @@ _HIERARCHY = TypeHierarchy()
 
 
 def get_type_hierarchy() -> TypeHierarchy:
-    """Return the process-global type hierarchy registry."""
+    """Return the process-global type hierarchy registry.
+
+    Triggers a debounced mtime check on the bootstrapped YAML so changes
+    to the file on disk are picked up without a process restart. See
+    :meth:`TypeHierarchy._maybe_reload`.
+    """
+    _HIERARCHY._maybe_reload()
     return _HIERARCHY
 
 
@@ -260,9 +330,12 @@ def get_all_valid_types() -> list[str]:
 
     Lives in this module rather than ``saq.observables.__init__`` to avoid the
     package-init circular import path through aceapi_v2 presenters.
+
+    Triggers the same debounced mtime check as :func:`get_type_hierarchy`.
     """
     from saq.observables.generator import OBSERVABLE_TYPE_MAPPING
 
+    _HIERARCHY._maybe_reload()
     return sorted(set(OBSERVABLE_TYPE_MAPPING.keys()) | _HIERARCHY.yaml_declared_types())
 
 
@@ -274,6 +347,10 @@ def bootstrap_type_hierarchy() -> None:
     returns None for every type, is_subtype only returns True for the
     self-comparison).
 
+    Also primes the runtime-reload interval from
+    ``observable_types.reload_check_interval_seconds``; a value of 0 or
+    less disables runtime reload.
+
     Imported lazily inside the function so this module can be imported during
     ``saq.observables`` package init (before configuration has been loaded)
     without pulling in the configuration machinery.
@@ -281,10 +358,13 @@ def bootstrap_type_hierarchy() -> None:
     from saq.configuration import get_config
 
     try:
-        config_path = get_config().observable_types.config_path
+        observable_types_config = get_config().observable_types
     except AttributeError:
         return
 
+    _HIERARCHY._reload_check_interval = observable_types_config.reload_check_interval_seconds
+
+    config_path = observable_types_config.config_path
     if not config_path:
         return
 

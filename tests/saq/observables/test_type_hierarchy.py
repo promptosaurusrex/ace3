@@ -334,3 +334,261 @@ def _write_yaml(content: str) -> str:
     with os.fdopen(fd, "w") as f:
         f.write(textwrap.dedent(content))
     return path
+
+
+def _rewrite_yaml(path: str, content: str, *, mtime_bump: float = 1.0) -> None:
+    """Overwrite ``path`` with ``content`` and bump its mtime.
+
+    Tests that exercise the runtime-reload path need the file's mtime to
+    change so :meth:`TypeHierarchy._maybe_reload` notices. On fast hosts a
+    rewrite within the same second can land with the same mtime under
+    coarse-resolution filesystems, so we explicitly stat-then-bump.
+    """
+    import os
+    import textwrap
+
+    with open(path, "w") as f:
+        f.write(textwrap.dedent(content))
+    current = os.stat(path).st_mtime
+    os.utime(path, (current, current + mtime_bump))
+
+
+@pytest.mark.unit
+def test_reload_picks_up_mtime_change():
+    """A change to the file on disk is reflected after _maybe_reload runs."""
+    h = TypeHierarchy()
+    h._reload_check_interval = 60.0
+    yaml_path = _write_yaml(
+        """
+        types:
+          return_path: { extends: email_address }
+        """
+    )
+    h.load_yaml_config(yaml_path)
+    assert h.parent_of("return_path") == "email_address"
+    assert h.parent_of("pdf_file") is None
+
+    _rewrite_yaml(
+        yaml_path,
+        """
+        types:
+          pdf_file: { extends: file }
+        """,
+    )
+
+    # Bypass the debounce window so the next accessor triggers a reload.
+    h._next_reload_check = None
+    h._maybe_reload()
+
+    assert h.parent_of("pdf_file") == "file"
+    # return_path was removed from the YAML, so it should be gone now too.
+    assert h.parent_of("return_path") is None
+
+
+@pytest.mark.unit
+def test_reload_no_op_when_mtime_unchanged():
+    """If nothing changed on disk, _maybe_reload doesn't rebuild state."""
+    h = TypeHierarchy()
+    h._reload_check_interval = 60.0
+    yaml_path = _write_yaml(
+        """
+        types:
+          return_path: { extends: email_address }
+        """
+    )
+    h.load_yaml_config(yaml_path)
+    parent_dict_before = h._parent  # identity, not value
+    last_mtime_before = h._last_mtime
+
+    h._next_reload_check = None
+    h._maybe_reload()
+
+    # Same dict instance — load_yaml_config was not called.
+    assert h._parent is parent_dict_before
+    assert h._last_mtime == last_mtime_before
+
+
+@pytest.mark.unit
+def test_reload_debounce_prevents_excessive_stats(monkeypatch):
+    """Within the debounce window, repeated accessors stat the file at most once."""
+    import os as os_mod
+
+    h = TypeHierarchy()
+    h._reload_check_interval = 60.0
+    yaml_path = _write_yaml(
+        """
+        types:
+          return_path: { extends: email_address }
+        """
+    )
+    h.load_yaml_config(yaml_path)
+
+    real_stat = os_mod.stat
+    stat_paths: list[str] = []
+
+    def counting_stat(p, *args, **kwargs):
+        if p == yaml_path:
+            stat_paths.append(p)
+        return real_stat(p, *args, **kwargs)
+
+    monkeypatch.setattr(os_mod, "stat", counting_stat)
+
+    # First call after load may stat once if the next-check window has expired;
+    # subsequent calls within the window must not stat at all.
+    h._next_reload_check = None
+    h._maybe_reload()
+    first_count = len(stat_paths)
+    for _ in range(20):
+        h._maybe_reload()
+    assert len(stat_paths) == first_count, (
+        "expected debounce to suppress stats, got "
+        f"{len(stat_paths) - first_count} extra calls"
+    )
+
+
+@pytest.mark.unit
+def test_reload_preserves_state_on_bad_file(caplog):
+    """A malformed file at reload time leaves the prior state intact."""
+    h = TypeHierarchy()
+    h._reload_check_interval = 60.0
+    yaml_path = _write_yaml(
+        """
+        types:
+          return_path: { extends: email_address }
+        """
+    )
+    h.load_yaml_config(yaml_path)
+    assert h.parent_of("return_path") == "email_address"
+
+    _rewrite_yaml(
+        yaml_path,
+        """
+        types:
+          return_path:
+            extends: email_address
+            color: red
+        """,
+    )
+
+    h._next_reload_check = None
+    with caplog.at_level("ERROR"):
+        h._maybe_reload()
+
+    # Bad reload didn't clobber prior state.
+    assert h.parent_of("return_path") == "email_address"
+
+
+@pytest.mark.unit
+def test_reload_disabled_when_interval_zero():
+    """Setting reload_check_interval <= 0 disables runtime reload entirely."""
+    h = TypeHierarchy()
+    yaml_path = _write_yaml(
+        """
+        types:
+          return_path: { extends: email_address }
+        """
+    )
+    h.load_yaml_config(yaml_path)
+    h._reload_check_interval = 0
+
+    _rewrite_yaml(
+        yaml_path,
+        """
+        types:
+          pdf_file: { extends: file }
+        """,
+    )
+
+    # Even with the debounce cleared and the file changed, no reload.
+    h._next_reload_check = None
+    h._maybe_reload()
+    assert h.parent_of("pdf_file") is None
+    assert h.parent_of("return_path") == "email_address"
+
+
+@pytest.mark.unit
+def test_reload_handles_vanished_file(caplog):
+    """If the file disappears between bootstrap and a reload, prior state is kept."""
+    import os as os_mod
+
+    h = TypeHierarchy()
+    h._reload_check_interval = 60.0
+    yaml_path = _write_yaml(
+        """
+        types:
+          return_path: { extends: email_address }
+        """
+    )
+    h.load_yaml_config(yaml_path)
+    assert h.parent_of("return_path") == "email_address"
+
+    os_mod.remove(yaml_path)
+    h._next_reload_check = None
+    with caplog.at_level("WARNING"):
+        h._maybe_reload()
+
+    assert h.parent_of("return_path") == "email_address"
+    assert any("vanished" in r.message.lower() for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_reload_does_nothing_when_never_bootstrapped():
+    """A registry that was never loaded from a file has no path to re-stat."""
+    h = TypeHierarchy()
+    assert h._config_path is None
+    h._reload_check_interval = 60.0
+    h._next_reload_check = None
+    # Should not raise, should not change state.
+    h._maybe_reload()
+    assert h._config_path is None
+
+
+@pytest.mark.unit
+def test_get_type_hierarchy_triggers_reload(monkeypatch):
+    """The module-level accessor calls _maybe_reload on every fetch."""
+    from saq.observables import type_hierarchy as th
+
+    calls = {"count": 0}
+
+    def fake_maybe_reload(_self):
+        calls["count"] += 1
+
+    monkeypatch.setattr(TypeHierarchy, "_maybe_reload", fake_maybe_reload)
+    th.get_type_hierarchy()
+    th.get_type_hierarchy()
+    assert calls["count"] == 2
+
+
+@pytest.mark.unit
+def test_get_all_valid_types_triggers_reload(monkeypatch):
+    """get_all_valid_types also routes through _maybe_reload."""
+    from saq.observables import type_hierarchy as th
+
+    calls = {"count": 0}
+
+    def fake_maybe_reload(_self):
+        calls["count"] += 1
+
+    monkeypatch.setattr(TypeHierarchy, "_maybe_reload", fake_maybe_reload)
+    th.get_all_valid_types()
+    assert calls["count"] == 1
+
+
+@pytest.mark.unit
+def test_reset_clears_reload_state():
+    """reset() (test helper) wipes the runtime-reload bookkeeping too."""
+    h = TypeHierarchy()
+    yaml_path = _write_yaml(
+        """
+        types:
+          return_path: { extends: email_address }
+        """
+    )
+    h.load_yaml_config(yaml_path)
+    assert h._config_path is not None
+    assert h._last_mtime is not None
+
+    h.reset()
+    assert h._config_path is None
+    assert h._last_mtime is None
+    assert h._next_reload_check is None
