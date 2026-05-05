@@ -1,15 +1,17 @@
 # Built-in observable type metadata.
 #
 # Authoritative for descriptions, deprecated flags, default display types, and
-# the inheritance hierarchy of the observable types ACE ships with. Migrated
-# from constants.py (OBSERVABLE_DESCRIPTIONS / VALID_OBSERVABLE_TYPES /
-# DEPRECATED_OBSERVABLES); F_* string identifiers stay in code, but everything
+# the inheritance hierarchy of the observable types ACE ships with.
+# F_* string identifiers stay in code, but everything
 # else about each type lives here.
 #
 # Loaded by saq.observables.type_hierarchy.bootstrap_type_hierarchy at startup.
 # The path is configured by observable_types.config_path in saq.default.yaml
-# and defaults to this file. Production deployments may override config_path
-# to a single file of their own; that file becomes the *only* one loaded, so
+# and defaults to this file. 
+
+# *** NOTE *** 
+# Production deployments may override config_path
+# to a single file of their own; that file becomes the *ONLY* one loaded, so
 # include any entries from this file you still want.
 #
 # Schema is validated by saq.observables.type_hierarchy.ObservableTypesFile
