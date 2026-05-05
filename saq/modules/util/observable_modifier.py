@@ -59,7 +59,7 @@ def get_nested_value(data: dict, dot_path: str):
 @dataclass
 class TreeCondition:
     analysis_type: str
-    scope: str = "ancestors"  # "ancestors", "descendants", "global", "self", or "parent"
+    scope: str = "ancestors"  # "ancestors", "descendants", "global", "self", "parent", or "siblings"
     details_match: dict[str, re.Pattern] = field(default_factory=dict)
     observable_match: dict[str, re.Pattern] = field(default_factory=dict)
     negate: bool = False
@@ -80,6 +80,8 @@ class TreeCondition:
             analyses = _get_descendant_analyses(observable)
         elif self.scope == "parent":
             analyses = observable.parents
+        elif self.scope == "siblings":
+            analyses = _get_sibling_analyses(observable)
         elif self.scope == "self":
             analyses = observable.all_analysis
         else:  # global
@@ -138,6 +140,29 @@ def _get_ancestor_analyses(observable: Observable) -> Generator[Analysis, None, 
         yield analysis
         if analysis.observable:
             stack.extend(analysis.observable.parents)
+
+
+def _get_sibling_analyses(observable: Observable) -> Generator[Analysis, None, None]:
+    """Yield all analyses on the observable(s) that directly produced this observable.
+
+    For each direct parent analysis P, yield every analysis on P.observable —
+    that is, P itself plus its peers (other analyses on the same observable).
+    Useful for matching a peer analysis without walking the whole ancestor
+    chain — e.g., a URL extracted by URLExtractionAnalysis on a file should
+    consult the FileTypeAnalysis on that same file to learn its mime type.
+    """
+    visited_obs = set()
+    visited_analyses = set()
+    for parent_analysis in observable.parents:
+        parent_obs = parent_analysis.observable
+        if parent_obs is None or id(parent_obs) in visited_obs:
+            continue
+        visited_obs.add(id(parent_obs))
+        for a in parent_obs.all_analysis:
+            if a is None or id(a) in visited_analyses:
+                continue
+            visited_analyses.add(id(a))
+            yield a
 
 
 def _get_descendant_analyses(observable: Observable) -> Generator[Analysis, None, None]:
@@ -493,7 +518,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
     def _parse_tree_condition(self, tc_data: dict, rule_name: str) -> Optional[TreeCondition]:
         analysis_type = tc_data.get("analysis_type", "")
         scope = tc_data.get("scope", "ancestors")
-        if scope not in ("ancestors", "descendants", "global", "self", "parent"):
+        if scope not in ("ancestors", "descendants", "global", "self", "parent", "siblings"):
             logging.warning(f"invalid scope '{scope}' in tree_condition for rule '{rule_name}', defaulting to 'ancestors'")
             scope = "ancestors"
         details_match_raw = tc_data.get("details_match", {}) or {}
