@@ -709,9 +709,11 @@ def test_basic_email_parsing(root_analysis, datadir):
 @pytest.mark.integration
 def test_multi_recipient_to_cc_observables(root_analysis, datadir):
     """A single To: header with multiple addresses, plus a CC: with mixed local/external recipients,
-    should produce one F_EMAIL_TO per To: address, one F_EMAIL_CC per CC: address, and one
-    F_EMAIL_DELIVERY per local-domain recipient (To: + CC:). External CC: addresses must NOT
-    produce a delivery observable."""
+    should produce one F_EMAIL_TO per To: address and one F_EMAIL_CC per CC: address.
+
+    NOTE on F_EMAIL_DELIVERY: ACE journals one alert per recipient, so each alert remediates
+    only its own mailbox (mail_to / env_rcpt_to). Sibling recipients in the To: / CC: headers
+    do NOT get delivery observables on this alert — their own alert handles their mailbox."""
 
     root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
     root_analysis.analysis_mode = "test_groups"
@@ -741,20 +743,14 @@ def test_multi_recipient_to_cc_observables(root_analysis, datadir):
     email_to_values = {o.value for o in email_analysis.observables if o.type == F_EMAIL_TO}
     assert email_to_values == {'alice@company.com', 'bob@company.com'}
 
-    # all four CC: recipients must appear as F_EMAIL_CC observables
+    # all three CC: recipients must appear as F_EMAIL_CC observables
     email_cc_values = {o.value for o in email_analysis.observables if o.type == F_EMAIL_CC}
     assert email_cc_values == {'carol@company.com', 'outsider@external.example', 'dan@company.com'}
 
-    # F_EMAIL_DELIVERY observables: every local-domain recipient (To + CC), none for external CC
+    # F_EMAIL_DELIVERY observables: only this alert's recipient. With no SMTP envelope on
+    # the fixture, mail_to falls back to the FIRST parsed To: address.
     delivery_values = {o.value for o in email_analysis.get_observables_by_type(F_EMAIL_DELIVERY)}
-    expected_deliveries = {
-        create_email_delivery(message_id, 'alice@company.com'),
-        create_email_delivery(message_id, 'bob@company.com'),
-        create_email_delivery(message_id, 'carol@company.com'),
-        create_email_delivery(message_id, 'dan@company.com'),
-    }
-    assert delivery_values == expected_deliveries
-    assert create_email_delivery(message_id, 'outsider@external.example') not in delivery_values
+    assert delivery_values == {create_email_delivery(message_id, 'alice@company.com')}
 
     # mail_to should reflect both header To: addresses (multi-recipient parsing)
     assert email_analysis.mail_to_addresses == ['alice@company.com', 'bob@company.com']
