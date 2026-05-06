@@ -1,0 +1,26 @@
+Return-Path: <sender@external.example>
+Received: from mail.external.example (unknown [192.0.2.20])
+	by mx.company.com (Postfix) with ESMTPS id 0123456789AB
+	for <alice@company.com>; Tue, 04 Mar 2025 15:00:00 -0500 (EST)
+Subject: Test multi-chunk RFC 2047 attachment filename
+To: alice@company.com
+From: External Sender <sender@external.example>
+Message-ID: <multi-rfc2047-filename-test@external.example>
+Date: Tue, 04 Mar 2025 15:00:00 -0500
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="boundary123"
+
+--boundary123
+Content-Type: text/plain; charset="us-ascii"
+Content-Transfer-Encoding: 7bit
+
+This is the body.
+
+--boundary123
+Content-Type: application/octet-stream; name="=?utf-8?b?SGVsbG8=?=__=?utf-8?b?V29ybGQ=?=.txt"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="=?utf-8?b?SGVsbG8=?=__=?utf-8?b?V29ybGQ=?=.txt"
+
+VGVzdCBjb250ZW50Cg==
+
+--boundary123--

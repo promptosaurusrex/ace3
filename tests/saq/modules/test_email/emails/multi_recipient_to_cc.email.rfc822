@@ -1,0 +1,16 @@
+Return-Path: <sender@external.example>
+Received: from mail.external.example (unknown [192.0.2.10])
+	by mx.company.com (Postfix) with ESMTPS id 0123456789AB
+	for <alice@company.com>; Tue, 04 Mar 2025 14:00:00 -0500 (EST)
+Content-Type: text/plain; charset="us-ascii"
+Subject: Re: Invoices 12927-12929
+To: alice@company.com, Bob <bob@company.com>
+CC: Carol <carol@company.com>,
+	Outsider <outsider@external.example>,
+	Dan <dan@company.com>
+From: External Sender <sender@external.example>
+MIME-Version: 1.0
+Message-ID: <multi-recipient-test-12345@external.example>
+Date: Tue, 04 Mar 2025 14:00:00 -0500
+
+This is a synthesized test email for the multi-recipient To/CC fixture.
