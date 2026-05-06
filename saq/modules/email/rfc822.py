@@ -294,13 +294,6 @@ class EmailAnalysis(Analysis):
         return None
 
     @property
-    def reply_to(self):
-        if self.email and KEY_REPLY_TO in self.email:
-            return self.email[KEY_REPLY_TO]
-
-        return None
-
-    @property
     def return_path(self):
         if self.email and KEY_RETURN_PATH in self.email:
             return self.email[KEY_RETURN_PATH]
@@ -785,7 +778,9 @@ class EmailAnalyzer(AnalysisModule):
             env_mail_from = mail_from.value
 
         # we also have what To: addrsses are in the headers
-        for mail_to in target_email.get_all('to', []):
+        # use get_address_list (which calls email.utils.getaddresses) so a single
+        # To: header listing multiple comma-separated addresses is split correctly
+        for mail_to in get_address_list(target_email, 'to'):
             address = normalize_email_address(mail_to)
             if address:
                 header_tos.append(address)
@@ -866,7 +861,9 @@ class EmailAnalyzer(AnalysisModule):
 
         email_details[KEY_TO] = [decode_rfc2822(h) for h in target_email.get_all('to', [])]
         email_details[KEY_TO_ADDRESSES] = get_address_list(target_email, 'to')
-        for addr in email_details[KEY_TO]:
+        # iterate KEY_TO_ADDRESSES (parsed via email.utils.getaddresses) so multi-address
+        # To: headers like "a@x, Name <b@x>" produce one observable per recipient
+        for addr in email_details[KEY_TO_ADDRESSES]:
             address = normalize_email_address(addr)
             if address:
                 # if we don't know who it was delivered to yet then we grab the first To:
@@ -897,24 +894,34 @@ class EmailAnalyzer(AnalysisModule):
                 # we don't want to do that here so we exclude that analysis
                 message_id_observable.exclude_analysis(MessageIDAnalyzerV2)
 
-            if mail_to:
-                if is_local_email_domain(mail_to):
-                    email_delivery_observable = analysis.add_observable_by_spec(F_EMAIL_DELIVERY,
-                                                create_email_delivery(email_details[KEY_MESSAGE_ID], mail_to))
+            # Build a deduplicated list of every recipient that should produce a
+            # delivery observable: the SMTP envelope recipients plus every parsed
+            # To: header address. We need an observable per local-domain recipient
+            # so the remediation system can reach each mailbox the message landed in.
+            delivery_addresses = []
+            seen_delivery_addresses = set()
+            for candidate in [mail_to, *env_rcpt_to, *email_details.get(KEY_TO_ADDRESSES, [])]:
+                normalized = normalize_email_address(candidate) if candidate else None
+                if normalized and normalized not in seen_delivery_addresses:
+                    seen_delivery_addresses.add(normalized)
+                    delivery_addresses.append(normalized)
 
-                    if email_delivery_observable:
-                        # if a message_id observable has the DIRECTIVE_REMEDIATE directive
-                        # then that directive gets copied to the delivery observable
-                        # so that the remediation system knows where to find the email
-                        for _ in self.get_root().get_observables_by_type(F_MESSAGE_ID):
-                            if message_id_observable and _.value == message_id_observable.value and _.has_directive(DIRECTIVE_REMEDIATE):
-                                logging.info(f"copying directive {DIRECTIVE_REMEDIATE} from message-id {_.value} to {email_delivery_observable.value}")
-                                email_delivery_observable.add_directive(DIRECTIVE_REMEDIATE)
+            for delivery_address in delivery_addresses:
+                if not is_local_email_domain(delivery_address):
+                    continue
 
-            for rcpt_to in env_rcpt_to:
-                if is_local_email_domain(rcpt_to):
-                    email_delivery_observable = analysis.add_observable_by_spec(F_EMAIL_DELIVERY,
-                                                create_email_delivery(email_details[KEY_MESSAGE_ID], rcpt_to))
+                email_delivery_observable = analysis.add_observable_by_spec(
+                    F_EMAIL_DELIVERY,
+                    create_email_delivery(email_details[KEY_MESSAGE_ID], delivery_address))
+
+                if email_delivery_observable:
+                    # if a message_id observable has the DIRECTIVE_REMEDIATE directive
+                    # then that directive gets copied to the delivery observable
+                    # so that the remediation system knows where to find the email
+                    for _ in self.get_root().get_observables_by_type(F_MESSAGE_ID):
+                        if message_id_observable and _.value == message_id_observable.value and _.has_directive(DIRECTIVE_REMEDIATE):
+                            logging.info(f"copying directive {DIRECTIVE_REMEDIATE} from message-id {_.value} to {email_delivery_observable.value}")
+                            email_delivery_observable.add_directive(DIRECTIVE_REMEDIATE)
 
         if 'x-sender' in target_email:
             address = normalize_email_address(decode_rfc2822(target_email['x-sender']))
@@ -949,28 +956,46 @@ class EmailAnalyzer(AnalysisModule):
 
         if 'return-path' in target_email:
             address = normalize_email_address(decode_rfc2822(target_email['return-path']))
-            email_details[KEY_RETURN_PATH] = address
             if address:
+                email_details[KEY_RETURN_PATH] = address
                 add_email_address_observable(analysis, F_EMAIL_RETURN_PATH, address)
 
         # we add these last since there could be a lot of them
 
         if 'cc' in target_email:
             email_details[KEY_CC] = get_address_list(target_email, 'cc')
+            message_id_observable = next(
+                iter(analysis.get_observables_by_type(F_MESSAGE_ID)),
+                None,
+            )
             for address in email_details[KEY_CC]:
                 add_email_address_observable(analysis, F_EMAIL_CC, address, conversation_source=mail_from)
+
+                # CC'd recipients on local domains need their own delivery observable
+                # so the remediation system can reach each mailbox.
+                normalized_cc = normalize_email_address(address)
+                if (
+                    normalized_cc
+                    and email_details.get(KEY_MESSAGE_ID)
+                    and is_local_email_domain(normalized_cc)
+                ):
+                    email_delivery_observable = analysis.add_observable_by_spec(
+                        F_EMAIL_DELIVERY,
+                        create_email_delivery(email_details[KEY_MESSAGE_ID], normalized_cc),
+                    )
+                    if email_delivery_observable and message_id_observable:
+                        for _ in self.get_root().get_observables_by_type(F_MESSAGE_ID):
+                            if _.value == message_id_observable.value and _.has_directive(DIRECTIVE_REMEDIATE):
+                                logging.info(f"copying directive {DIRECTIVE_REMEDIATE} from message-id {_.value} to {email_delivery_observable.value}")
+                                email_delivery_observable.add_directive(DIRECTIVE_REMEDIATE)
 
         # the rest of these details are for the generate logging output
         # (there may be a limit configured for the maximum number of observables)
 
-        # extract CC and BCC recipients
-        cc = []
-        if 'cc' in target_email:
-            cc = [e.strip() for e in decode_rfc2822(target_email['cc']).split(',')]
-
-        bcc = []
-        if 'bcc' in target_email:
-            bcc = [e.strip() for e in decode_rfc2822(target_email['bcc']).split(',')]
+        # extract CC and BCC recipients (use get_address_list so display names
+        # containing commas, e.g. `"Doe, John" <a@x>`, don't get mis-split)
+        cc = get_address_list(target_email, 'cc') if 'cc' in target_email else []
+        bcc = get_address_list(target_email, 'bcc') if 'bcc' in target_email else []
 
         path = []
         for header in target_email.get_all('received', []):
@@ -1019,9 +1044,10 @@ class EmailAnalyzer(AnalysisModule):
                     decoded_subject_observable.display_type = "Decoded Subject"
 
         # get the first and last received header values
+        # NOTE: do NOT reassign `path` here — the IP path list built earlier
+        # from received-from headers is what feeds log_entry['path'].
         last_received = None
         first_received = None
-        path = None
         for header, value in email_details[KEY_HEADERS]:
             if header.lower().startswith('received'):
                 if not last_received:
@@ -1029,8 +1055,6 @@ class EmailAnalyzer(AnalysisModule):
                 first_received = value
 
         # START ATTACHMENT PARSING
-
-        unknown_index = 0
 
         # we use this later when we write the log message
         attachments = [] # of ( size, type, name, sha256 )
@@ -1066,14 +1090,13 @@ class EmailAnalyzer(AnalysisModule):
                     file_name = target.get_filename()
 
                 if file_name:
-                    decoded_header = email.header.decode_header(file_name)
-                    if decoded_header:
-                        decoded_header, charset = decoded_header[0]
-                        if charset:
-                            try:
-                                file_name = decoded_header.decode(charset, errors='replace')
-                            except LookupError as e:
-                                logging.warning(str(e))
+                    # decode_header returns a list of (bytes_or_str, charset) chunks for
+                    # RFC2047 encoded-word headers; make_header concatenates and decodes
+                    # them all so multi-chunk filenames aren't truncated to the first piece.
+                    try:
+                        file_name = str(email.header.make_header(email.header.decode_header(file_name)))
+                    except (LookupError, UnicodeDecodeError) as e:
+                        logging.warning(f"unable to fully decode attachment filename {file_name!r}: {e}")
 
                     file_name = re.sub(r'[\r\n]', '', file_name)
 
@@ -1120,9 +1143,15 @@ class EmailAnalyzer(AnalysisModule):
 
                 # figure out what the payload should be
                 if target.get_content_type() == 'message/rfc822':
-                    part = target.get_payload()
-                    part = part[0]
-                    payload = part.as_bytes()
+                    inner = target.get_payload()
+                    if isinstance(inner, list) and inner:
+                        payload = inner[0].as_bytes()
+                    elif isinstance(inner, email.message.Message):
+                        payload = inner.as_bytes()
+                    else:
+                        # nothing usable inside the rfc822 part; skip extraction
+                        logging.debug(f"message/rfc822 part in {_file} has no extractable payload")
+                        return
                 elif target.is_multipart():
                     # in the case of email attachments we need the whole things (including headers)
                     payload = target.as_bytes()
@@ -1397,11 +1426,12 @@ class EmailAnalyzer(AnalysisModule):
                     address_n = normalize_email_address(address)
                     if address_n:
                         add_email_address_observable(analysis, F_EMAIL_ENVELOPE_RCPT_TO, address_n)
+                        # whitelist-by-recipient must run regardless of whether MAIL FROM is known
+                        if self.whitelist.is_whitelisted(WHITELIST_TYPE_SMTP_TO, address_n):
+                            _file.whitelist()
                         if mailfrom_n:
                             analysis.add_observable_by_spec(F_EMAIL_CONVERSATION, create_email_conversation(mailfrom,
                                                     address_n))
-                            if self.whitelist.is_whitelisted(WHITELIST_TYPE_SMTP_TO, address_n):
-                                _file.whitelist()
 
             from_n = None
             if from_:
@@ -1412,16 +1442,16 @@ class EmailAnalyzer(AnalysisModule):
                         _file.whitelist()
 
             for address in to_:
-                address_n = normalize_email_address(address_n)
+                address_n = normalize_email_address(address)
                 if address_n:
                     add_email_address_observable(analysis, F_EMAIL_TO, address_n)
                     if self.whitelist.is_whitelisted(WHITELIST_TYPE_SMTP_TO, address_n):
                         _file.whitelist()
 
-                if from_:
-                    analysis.add_observable_by_spec(F_EMAIL_CONVERSATION, create_email_conversation(
-                                            normalize_email_address(from_),
-                                            normalize_email_address(address)))
+                    if from_n:
+                        analysis.add_observable_by_spec(F_EMAIL_CONVERSATION, create_email_conversation(
+                                                from_n,
+                                                address_n))
 
             if x_originating_ip:
                 analysis.add_observable_by_spec(F_IP, x_originating_ip)

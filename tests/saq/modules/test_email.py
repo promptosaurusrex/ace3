@@ -9,7 +9,7 @@ import pytz
 
 from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_config, get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_EMAIL_LOGGER, ANALYSIS_TYPE_BRO_SMTP, ANALYSIS_TYPE_MAILBOX, DB_BROCESS, DB_EMAIL_ARCHIVE, DIRECTIVE_ARCHIVE, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, EVENT_TIME_FORMAT_JSON_TZ, F_EMAIL_ADDRESS, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_FILE, F_MESSAGE_ID, F_URL, create_email_conversation, create_email_delivery
+from saq.constants import ANALYSIS_MODULE_EMAIL_LOGGER, ANALYSIS_TYPE_BRO_SMTP, ANALYSIS_TYPE_MAILBOX, DB_BROCESS, DB_EMAIL_ARCHIVE, DIRECTIVE_ARCHIVE, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, EVENT_TIME_FORMAT_JSON_TZ, F_EMAIL_ADDRESS, F_EMAIL_CC, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_FROM, F_EMAIL_TO, F_FILE, F_MESSAGE_ID, F_URL, create_email_conversation, create_email_delivery
 from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.crypto import decrypt
 from saq.database.model import load_alert
@@ -705,6 +705,103 @@ def test_basic_email_parsing(root_analysis, datadir):
             assert file_observable.has_directive(DIRECTIVE_PREVIEW)
         elif file_observable.value == 'splunk_logging.email.rfc822.unknown_text_html_000':
             assert file_observable.has_directive(DIRECTIVE_EXTRACT_URLS)
+
+@pytest.mark.integration
+def test_multi_recipient_to_cc_observables(root_analysis, datadir):
+    """A single To: header with multiple addresses, plus a CC: with mixed local/external recipients,
+    should produce one F_EMAIL_TO per To: address, one F_EMAIL_CC per CC: address, and one
+    F_EMAIL_DELIVERY per local-domain recipient (To: + CC:). External CC: addresses must NOT
+    produce a delivery observable."""
+
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(str(datadir / 'emails/multi_recipient_to_cc.email.rfc822'))
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    file_observable = root_analysis.get_observable(file_observable.uuid)
+    assert file_observable
+    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    assert isinstance(email_analysis, EmailAnalysis)
+    email_analysis.load_details()
+
+    assert email_analysis.parsing_error is None
+
+    message_id = '<multi-recipient-test-12345@external.example>'
+    assert email_analysis.message_id == message_id
+
+    # both To: recipients must appear as F_EMAIL_TO observables (not just the first)
+    email_to_values = {o.value for o in email_analysis.observables if o.type == F_EMAIL_TO}
+    assert email_to_values == {'alice@company.com', 'bob@company.com'}
+
+    # all four CC: recipients must appear as F_EMAIL_CC observables
+    email_cc_values = {o.value for o in email_analysis.observables if o.type == F_EMAIL_CC}
+    assert email_cc_values == {'carol@company.com', 'outsider@external.example', 'dan@company.com'}
+
+    # F_EMAIL_DELIVERY observables: every local-domain recipient (To + CC), none for external CC
+    delivery_values = {o.value for o in email_analysis.get_observables_by_type(F_EMAIL_DELIVERY)}
+    expected_deliveries = {
+        create_email_delivery(message_id, 'alice@company.com'),
+        create_email_delivery(message_id, 'bob@company.com'),
+        create_email_delivery(message_id, 'carol@company.com'),
+        create_email_delivery(message_id, 'dan@company.com'),
+    }
+    assert delivery_values == expected_deliveries
+    assert create_email_delivery(message_id, 'outsider@external.example') not in delivery_values
+
+    # mail_to should reflect both header To: addresses (multi-recipient parsing)
+    assert email_analysis.mail_to_addresses == ['alice@company.com', 'bob@company.com']
+
+    # log_entry path should contain the received-from IP (Fix D regression check)
+    assert email_analysis.log_entry is not None
+    assert email_analysis.log_entry['path'] is not None
+    assert any('192.0.2.10' in entry for entry in email_analysis.log_entry['path'])
+
+    # cc/bcc in log_entry now use get_address_list (Fix K regression check)
+    assert isinstance(email_analysis.log_entry['cc'], list)
+    assert 'carol@company.com' in email_analysis.log_entry['cc']
+    assert 'outsider@external.example' in email_analysis.log_entry['cc']
+
+    # Return-Path header is present, so KEY_RETURN_PATH should be the parsed address (Fix G)
+    assert email_analysis.return_path == 'sender@external.example'
+
+@pytest.mark.integration
+def test_attachment_filename_multi_rfc2047_chunks(root_analysis, datadir):
+    """An attachment whose filename uses multiple RFC 2047 encoded-word chunks should have
+    all chunks decoded — not just the first. Old code dropped everything after [0]."""
+
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(str(datadir / 'emails/multi_rfc2047_filename.email.rfc822'))
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    file_observable = root_analysis.get_observable(file_observable.uuid)
+    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    email_analysis.load_details()
+    assert email_analysis.parsing_error is None
+
+    # the resulting attachment file observable's name should contain BOTH "Hello" and
+    # "World" — i.e. all encoded-word chunks were decoded. With the old code, only
+    # the first chunk ("Hello") was decoded and the rest of the filename was dropped.
+    file_observables = email_analysis.get_observables_by_type(F_FILE)
+    attachment_names = [o.file_name for o in file_observables]
+    assert any('Hello' in n and 'World' in n for n in attachment_names), \
+        f"expected an attachment whose decoded name contains both 'Hello' and 'World', got: {attachment_names!r}"
 
 @pytest.mark.integration
 def test_basic_smtp_email_parsing(root_analysis, datadir):
