@@ -61,6 +61,12 @@ class _ObservableState:
     redirection: Optional[str]  # UUID string or None
     ignored: bool
     analysis_keys: frozenset  # set of module_path keys in observable._analysis
+    # Phase 3 (Step 3.0): per-analysis `delayed` flag at capture time, used
+    # to detect delayed→completed transitions on existing analysis slots.
+    # Without this, delayed-analysis modules (e.g. phishkit) could never be
+    # cached because the snapshot only captures the analysis dict on slot
+    # transitions absent→present, missing the post-delay completion.
+    analysis_delayed: dict  # module_path -> bool (only present analyses)
 
     @classmethod
     def capture(cls, observable: "Observable") -> "_ObservableState":
@@ -78,6 +84,12 @@ class _ObservableState:
             rel_ids.add(ident)
             rels_by_id[ident] = r
 
+        analysis_delayed = {}
+        for module_path, a in observable._analysis.items():
+            # Skip bool sentinels (False = "module ran, no analysis").
+            if not isinstance(a, bool) and a is not None:
+                analysis_delayed[module_path] = bool(getattr(a, "delayed", False))
+
         return cls(
             uuid=observable.uuid,
             tags=frozenset(observable.tags),
@@ -92,6 +104,7 @@ class _ObservableState:
             redirection=observable._redirection,
             ignored=observable._ignored,
             analysis_keys=frozenset(observable._analysis.keys()),
+            analysis_delayed=analysis_delayed,
         )
 
 
@@ -206,11 +219,27 @@ class ModuleExecutionSnapshot:
         # Root-level diff
         root_diff = _diff_root_state(before, after)
 
-        # Compute module path — look for new analysis keys that appeared
+        # Compute module path — capture analysis_dict in two cases:
+        #   (1) slot transitioned absent→present (the original case)
+        #   (2) slot present in both, but `delayed` transitioned True→False
+        #       (delayed-analysis module just completed — Phase 3 Step 3.0)
+        # Without case (2), delayed-analysis modules emit a captured analysis
+        # only on the partial first call (which is refused at cache write
+        # time because delayed=True), and the final post-delay completion
+        # produces an empty analysis_dict.
         module_path = _get_module_path(module)
         analysis_dict = None
         if module_path is not None:
-            if module_path not in before.target_observable.analysis_keys and module_path in after.target_observable.analysis_keys:
+            before_present = module_path in before.target_observable.analysis_keys
+            after_present = module_path in after.target_observable.analysis_keys
+            capture = False
+            if not before_present and after_present:
+                capture = True
+            elif before_present and after_present:
+                was_delayed = before.target_observable.analysis_delayed.get(module_path, False)
+                is_delayed = after.target_observable.analysis_delayed.get(module_path, False)
+                capture = was_delayed and not is_delayed
+            if capture:
                 analysis_obj = observable.get_analysis(module_path)
                 if analysis_obj and analysis_obj is not None and analysis_obj is not False:
                     analysis_dict = _serialize_analysis(analysis_obj)
@@ -397,21 +426,36 @@ def _diff_root_state(before: ModuleExecutionSnapshot, after: ModuleExecutionSnap
 def _serialize_analysis(analysis) -> dict:
     """Serialize an Analysis object to a dict for storage in a delta.
 
-    Captures the key fields: summary, details reference, completed/delayed
-    flags, and the module_path. Does NOT capture child observables (those
-    are tracked separately as new_observables in the delta).
+    Captures the key fields plus the in-memory ``details`` dict so cache
+    replay on a *different* alert's root can reconstruct the analysis
+    without reading from the source alert's storage_dir. Does NOT capture
+    child observables (those are tracked separately as ``new_observables``
+    on the delta).
+
+    Ordering invariant: this runs inside ``ModuleExecutionSnapshot.diff``
+    *before* ``root.save()``, so ``analysis.details`` is still in memory
+    and has not been flushed/discarded by the persistence manager.
     """
     result = {
         "module_path": analysis.module_path,
     }
     if hasattr(analysis, "summary") and analysis.summary is not None:
         result["summary"] = analysis.summary
-    if hasattr(analysis, "summary_details") and analysis.summary_details is not None:
-        result["summary_details"] = analysis.summary_details
+    if hasattr(analysis, "summary_details") and analysis.summary_details:
+        # Convert SummaryDetail objects to dicts so json.dumps doesn't
+        # fall back to default=str (which would silently corrupt them).
+        # AnalysisSerializer.deserialize reads dicts and converts back.
+        result["summary_details"] = [d.to_dict() for d in analysis.summary_details]
     if hasattr(analysis, "completed"):
         result["completed"] = analysis.completed
     if hasattr(analysis, "delayed"):
         result["delayed"] = analysis.delayed
     if hasattr(analysis, "external_details_path") and analysis.external_details_path is not None:
         result["external_details_path"] = analysis.external_details_path
+    # Capture the live in-memory details dict so cache replay can
+    # rehydrate it on a different alert's storage_dir. Step 3.1 — without
+    # this, Phase 2's ``_maybe_spill_details`` codepath was dead and cache
+    # rows carried no usable payload.
+    if hasattr(analysis, "details") and isinstance(analysis.details, dict):
+        result["details"] = analysis.details
     return result

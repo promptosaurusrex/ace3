@@ -24,6 +24,7 @@ Size discipline (design doc §A3):
 """
 
 import hashlib
+import importlib
 import json
 import logging
 import time
@@ -33,14 +34,22 @@ import zstandard
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
-from saq.analysis.blob_store import REFERRER_KIND_CACHE_ROW, BlobStore
+from saq.analysis.analysis import Analysis as _Analysis, UnknownAnalysis
+from saq.analysis.blob_store import (
+    REFERRER_KIND_CACHE_ROW,
+    BlobNotFound,
+    BlobStore,
+)
+from saq.analysis.module_execution_delta import ModuleExecutionDelta
+from saq.analysis.module_path import SPLIT_MODULE_PATH
 from saq.configuration.config import get_config
 from saq.database.model import AnalysisResultCache, BlobRef
 from saq.database.pool import get_db
+from saq.util import parse_event_time
 
 if TYPE_CHECKING:
-    from saq.analysis.module_execution_delta import ModuleExecutionDelta
     from saq.analysis.observable import Observable
+    from saq.analysis.root import RootAnalysis
 
 
 def generate_cache_key(observable: "Observable", module) -> Optional[str]:
@@ -114,6 +123,30 @@ def put_cached_delta(
         if delta.has_removals:
             logging.warning(
                 "refusing to cache delta for %s on observable %s:%s — contains removals",
+                module.config.name, delta.observable_type, delta.observable_value,
+            )
+            return False
+        # Step 3.2: refuse to cache deltas captured mid-delay. Replay path
+        # unconditionally marks the analysis completed — caching a delayed
+        # analysis would lie. Combined with snapshot Step 3.0, the only
+        # delta that survives this gate for a delayed-analysis module is
+        # the final post-delay one, which is exactly what we want to cache.
+        # INFO not WARNING — for delayed modules this fires once per
+        # intermediate cycle and is expected behavior.
+        if delta.analysis is not None and delta.analysis.get("delayed"):
+            logging.info(
+                "skipping cache write for %s on observable %s:%s — analysis still delayed",
+                module.config.name, delta.observable_type, delta.observable_value,
+            )
+            return False
+        # Step 3.3: refuse to cache deltas that would spawn file
+        # observables on replay. File-byte materialization is Phase 4
+        # territory; until that lands, replaying a file-spawning delta
+        # against a different alert would yield observables whose backing
+        # bytes don't exist in the target storage_dir.
+        if delta.has_file_observables:
+            logging.warning(
+                "refusing to cache delta for %s on observable %s:%s — contains file observables",
                 module.config.name, delta.observable_type, delta.observable_value,
             )
             return False
@@ -390,3 +423,351 @@ def _extract_blob_refs(delta_dict: dict) -> list[str]:
             if sha:
                 refs.append(sha)
     return refs
+
+
+def _inline_blob_refs(delta_dict: dict, blob_store: BlobStore) -> None:
+    """Inverse of ``_maybe_spill_details`` — walk the delta dict and replace
+    every ``{"__blob_ref__": sha}`` pointer with the bytes from the blob
+    store, parsed back to its original JSON shape.
+
+    Mutates ``delta_dict`` in place. Raises ``BlobNotFound`` if any
+    referenced blob is missing — caller (``get_cached_delta``) translates
+    that into a cache miss.
+
+    Currently only ``analysis.details`` ever spills, but the function is
+    written to extend cleanly when other fields start spilling.
+    """
+    analysis = delta_dict.get("analysis")
+    if not isinstance(analysis, dict):
+        return
+    details = analysis.get("details")
+    if isinstance(details, dict) and "__blob_ref__" in details:
+        sha = details["__blob_ref__"]
+        with blob_store.get(sha) as fp:
+            blob_bytes = fp.read()
+        analysis["details"] = json.loads(blob_bytes.decode("utf-8"))
+
+
+def get_cached_delta(
+    observable: "Observable",
+    module,
+    blob_store: BlobStore,
+) -> Optional[ModuleExecutionDelta]:
+    """Look up a cached ``ModuleExecutionDelta`` for ``(observable, module)``.
+
+    Returns ``None`` on any of: module not opted in (``cache_ttl is None``),
+    cache disabled globally, no row, expired row, legacy pre-Step-3.1 row
+    (no ``details`` key in the analysis dict), missing blob, or any
+    decode/decompress failure. Misses are logged with a structured
+    ``reason`` so Splunk can break them down.
+
+    All exceptions are caught — cache lookup is best-effort and must
+    never propagate into the executor.
+    """
+    cache_key = generate_cache_key(observable, module)
+    if cache_key is None:
+        return None
+
+    if not get_config().analysis_cache.enabled:
+        return None
+
+    module_name = getattr(getattr(module, "config", None), "name", "<unknown>")
+    observable_type = getattr(observable, "type", "<unknown>")
+    cache_key_prefix = cache_key[:12]
+    lookup_start_ns = time.monotonic_ns()
+
+    def _miss(reason: str) -> None:
+        lookup_ms = (time.monotonic_ns() - lookup_start_ns) // 1_000_000
+        logging.info(
+            "analysis cache miss module=%s observable_type=%s "
+            "cache_key_prefix=%s reason=%s lookup_ms=%d",
+            module_name, observable_type, cache_key_prefix, reason, lookup_ms,
+        )
+
+    try:
+        row = get_db().execute(
+            select(
+                AnalysisResultCache.delta_zstd,
+                AnalysisResultCache.has_blob_refs,
+            )
+            .where(
+                AnalysisResultCache.cache_key == cache_key,
+                AnalysisResultCache.expires_at > func.now(),
+            )
+        ).first()
+
+        if row is None:
+            _miss("not_found")
+            return None
+
+        delta_zstd, has_blob_refs = row
+        try:
+            delta_json = zstandard.ZstdDecompressor().decompress(delta_zstd)
+            delta_dict = json.loads(delta_json.decode("utf-8"))
+        except Exception:
+            logging.warning(
+                "failed to decode cached delta for %s cache_key_prefix=%s",
+                module_name, cache_key_prefix, exc_info=True,
+            )
+            _miss("decode_error")
+            return None
+
+        # Step 3.4 legacy-shape guard: pre-Step-3.1 rows wrote
+        # `analysis` dicts without a `details` key. Treat as miss so the
+        # executor falls through to a live run, which will overwrite the
+        # row via ON DUPLICATE KEY UPDATE with a Step-3.1-shaped delta.
+        analysis_in_dict = delta_dict.get("analysis")
+        if isinstance(analysis_in_dict, dict) and "details" not in analysis_in_dict:
+            _miss("legacy_no_details")
+            return None
+
+        if has_blob_refs:
+            try:
+                _inline_blob_refs(delta_dict, blob_store)
+            except BlobNotFound as e:
+                logging.warning(
+                    "cached delta for %s cache_key_prefix=%s references missing blob %s",
+                    module_name, cache_key_prefix, e, exc_info=False,
+                )
+                _miss("blob_missing")
+                return None
+
+        try:
+            delta = ModuleExecutionDelta.from_dict(delta_dict)
+        except Exception:
+            logging.warning(
+                "failed to deserialize cached delta for %s cache_key_prefix=%s",
+                module_name, cache_key_prefix, exc_info=True,
+            )
+            _miss("decode_error")
+            return None
+
+        # Step 3.4 cache-key recomputation: must match by construction;
+        # mismatch indicates corruption (different module identity stored
+        # against this key, or a key-generation regression). Log but
+        # proceed — the row is presumed good enough for replay.
+        recomputed = generate_cache_key(observable, module)
+        if recomputed != cache_key:
+            logging.warning(
+                "cache_key mismatch on lookup module=%s observable_type=%s "
+                "stored_prefix=%s recomputed_prefix=%s",
+                module_name, observable_type,
+                cache_key_prefix, (recomputed or "")[:12],
+            )
+
+        return delta
+
+    except Exception:
+        logging.warning(
+            "cache lookup failed for module %s cache_key_prefix=%s",
+            module_name, cache_key_prefix, exc_info=True,
+        )
+        _miss("decode_error")
+        return None
+
+
+def apply_delta(
+    root: "RootAnalysis",
+    target_observable: "Observable",
+    delta: ModuleExecutionDelta,
+) -> None:
+    """Apply a cached ``ModuleExecutionDelta`` to a target tree.
+
+    Idempotent additive replay (design doc §5). Re-installs the analysis
+    object on the target observable, adds any child observables, copies
+    over tags / detections / directives / relationships / excluded_analysis
+    / limited_analysis, applies scalar transitions, and applies root-level
+    additions. All primitives used are idempotent — calling ``apply_delta``
+    twice on the same root produces the same state as calling it once.
+
+    Does NOT process ``other_observable_diffs`` or ``analysis_children_diffs``
+    — those only exist on wide-diff captures, which are uncacheable by
+    contract (``AnalysisModuleConfig`` rejects ``wide_diff + cache_ttl``).
+    """
+    # Defense-in-depth: wide-diff deltas should never reach this path
+    # (config validation blocks the combination), but enforce explicitly.
+    assert not delta.wide_diff, "wide_diff deltas are not cacheable"
+
+    if delta.has_file_observables:
+        # Read-time refusal — guards against malformed rows from a prior
+        # buggy build. Treat as a no-op rather than partially applying.
+        logging.warning(
+            "refusing to replay cached delta for %s on observable %s — "
+            "contains file observables (Phase 4 territory)",
+            delta.module_path, target_observable.uuid,
+        )
+        return
+
+    # 1. Rehydrate the Analysis object first so step 2's new observables
+    # can be hung off it as children (matching the live run's structure).
+    # _rehydrate_analysis returns the freshly rehydrated analysis, the
+    # pre-existing one when the slot-collision skip fires, or None when
+    # the delta carries no analysis dict.
+    rehydrated_analysis = _rehydrate_analysis(target_observable, delta)
+
+    # 2. Spawn new observables. Parent is the rehydrated/preserved
+    # analysis when we have one (matches the live run's parent-child
+    # link), else fall back to the root.
+    parent_for_new = rehydrated_analysis if rehydrated_analysis is not None else root
+    for spec in delta.new_observables:
+        _apply_observable_spec(parent_for_new, spec)
+
+    # 3. Apply mutations to the target observable.
+    _apply_observable_diff(target_observable, delta.target_observable_diff, root)
+
+    # 4. Apply root-level mutations.
+    _apply_root_diff(root, delta.root_diff)
+
+
+def _rehydrate_analysis(
+    target_observable: "Observable",
+    delta: ModuleExecutionDelta,
+):
+    """Install the cached analysis on the target observable if absent.
+
+    Returns the analysis instance (newly rehydrated or pre-existing), or
+    None if the delta carried no analysis dict. Honors the slot-collision
+    skip: if the slot already has an Analysis at ``module_path``, leave
+    it alone — the existing instance is good and the analysis_tree_manager
+    would otherwise log a noisy "replacing analysis" error.
+    """
+    if delta.analysis is None:
+        return None
+    module_path = delta.analysis.get("module_path")
+    if not module_path:
+        return None
+
+    existing = target_observable._analysis.get(module_path)
+    if isinstance(existing, _Analysis):
+        # Slot-collision skip: re-analysis path / retry — keep the existing
+        # analysis, idempotent diffs above still apply.
+        return existing
+
+    try:
+        _module_name, _class_name, _instance = SPLIT_MODULE_PATH(module_path)
+        _module = importlib.import_module(_module_name)
+        _class = getattr(_module, _class_name)
+        analysis = _class()
+    except Exception as e:
+        logging.warning(
+            "failed to instantiate %s for cache replay: %s — falling back to UnknownAnalysis",
+            module_path, e,
+        )
+        analysis = UnknownAnalysis(module_path)
+
+    analysis.observable = target_observable
+    analysis.file_manager = target_observable.file_manager
+
+    # Strip alert-specific fields from the dict before letting
+    # AnalysisSerializer.deserialize apply it. ``external_details_path``
+    # is the source alert's path; the persistence manager will re-derive
+    # one when we mark details_modified. ``details`` is applied
+    # separately because the serializer doesn't deserialize it (it's
+    # normally loaded lazily from the path).
+    stripped = dict(delta.analysis)
+    stripped.pop("external_details_path", None)
+    cached_details = stripped.pop("details", None)
+
+    try:
+        analysis.json = stripped
+    except Exception:
+        logging.warning(
+            "failed to apply cached analysis dict for %s on observable %s",
+            module_path, target_observable.uuid, exc_info=True,
+        )
+
+    if isinstance(cached_details, dict):
+        analysis.details = cached_details
+    elif cached_details is not None:
+        analysis.details = cached_details
+    analysis.set_details_modified()
+
+    target_observable.analysis_tree_manager.add_analysis(target_observable, analysis)
+    return analysis
+
+
+def _apply_observable_spec(parent_analysis, spec) -> None:
+    """Add a cached ObservableSpec as a child of ``parent_analysis`` and
+    copy over its initial mutable state. Idempotent — the analysis tree
+    manager dedupes by (type, value, time) and the add_* primitives
+    dedupe at the field level.
+    """
+    o_time = None
+    if spec.time:
+        try:
+            o_time = parse_event_time(spec.time)
+        except Exception:
+            o_time = None
+
+    new_obs = parent_analysis.add_observable_by_spec(
+        spec.type, spec.value, o_time=o_time,
+    )
+    if new_obs is None:
+        return
+    for tag in spec.initial_tags:
+        new_obs.add_tag(tag)
+    for directive in spec.initial_directives:
+        new_obs.add_directive(directive)
+    for det_dict in spec.initial_detections:
+        description = det_dict.get("description")
+        if description:
+            new_obs.add_detection_point(description, det_dict.get("details"))
+
+
+def _apply_observable_diff(observable, diff, root) -> None:
+    """Apply an ObservableDiff's additions and scalar transitions to a
+    live observable. All primitives are idempotent; safe to re-apply.
+    """
+    for tag in diff.added_tags:
+        observable.add_tag(tag)
+    for det_dict in diff.added_detections:
+        description = det_dict.get("description")
+        if description:
+            observable.add_detection_point(description, det_dict.get("details"))
+    for directive in diff.added_directives:
+        observable.add_directive(directive)
+    for rel_dict in diff.added_relationships:
+        target_uuid = rel_dict.get("target")
+        r_type = rel_dict.get("type")
+        if not target_uuid or not r_type:
+            continue
+        target_obs = root.get_observable(target_uuid)
+        if target_obs is None:
+            logging.debug(
+                "skipping relationship %s -> %s on cache replay — target not in tree",
+                r_type, target_uuid,
+            )
+            continue
+        observable.add_relationship(r_type, target_obs)
+    # excluded_analysis / limited_analysis are simple string lists with no
+    # idempotent setter — dedupe manually.
+    for name in diff.added_excluded_analysis:
+        if name not in observable._excluded_analysis:
+            observable._excluded_analysis.append(name)
+    for name in diff.added_limited_analysis:
+        if name not in observable._limited_analysis:
+            observable._limited_analysis.append(name)
+
+    # Scalar transitions: set to "after" value when present.
+    if diff.grouping_target is not None:
+        _, after_val = diff.grouping_target
+        observable._grouping_target = bool(after_val)
+    if diff.redirection is not None:
+        _, after_val = diff.redirection
+        # _redirection is a UUID string; assign directly. (The setter
+        # requires an Observable instance — but the captured form is
+        # already the UUID, so we skip the setter.)
+        observable._redirection = after_val
+    if diff.ignored is not None:
+        _, after_val = diff.ignored
+        observable._ignored = bool(after_val)
+
+
+def _apply_root_diff(root, root_diff) -> None:
+    """Apply RootDiff additions to the root analysis."""
+    for tag in root_diff.added_tags:
+        root.add_tag(tag)
+    for det_dict in root_diff.added_detections:
+        description = det_dict.get("description")
+        if description:
+            root.add_detection_point(description, det_dict.get("details"))

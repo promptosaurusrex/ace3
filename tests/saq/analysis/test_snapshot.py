@@ -3,10 +3,11 @@
 from unittest.mock import MagicMock
 import pytest
 
-from saq.analysis.analysis import Analysis
+from saq.analysis.analysis import Analysis, SummaryDetail
 from saq.analysis.root import RootAnalysis
 from saq.analysis.snapshot import ModuleExecutionSnapshot, _ObservableState
 from saq.constants import F_IPV4, F_FQDN, F_EMAIL_ADDRESS, R_IS_HASH_OF
+from saq.modules.whois import WhoisAnalysis
 
 
 def _make_root(tmp_path):
@@ -511,6 +512,188 @@ class TestRootDiffPaths:
         delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
 
         assert delta.root_diff.removed_tags == ["pending_review"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 Step 3.1: details capture in _serialize_analysis
+# ---------------------------------------------------------------------------
+
+class TestAnalysisDetailsCapture:
+    """When a module creates an Analysis, the snapshot must capture the
+    in-memory ``analysis.details`` dict so cache replay can reconstruct
+    the analysis on a different alert's storage_dir.
+
+    Pre-Step-3.1, ``_serialize_analysis`` only captured metadata
+    (``module_path``, ``summary``, ``external_details_path``, etc.) and
+    omitted the actual payload — making cache rows useless for replay.
+    """
+
+    @pytest.mark.unit
+    def test_analysis_dict_includes_details(self, tmp_path):
+
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        # config.name must match Analysis.module_path (the slot key in
+        # observable._analysis) — the snapshot's _get_module_path falls
+        # back to config.name when the mock fails the MODULE_PATH
+        # isinstance assertion.
+        module = _make_mock_module(name="saq.modules.whois:WhoisAnalysis")
+
+        before = ModuleExecutionSnapshot.narrow(root, obs, module)
+        # Simulate a module run: install a WhoisAnalysis with details.
+        analysis = WhoisAnalysis()
+        analysis.details = {"registrar": "Test", "domain_name": "example.com"}
+        obs.analysis_tree_manager.add_analysis(obs, analysis)
+        after = ModuleExecutionSnapshot.narrow(root, obs, module)
+        delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
+
+        assert delta.analysis is not None
+        assert "details" in delta.analysis, (
+            "snapshot must capture analysis.details for cache replay"
+        )
+        assert delta.analysis["details"]["registrar"] == "Test"
+
+    @pytest.mark.unit
+    def test_summary_details_serialized_as_dicts(self, tmp_path):
+        """``summary_details`` is a list of SummaryDetail objects; the
+        snapshot must convert to dicts via to_dict() so json.dumps
+        round-trips cleanly. Pre-Step-3.1 stuffed the raw list and let
+        ``json.dumps(default=str)`` silently corrupt them.
+        """
+
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        module = _make_mock_module(name="saq.modules.whois:WhoisAnalysis")
+
+        before = ModuleExecutionSnapshot.narrow(root, obs, module)
+        analysis = WhoisAnalysis()
+        analysis.summary_details.append(
+            SummaryDetail(header="Registrar", content="Test Registrar")
+        )
+        obs.analysis_tree_manager.add_analysis(obs, analysis)
+        after = ModuleExecutionSnapshot.narrow(root, obs, module)
+        delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
+
+        details = delta.analysis.get("summary_details")
+        assert isinstance(details, list)
+        assert all(isinstance(d, dict) for d in details), (
+            "summary_details must be dicts so json.dumps doesn't fall back "
+            "to default=str on SummaryDetail objects"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 Step 3.0: delayed→completed transition capture
+# ---------------------------------------------------------------------------
+
+class TestDelayedAnalysisTransitions:
+    """For modules using ``delay_analysis()``, the snapshot only fires
+    its slot-add capture on the first call (when the analysis is created
+    with ``delayed=True``). Without Step 3.0, the post-delay completion
+    call wouldn't capture the analysis dict at all, because the slot was
+    already populated.
+
+    Step 3.0 adds detection of delayed→completed transitions on
+    existing slots so the FINAL post-delay delta carries the populated
+    analysis payload — which is the only one that gets cached
+    (intermediate ``delayed=True`` deltas are refused at write time).
+    """
+
+    @pytest.mark.unit
+    def test_first_call_captures_delayed_analysis(self, tmp_path):
+        """First call: slot newly populated, analysis.delayed=True.
+        Snapshot captures it via the existing slot-add path."""
+
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        module = _make_mock_module(name="saq.modules.whois:WhoisAnalysis")
+
+        before = ModuleExecutionSnapshot.narrow(root, obs, module)
+        analysis = WhoisAnalysis()
+        analysis.delayed = True
+        obs.analysis_tree_manager.add_analysis(obs, analysis)
+        after = ModuleExecutionSnapshot.narrow(root, obs, module)
+        delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
+
+        assert delta.analysis is not None
+        assert delta.analysis["delayed"] is True
+
+    @pytest.mark.unit
+    def test_post_delay_call_captures_via_transition(self, tmp_path):
+        """Post-delay call: slot present in BOTH snapshots, but
+        ``delayed`` transitions True→False. Step 3.0's transition
+        detection fires capture so the final delta carries the now-
+        populated analysis payload.
+        """
+
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        module = _make_mock_module(name="saq.modules.whois:WhoisAnalysis")
+
+        # First call: delayed analysis already in slot.
+        analysis = WhoisAnalysis()
+        analysis.delayed = True
+        obs.analysis_tree_manager.add_analysis(obs, analysis)
+
+        before = ModuleExecutionSnapshot.narrow(root, obs, module)
+        # Simulate post-delay completion.
+        analysis.delayed = False
+        analysis.details = {"registrar": "Test", "completed_at": "2026-05-07"}
+        after = ModuleExecutionSnapshot.narrow(root, obs, module)
+        delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
+
+        assert delta.analysis is not None, (
+            "Step 3.0 must fire when delayed flips True→False on an "
+            "already-populated slot"
+        )
+        assert delta.analysis["delayed"] is False
+        assert delta.analysis["details"]["registrar"] == "Test"
+
+    @pytest.mark.unit
+    def test_intermediate_delayed_cycle_no_capture(self, tmp_path):
+        """Intermediate delayed cycles: slot present in both, both have
+        ``delayed=True``. No transition → no capture. Phase 1
+        attribution still records the (likely empty) delta but
+        ``delta.analysis`` is None so cache write would refuse it
+        cleanly via Step 3.2.
+        """
+
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        module = _make_mock_module(name="saq.modules.whois:WhoisAnalysis")
+
+        analysis = WhoisAnalysis()
+        analysis.delayed = True
+        obs.analysis_tree_manager.add_analysis(obs, analysis)
+
+        before = ModuleExecutionSnapshot.narrow(root, obs, module)
+        # Module polls but stays delayed — no transition.
+        after = ModuleExecutionSnapshot.narrow(root, obs, module)
+        delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
+
+        assert delta.analysis is None
+
+    @pytest.mark.unit
+    def test_no_spurious_capture_on_repeat_non_delayed_call(self, tmp_path):
+        """Slot present in both, both have ``delayed=False`` — neither
+        the slot-add path nor the transition path fires. This is the
+        baseline: a module re-invocation that did nothing shouldn't
+        re-emit the analysis dict.
+        """
+
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        module = _make_mock_module(name="saq.modules.whois:WhoisAnalysis")
+
+        analysis = WhoisAnalysis()
+        analysis.delayed = False  # synchronous module — already complete
+        obs.analysis_tree_manager.add_analysis(obs, analysis)
+
+        before = ModuleExecutionSnapshot.narrow(root, obs, module)
+        after = ModuleExecutionSnapshot.narrow(root, obs, module)
+        delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
+
+        assert delta.analysis is None
 
     @pytest.mark.unit
     def test_root_diff_add_detection(self, tmp_path):
