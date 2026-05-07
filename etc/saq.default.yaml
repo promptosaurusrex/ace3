@@ -1223,6 +1223,7 @@ analysis_module_whois_analyzer:
   python_module: saq.modules.whois
   python_class: WhoisAnalyzer
   enabled: true
+  cache_ttl: 604800  # 7 days
 
 analysis_module_nrd_analyzer:
   name: nrd_analyzer
