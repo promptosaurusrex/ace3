@@ -24,6 +24,7 @@ from saq.database.util.observable_detection import get_all_observable_detections
 from aceapi_v2.observables.service import get_interesting_observables_by_hashes
 from saq.disposition import get_dispositions
 from saq.error.reporting import report_exception
+from saq.remediation.timeline import gather_remediation_events
 from saq.util.ui import create_histogram_string, get_tag_score
 from saq.util.url import find_all_url_domains
 from aceapi_v2.sync import run_async_with_session
@@ -402,11 +403,22 @@ def index():
             target_types[target.type] = []
         target_types[target.type].append(target)
 
+    # Aggregate remediation events from any analysis in the tree that publishes them
+    # plus ACE's own email_delivery remediation attempts from the DB
+    # (see saq/remediation/timeline.py). ACE rows have no native received_time,
+    # so we pass the alert's overall event_time as a fallback. The template
+    # renders an alert-level timeline card when this list is non-empty.
+    remediation_timeline_events = gather_remediation_events(
+        alert.root_analysis,
+        fallback_event_time=alert.root_analysis.event_time,
+    )
+
     import saq.constants
     return render_template(
         'analysis/index.html',
         alert=alert,
         target_types=target_types,
+        remediation_timeline_events=remediation_timeline_events,
         alert_tags=alert_tags,
         observable=observable,
         observable_presenter=create_observable_presenter(observable) if observable else None,
