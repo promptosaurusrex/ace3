@@ -928,12 +928,19 @@ class QueryHunt(Hunt):
         # context relevant to every alert from the run).
         if hasattr(self, "correlation_trace") and self.correlation_trace is not None:
             submission_origin_indices: dict[int, set[int]] = {}
-            for post_correlation_index, submissions_for_event in event_submission_map.items():
+            # Per-submission map from a pre-correlation event_index to that event's position in
+            # the submission's details["events"] list. Lets the trace UI surface the full
+            # structured property value (untruncated) by indexing back into details["events"].
+            events_pos_by_origin: dict[int, dict[int, int]] = {}
+            for post_correlation_index in sorted(event_submission_map):
                 if post_correlation_index >= len(alert_event_origin_indices):
                     continue
                 origin_index = alert_event_origin_indices[post_correlation_index]
-                for submission in submissions_for_event:
+                for submission in event_submission_map[post_correlation_index]:
                     submission_origin_indices.setdefault(id(submission), set()).add(origin_index)
+                    sub_pos_map = events_pos_by_origin.setdefault(id(submission), {})
+                    if origin_index not in sub_pos_map:
+                        sub_pos_map[origin_index] = len(sub_pos_map)
 
             # reverse mapping from pre-correlation event_index (used by EventTrace) back to
             # the post-correlation index (used by query_results / per_event_observables).
@@ -941,6 +948,7 @@ class QueryHunt(Hunt):
 
             for submission in submissions:
                 origins = submission_origin_indices.get(id(submission), set())
+                pos_map = events_pos_by_origin.get(id(submission), {})
                 scoped_event_traces = []
                 for et in self.correlation_trace.event_traces:
                     if et.event_index not in origins:
@@ -952,7 +960,10 @@ class QueryHunt(Hunt):
                             query_results[post_idx],
                             per_event_observables.get(post_idx, []),
                         )
-                    scoped_event_traces.append(et.model_copy(update={"summary": summary}))
+                    scoped_event_traces.append(et.model_copy(update={
+                        "summary": summary,
+                        "events_position": pos_map.get(et.event_index),
+                    }))
                 per_alert_trace = CorrelationTrace(
                     event_traces=scoped_event_traces,
                     stream_events=self.correlation_trace.stream_events,

@@ -84,6 +84,7 @@ class EventTrace(BaseModel):
     steps: list[StepTrace] = Field(default_factory=list, description="Traces of each step executed for this event")
     outcome: str = Field(default="alert", description="Final outcome: alert, filter, stop, discard, timeout, error")
     summary: Optional[str] = Field(default=None, description="Short human-readable summary of this event for display in collapsed UI rows")
+    events_position: Optional[int] = Field(default=None, description="When set on a per-alert trace, the index into the alert's details['events'] list where the full event dict lives — lets the UI surface the untruncated structured value of any property the trace shows")
 
 
 class StreamEvent(BaseModel):

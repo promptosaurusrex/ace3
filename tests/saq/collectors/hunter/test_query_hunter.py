@@ -953,6 +953,80 @@ def test_correlation_trace_scoped_per_alert_with_grouping(monkeypatch):
 
 
 @pytest.mark.unit
+def test_event_trace_events_position_indexes_into_alert_events(monkeypatch):
+    """Each scoped EventTrace should carry an `events_position` field that points at
+    the entry in this submission's `details["events"]` list whose dict matches the
+    trace event. The trace UI uses this to display the untruncated structured value
+    of any property a transform step set on the event."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    correlate = CorrelateConfig.model_validate({"logic": [{"action": "alert"}]})
+
+    # Ungrouped: each event becomes its own alert with events_position == 0.
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="events_position_no_group",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+    submissions = hunt.process_query_results([
+        {"src": "1.1.1.1"},
+        {"src": "2.2.2.2"},
+    ])
+    assert submissions and len(submissions) == 2
+    for s in submissions:
+        events = s.root.details["events"]
+        traces = s.root.details["correlation_trace"]["event_traces"]
+        assert len(events) == 1 and len(traces) == 1
+        pos = traces[0]["events_position"]
+        assert pos == 0
+        assert events[pos]["src"] == s.root.details["events"][0]["src"]
+
+    # Grouped: a single submission can hold N events. events_position must index into
+    # this submission's events list (not the hunt-wide one) and be 1:1 with the trace.
+    hunt2 = default_hunt(
+        manager=MockManager(),
+        name="events_position_grouped",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="msg_id",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+    submissions2 = hunt2.process_query_results([
+        {"msg_id": "A", "src": "1.1.1.1"},
+        {"msg_id": "B", "src": "2.2.2.2"},
+        {"msg_id": "A", "src": "3.3.3.3"},
+        {"msg_id": "A", "src": "4.4.4.4"},
+    ])
+    assert submissions2 and len(submissions2) == 2
+
+    by_msg_id = {s.root.details["events"][0]["msg_id"]: s for s in submissions2}
+    a_sub = by_msg_id["A"]
+    a_events = a_sub.root.details["events"]
+    a_traces = a_sub.root.details["correlation_trace"]["event_traces"]
+    assert len(a_events) == 3 and len(a_traces) == 3
+    # Each trace's events_position must point at an event with the same src as the
+    # one the engine processed for that EventTrace.
+    for et in a_traces:
+        pos = et["events_position"]
+        assert pos is not None
+        assert 0 <= pos < len(a_events)
+    # Positions must be unique within a submission (no two traces map to the same event).
+    a_positions = sorted(et["events_position"] for et in a_traces)
+    assert a_positions == [0, 1, 2]
+
+    b_sub = by_msg_id["B"]
+    b_traces = b_sub.root.details["correlation_trace"]["event_traces"]
+    assert len(b_traces) == 1
+    assert b_traces[0]["events_position"] == 0
+
+
+@pytest.mark.unit
 def test_event_summary_auto_derives_from_description_field_then_group_by(monkeypatch):
     """The auto-derived per-event summary should prefer description_field, then group_by,
     then observable values, in that order — and de-duplicate identical strings so the

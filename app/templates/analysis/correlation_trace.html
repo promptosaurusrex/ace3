@@ -241,8 +241,12 @@
     {% endif %}
 {% endmacro %}
 
-{% macro render_transform_pl(step_wrapper) %}
+{% macro render_transform_pl(step_wrapper, uid="", event_full=none) %}
     {% set trans = step_wrapper.step %}
+    {% set _full_value = none %}
+    {% if trans.property_name and event_full is mapping and trans.property_name in event_full %}
+        {% set _full_value = event_full[trans.property_name] %}
+    {% endif %}
     <i class="bi bi-arrow-repeat text-info"></i>
     <span class="ct-pl-label">
         {% if step_wrapper.description %}{{ step_wrapper.description }}
@@ -263,6 +267,44 @@
     {% endif %}
     {% if trans.property_name and trans.property_value %}
         <code class="ct-val ct-pl-value" title="{{ trans.property_value }}">{{ trans.property_value | truncate(80, true) }}</code>
+    {% endif %}
+    {% if _full_value is not none and uid %}
+        <a role="button" class="btn btn-link btn-xs ct-fullvalue-toggle text-decoration-none" data-bs-toggle="collapse" data-bs-target="#ct_full_{{ uid }}" aria-expanded="false" title="Show the untruncated structured value from this event">
+            <i class="bi bi-arrows-angle-expand"></i> view full value
+        </a>
+    {% endif %}
+{% endmacro %}
+
+{#-- Inline pane that holds the full structured property value for a single transform
+     step. Rendered after the step row so the collapsible spans full width. The JSON
+     tree is built lazily on first expansion to keep first-paint cheap when traces
+     contain many transforms. --#}
+{% macro render_transform_full_value_pane(step_wrapper, uid, event_full) %}
+    {% set trans = step_wrapper.step %}
+    {% if trans.property_name and event_full is mapping and trans.property_name in event_full %}
+        <div class="collapse ct-fullvalue-pane mt-1" id="ct_full_{{ uid }}">
+            <div class="ct-fullvalue-tree" id="ct_full_tree_{{ uid }}"></div>
+        </div>
+        <script type="application/json" id="ct_full_data_{{ uid }}">{{ event_full[trans.property_name] | tojson }}</script>
+        <script>
+        (function() {
+            var pane = document.getElementById('ct_full_{{ uid }}');
+            var dataEl = document.getElementById('ct_full_data_{{ uid }}');
+            if (!pane || !dataEl) return;
+            var rendered = false;
+            pane.addEventListener('shown.bs.collapse', function() {
+                if (rendered) return;
+                rendered = true;
+                var data;
+                try { data = JSON.parse(dataEl.textContent); } catch (e) { data = null; }
+                if (typeof renderJsonTree === 'function') {
+                    renderJsonTree(data, 'ct_full_tree_{{ uid }}', { emptyMessage: 'no value', collapsed: false, useArrayIndexAsKey: true });
+                } else {
+                    document.getElementById('ct_full_tree_{{ uid }}').textContent = JSON.stringify(data, null, 2);
+                }
+            });
+        })();
+        </script>
     {% endif %}
 {% endmacro %}
 
@@ -296,14 +338,14 @@
 {#-- Renders a step's plain-language summary plus a "details" toggle that reveals the
      existing technical badge view. Recursively renders children of a condition step in
      plain-language form so the analyst gets a coherent narrative without expanding details. --#}
-{% macro render_step_pl(step_wrapper, depth, uid) %}
+{% macro render_step_pl(step_wrapper, depth, uid, event_full=none) %}
     {% set step = step_wrapper.step %}
     <div class="ct-pl-step ct-pl-step-{{ step.trace_type }}">
         <div class="ct-pl-row d-flex align-items-center gap-2 flex-wrap">
             {% if step.trace_type == "condition" %}
                 {{ render_condition_pl(step_wrapper) }}
             {% elif step.trace_type == "transform" %}
-                {{ render_transform_pl(step_wrapper) }}
+                {{ render_transform_pl(step_wrapper, uid, event_full) }}
             {% elif step.trace_type == "action" %}
                 {{ render_action_pl(step_wrapper) }}
             {% endif %}
@@ -311,13 +353,16 @@
                 <i class="bi bi-chevron-down ct-details-chevron"></i> details
             </a>
         </div>
+        {% if step.trace_type == "transform" %}
+            {{ render_transform_full_value_pane(step_wrapper, uid, event_full) }}
+        {% endif %}
         <div class="collapse ct-pl-details" id="ct_details_{{ uid }}">
             {{ render_step(step_wrapper, depth) }}
         </div>
         {% if step.trace_type == "condition" and step.branch_steps %}
             <div class="ct-nested ct-rail-primary">
                 {% for child in step.branch_steps %}
-                    {{ render_step_pl(child, depth + 1, uid ~ "_" ~ loop.index) }}
+                    {{ render_step_pl(child, depth + 1, uid ~ "_" ~ loop.index, event_full) }}
                 {% endfor %}
             </div>
         {% endif %}
@@ -522,9 +567,19 @@
                                         <span class="text-muted small ms-auto ct-event-step-count">{{ et.steps | length }} step{{ "" if (et.steps | length) == 1 else "s" }}</span>
                                     </div>
                                     <div class="collapse ct-event-body{% if _is_default_open %} show{% endif %}" id="{{ et_id }}">
+                                        {% set _event_full = none %}
+                                        {% set _events_list = analysis.details.get('events') or [] %}
+                                        {% set _ev_pos = et.get('events_position') if et is mapping else et.events_position %}
+                                        {% if _ev_pos is not none and _ev_pos < (_events_list | length) %}
+                                            {% set _event_full = _events_list[_ev_pos] %}
+                                        {% elif _ev_pos is none and (_display_events | length) == (_events_list | length) and loop.index0 < (_events_list | length) %}
+                                            {# Fall back to loop position for traces persisted before events_position
+                                               existed. Safe when no events were dropped / cap'd in display. #}
+                                            {% set _event_full = _events_list[loop.index0] %}
+                                        {% endif %}
                                         {% if et.steps %}
                                             {% for step in et.steps %}
-                                                {{ render_step_pl(step, 0, et.event_index ~ "_" ~ loop.index) }}
+                                                {{ render_step_pl(step, 0, et.event_index ~ "_" ~ loop.index, _event_full) }}
                                             {% endfor %}
                                         {% else %}
                                             <div class="text-muted small fst-italic">no steps recorded</div>
@@ -663,6 +718,12 @@
 .ct-event-list[data-active-filter="discard"] .ct-event-item:not([data-outcome="discard"]) { display: none; }
 .ct-event-list[data-active-filter="timeout"] .ct-event-item:not([data-outcome="timeout"]) { display: none; }
 .ct-event-list[data-active-filter="error"] .ct-event-item:not([data-outcome="error"]) { display: none; }
+
+/* Full-value inline JSON tree pane (rendered lazily on first expand) */
+.ct-fullvalue-pane { background: #f6f8fa; border: 1px solid #dee2e6; border-radius: 0.25rem; padding: 0.5rem 0.75rem; max-height: 30rem; overflow: auto; font-size: 0.85rem; width: 100%; }
+.ct-fullvalue-tree ul { margin-bottom: 0; padding-left: 0; }
+.ct-fullvalue-toggle { font-size: 0.75rem; padding: 0 0.25rem; }
+.ct-fullvalue-toggle[aria-expanded="true"] .bi-arrows-angle-expand { transform: rotate(45deg); }
 
 /* Compare table */
 .ct-compare-table { font-size: 0.85rem; }
