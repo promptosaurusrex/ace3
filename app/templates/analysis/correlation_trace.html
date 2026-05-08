@@ -204,19 +204,22 @@
      Plain-language renderers — primary visible row per step
      ===================================================================== --#}
 
+{#-- Render an outcome badge. The schema's "alert" outcome means "the event was kept
+     and contributes to this ACE alert" (vs. filtered/stopped/discarded). We display
+     it as "kept" to avoid colliding with the ACE-alert concept analysts work with. --#}
 {% macro pl_outcome_chip(outcome) %}
     {% if outcome == "alert" %}
-        <span class="badge text-bg-danger ct-pl-outcome"><i class="bi bi-exclamation-octagon-fill"></i> alert</span>
+        <span class="badge text-bg-success ct-pl-outcome" title="kept on this alert (passed all filter checks)"><i class="bi bi-check-circle-fill"></i> kept</span>
     {% elif outcome == "filter" %}
-        <span class="badge text-bg-secondary ct-pl-outcome"><i class="bi bi-funnel-fill"></i> filter</span>
+        <span class="badge text-bg-secondary ct-pl-outcome" title="filtered out by a check"><i class="bi bi-funnel-fill"></i> filter</span>
     {% elif outcome == "stop" %}
-        <span class="badge text-bg-warning ct-pl-outcome"><i class="bi bi-stop-circle-fill"></i> stop</span>
+        <span class="badge text-bg-warning ct-pl-outcome" title="stop action halted further processing for this event"><i class="bi bi-stop-circle-fill"></i> stop</span>
     {% elif outcome == "discard" %}
-        <span class="badge text-bg-dark ct-pl-outcome"><i class="bi bi-trash-fill"></i> discard</span>
+        <span class="badge text-bg-dark ct-pl-outcome" title="discard action threw out the entire run"><i class="bi bi-trash-fill"></i> discard</span>
     {% elif outcome == "timeout" %}
-        <span class="badge text-bg-warning ct-pl-outcome"><i class="bi bi-hourglass-split"></i> timeout</span>
+        <span class="badge text-bg-warning ct-pl-outcome" title="correlation timeout reached before this event was processed"><i class="bi bi-hourglass-split"></i> timeout</span>
     {% elif outcome == "error" %}
-        <span class="badge text-bg-danger ct-pl-outcome"><i class="bi bi-exclamation-triangle-fill"></i> error</span>
+        <span class="badge text-bg-danger ct-pl-outcome" title="a step raised an error while processing this event"><i class="bi bi-exclamation-triangle-fill"></i> error</span>
     {% else %}
         <span class="badge text-bg-light text-dark ct-pl-outcome">{{ outcome }}</span>
     {% endif %}
@@ -338,27 +341,61 @@
 {#-- Renders a step's plain-language summary plus a "details" toggle that reveals the
      existing technical badge view. Recursively renders children of a condition step in
      plain-language form so the analyst gets a coherent narrative without expanding details. --#}
+{#-- Compose the plain-language step row plus type-specific reveal panes:
+        - transform: a `command` toggle reveals the rendered query (and any error).
+        - condition: an `expression` toggle reveals the actual evaluated expression
+          tree (jinja/equals/glob/and/or/not breakdown).
+        - action: no extra toggle — the row already states the outcome.
+     The previous generic "details" toggle showed the same badges and value chip
+     that were already in the row, so it was pure noise.  --#}
 {% macro render_step_pl(step_wrapper, depth, uid, event_full=none) %}
     {% set step = step_wrapper.step %}
     <div class="ct-pl-step ct-pl-step-{{ step.trace_type }}">
         <div class="ct-pl-row d-flex align-items-center gap-2 flex-wrap">
             {% if step.trace_type == "condition" %}
                 {{ render_condition_pl(step_wrapper) }}
+                <a role="button" class="ms-auto btn btn-link btn-xs ct-details-toggle text-decoration-none" data-bs-toggle="collapse" data-bs-target="#ct_expr_{{ uid }}" aria-expanded="false" title="Show the actual expression that was evaluated">
+                    <i class="bi bi-chevron-down ct-details-chevron"></i> expression
+                </a>
             {% elif step.trace_type == "transform" %}
                 {{ render_transform_pl(step_wrapper, uid, event_full) }}
+                {% if step.rendered_command or step.error %}
+                    <a role="button" class="ms-auto btn btn-link btn-xs ct-details-toggle text-decoration-none" data-bs-toggle="collapse" data-bs-target="#ct_cmd_{{ uid }}" aria-expanded="false" title="Show the rendered query / command">
+                        <i class="bi bi-code-slash"></i> command
+                    </a>
+                {% endif %}
             {% elif step.trace_type == "action" %}
                 {{ render_action_pl(step_wrapper) }}
             {% endif %}
-            <a role="button" class="ms-auto btn btn-link btn-xs ct-details-toggle text-decoration-none" data-bs-toggle="collapse" data-bs-target="#ct_details_{{ uid }}" aria-expanded="false">
-                <i class="bi bi-chevron-down ct-details-chevron"></i> details
-            </a>
         </div>
         {% if step.trace_type == "transform" %}
             {{ render_transform_full_value_pane(step_wrapper, uid, event_full) }}
+            {% if step.rendered_command or step.error %}
+                <div class="collapse ct-pl-details" id="ct_cmd_{{ uid }}">
+                    {% if step.rendered_command %}
+                        <pre class="ct-cmd">{{ step.rendered_command }}</pre>
+                    {% endif %}
+                    {% if step.error %}
+                        <div class="alert alert-danger ct-error py-1 px-2 mb-1">
+                            <i class="bi bi-exclamation-triangle-fill"></i>
+                            <code>{{ step.error }}</code>
+                        </div>
+                    {% endif %}
+                </div>
+            {% endif %}
+        {% elif step.trace_type == "condition" %}
+            <div class="collapse ct-pl-details" id="ct_expr_{{ uid }}">
+                <div class="ct-step-header py-1">
+                    {{ render_expression(step.expression) }}
+                </div>
+                {% if step.error %}
+                    <div class="alert alert-danger ct-error py-1 px-2 mb-1">
+                        <i class="bi bi-exclamation-triangle-fill"></i>
+                        <code>{{ step.error }}</code>
+                    </div>
+                {% endif %}
+            </div>
         {% endif %}
-        <div class="collapse ct-pl-details" id="ct_details_{{ uid }}">
-            {{ render_step(step_wrapper, depth) }}
-        </div>
         {% if step.trace_type == "condition" and step.branch_steps %}
             <div class="ct-nested ct-rail-primary">
                 {% for child in step.branch_steps %}
@@ -504,28 +541,32 @@
                         </div>
                     {% endif %}
 
-                    {#-- Summary strip — outcome chips are clickable filters --#}
+                    {#-- Summary strip — outcome chips are clickable filters. The
+                         "kept" chip corresponds to the schema's "alert" outcome
+                         (events that survived correlation and contribute to this alert);
+                         we relabel here to avoid confusing it with ACE alerts. --#}
                     <div class="ct-summary d-flex flex-wrap gap-2 align-items-center mb-3" role="toolbar" aria-label="Outcome filter">
-                        <button type="button" class="btn btn-sm btn-outline-secondary ct-outcome-chip ct-outcome-chip-all active" data-outcome-filter="">
+                        <span class="text-body-secondary small me-1">Filter:</span>
+                        <button type="button" class="btn btn-sm btn-outline-secondary ct-outcome-chip ct-outcome-chip-all active" data-outcome-filter="" title="Show all events">
                             <i class="bi bi-list-ol"></i> {{ _total }} event{{ "" if _total == 1 else "s" }}
                         </button>
                         {% if counts.alert > 0 %}
-                            <button type="button" class="btn btn-sm btn-outline-danger ct-outcome-chip" data-outcome-filter="alert"><i class="bi bi-exclamation-octagon-fill"></i> {{ counts.alert }} alert</button>
+                            <button type="button" class="btn btn-sm btn-outline-success ct-outcome-chip" data-outcome-filter="alert" title="Click to show only the {{ counts.alert }} event{{ '' if counts.alert == 1 else 's' }} kept on this alert"><i class="bi bi-check-circle-fill"></i> {{ counts.alert }} kept</button>
                         {% endif %}
                         {% if counts.filter > 0 %}
-                            <button type="button" class="btn btn-sm btn-outline-secondary ct-outcome-chip" data-outcome-filter="filter"><i class="bi bi-funnel-fill"></i> {{ counts.filter }} filtered</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary ct-outcome-chip" data-outcome-filter="filter" title="Click to show only the {{ counts.filter }} event{{ '' if counts.filter == 1 else 's' }} that were filtered out"><i class="bi bi-funnel-fill"></i> {{ counts.filter }} filtered</button>
                         {% endif %}
                         {% if counts.stop > 0 %}
-                            <button type="button" class="btn btn-sm btn-outline-warning ct-outcome-chip" data-outcome-filter="stop"><i class="bi bi-stop-circle-fill"></i> {{ counts.stop }} stopped</button>
+                            <button type="button" class="btn btn-sm btn-outline-warning ct-outcome-chip" data-outcome-filter="stop" title="Click to show only the {{ counts.stop }} event{{ '' if counts.stop == 1 else 's' }} that hit a stop action"><i class="bi bi-stop-circle-fill"></i> {{ counts.stop }} stopped</button>
                         {% endif %}
                         {% if counts.discard > 0 %}
-                            <button type="button" class="btn btn-sm btn-outline-dark ct-outcome-chip" data-outcome-filter="discard"><i class="bi bi-trash-fill"></i> {{ counts.discard }} discarded</button>
+                            <button type="button" class="btn btn-sm btn-outline-dark ct-outcome-chip" data-outcome-filter="discard" title="Click to show only the {{ counts.discard }} event{{ '' if counts.discard == 1 else 's' }} that hit a discard action"><i class="bi bi-trash-fill"></i> {{ counts.discard }} discarded</button>
                         {% endif %}
                         {% if counts.timeout > 0 %}
-                            <button type="button" class="btn btn-sm btn-outline-warning ct-outcome-chip" data-outcome-filter="timeout"><i class="bi bi-hourglass-split"></i> {{ counts.timeout }} timeout</button>
+                            <button type="button" class="btn btn-sm btn-outline-warning ct-outcome-chip" data-outcome-filter="timeout" title="Click to show only the {{ counts.timeout }} event{{ '' if counts.timeout == 1 else 's' }} that hit the correlation timeout"><i class="bi bi-hourglass-split"></i> {{ counts.timeout }} timeout</button>
                         {% endif %}
                         {% if counts.error > 0 %}
-                            <button type="button" class="btn btn-sm btn-outline-danger ct-outcome-chip" data-outcome-filter="error"><i class="bi bi-exclamation-triangle-fill"></i> {{ counts.error }} error</button>
+                            <button type="button" class="btn btn-sm btn-outline-danger ct-outcome-chip" data-outcome-filter="error" title="Click to show only the {{ counts.error }} event{{ '' if counts.error == 1 else 's' }} where a step raised an error"><i class="bi bi-exclamation-triangle-fill"></i> {{ counts.error }} error</button>
                         {% endif %}
                         {% if counts.other > 0 %}
                             <span class="badge text-bg-light text-dark">{{ counts.other }} other</span>
