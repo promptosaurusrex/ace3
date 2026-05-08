@@ -1099,6 +1099,150 @@ def test_event_summary_auto_derives_from_description_field_then_group_by(monkeyp
 
 
 @pytest.mark.unit
+def test_grouped_alert_includes_filtered_events_with_matching_group_value(monkeypatch):
+    """For grouped hunts, filter-outcome event_traces whose original event shares
+    the alert's group_by value SHOULD appear on that alert. This gives analysts the
+    rejection context for the same key (e.g., "for this user, here's what was
+    filtered alongside the kept events"). It also must not pollute sibling alerts
+    that have a different group_by value — the original PR #185 behavior is
+    preserved for cross-alert events."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    # Filter events tagged "drop"; everything else alerts. Two msg_id groups, one
+    # of which has both kept and filtered events.
+    correlate = CorrelateConfig.model_validate({
+        "logic": [
+            {
+                "when": {"type": "equals", "value": "drop", "property": "tag"},
+                "execute": [{"action": "filter"}],
+            },
+        ],
+    })
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="trace_filters_attached_grouped",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="msg_id",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+
+    submissions = hunt.process_query_results([
+        {"msg_id": "A", "src": "1.1.1.1", "tag": "keep"},   # idx 0 → A alert
+        {"msg_id": "A", "src": "2.2.2.2", "tag": "drop"},   # idx 1 → filtered, A's
+        {"msg_id": "B", "src": "3.3.3.3", "tag": "drop"},   # idx 2 → filtered, B has no alert
+        {"msg_id": "A", "src": "4.4.4.4", "tag": "keep"},   # idx 3 → A alert
+        {"msg_id": "C", "src": "5.5.5.5", "tag": "keep"},   # idx 4 → C alert
+    ])
+    assert submissions and len(submissions) == 2  # A and C; B got filtered with no alert
+
+    by_msg_id = {s.root.details["events"][0]["msg_id"]: s for s in submissions}
+    assert set(by_msg_id) == {"A", "C"}
+
+    a_traces = by_msg_id["A"].root.details["correlation_trace"]["event_traces"]
+    c_traces = by_msg_id["C"].root.details["correlation_trace"]["event_traces"]
+
+    a_indices = sorted(et["event_index"] for et in a_traces)
+    a_outcomes = sorted(et["outcome"] for et in a_traces)
+    # Alert A keeps idx 0 and 3 (kept) and gains idx 1 (filtered, same msg_id).
+    assert a_indices == [0, 1, 3]
+    assert a_outcomes == ["alert", "alert", "filter"]
+
+    # Alert C only gets its own kept event; B's filter (idx 2) doesn't leak in
+    # because B has a different group_by value.
+    c_indices = sorted(et["event_index"] for et in c_traces)
+    c_outcomes = sorted(et["outcome"] for et in c_traces)
+    assert c_indices == [4]
+    assert c_outcomes == ["alert"]
+
+    # The filter event added to A should still carry a useful summary derived from
+    # the pre-correlation event (it's not in details["events"] for A).
+    filter_et = next(et for et in a_traces if et["outcome"] == "filter")
+    assert filter_et["summary"] is not None
+    assert "A" in filter_et["summary"]
+    # events_position is not set for extras — they don't have a slot in details["events"].
+    assert filter_et["events_position"] is None
+
+
+@pytest.mark.unit
+def test_grouped_alert_includes_stop_outcome_events(monkeypatch):
+    """`stop` is another way an event was rejected — analysts should see it on the
+    alert for the same group_by value, like filter."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    correlate = CorrelateConfig.model_validate({
+        "logic": [
+            {
+                "when": {"type": "equals", "value": "halt", "property": "tag"},
+                "execute": [{"action": "stop"}],
+            },
+        ],
+    })
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="trace_stop_attached_grouped",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="msg_id",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+    # The stop action breaks the engine loop entirely — once tripped, no later
+    # events are processed. So put the stop event LAST so we still get an alert
+    # for msg_id="A" before the stop.
+    submissions = hunt.process_query_results([
+        {"msg_id": "A", "src": "1.1.1.1", "tag": "keep"},
+        {"msg_id": "A", "src": "2.2.2.2", "tag": "halt"},  # stop here
+    ])
+    assert submissions and len(submissions) == 1
+    a_traces = submissions[0].root.details["correlation_trace"]["event_traces"]
+    a_outcomes = sorted(et["outcome"] for et in a_traces)
+    assert a_outcomes == ["alert", "stop"]
+
+
+@pytest.mark.unit
+def test_group_by_all_attaches_every_filtered_event(monkeypatch):
+    """When group_by == "ALL", a hunt run produces a single submission. Every
+    filtered event from the run goes on it."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    correlate = CorrelateConfig.model_validate({
+        "logic": [
+            {
+                "when": {"type": "equals", "value": "drop", "property": "tag"},
+                "execute": [{"action": "filter"}],
+            },
+        ],
+    })
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="trace_group_by_all",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="ALL",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+    submissions = hunt.process_query_results([
+        {"src": "1.1.1.1", "tag": "keep"},
+        {"src": "2.2.2.2", "tag": "drop"},
+        {"src": "3.3.3.3", "tag": "drop"},
+        {"src": "4.4.4.4", "tag": "keep"},
+    ])
+    assert submissions and len(submissions) == 1
+    traces = submissions[0].root.details["correlation_trace"]["event_traces"]
+    assert sorted(et["event_index"] for et in traces) == [0, 1, 2, 3]
+    assert sorted(et["outcome"] for et in traces) == ["alert", "alert", "filter", "filter"]
+
+
+@pytest.mark.unit
 def test_correlation_trace_filtered_event_not_attached_to_other_alerts(monkeypatch):
     """An event that the correlation engine filters out shouldn't appear in any
     alert's correlation_trace, even though it's still in the hunt-level trace."""

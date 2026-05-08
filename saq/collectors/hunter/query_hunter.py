@@ -922,10 +922,11 @@ class QueryHunt(Hunt):
             }
 
         # Attach correlation trace to each submission's details for alert persistence.
-        # Each alert should only see the EventTraces for events that contributed to it, so an
-        # analyst opening one alert isn't shown unrelated events from sibling alerts in
-        # the same hunt run. Stream events stay shared (timeouts/resets are hunt-level
-        # context relevant to every alert from the run).
+        # Each alert should see the EventTraces that contributed to it (origins) plus any
+        # filter/stop EventTraces from the same group_by value (extra_origins) — so an
+        # analyst sees the rejection context for "this user / this msg_id / etc." without
+        # importing unrelated events from sibling alerts in the same run. Stream events
+        # stay shared (timeouts/resets are hunt-run-level context).
         if hasattr(self, "correlation_trace") and self.correlation_trace is not None:
             submission_origin_indices: dict[int, set[int]] = {}
             # Per-submission map from a pre-correlation event_index to that event's position in
@@ -946,19 +947,69 @@ class QueryHunt(Hunt):
             # the post-correlation index (used by query_results / per_event_observables).
             origin_to_post = {origin: post for post, origin in enumerate(alert_event_origin_indices)}
 
+            # Build extra_origins for grouped hunts: filter/stop event_traces whose
+            # original event shares the alert's group_by value get included so analysts
+            # can see what was rejected for the same key. Ungrouped hunts get nothing
+            # extra (no natural mapping); discard kills the run; alert/error/timeout are
+            # already covered by `origins` since the engine routes them onto the alert.
+            extra_origins_by_sub: dict[int, set[int]] = {}
+            if (
+                self.original_query_results is not None
+                and self.group_by is not None
+            ):
+                if self.group_by == "ALL":
+                    for et in self.correlation_trace.event_traces:
+                        if et.outcome not in ("filter", "stop"):
+                            continue
+                        if et.event_index >= len(self.original_query_results):
+                            continue
+                        for submission in submissions:
+                            extra_origins_by_sub.setdefault(id(submission), set()).add(et.event_index)
+                else:
+                    submissions_by_group: dict[any, list[Submission]] = {}
+                    for sub in submissions:
+                        gv = getattr(sub, "group_value", None)
+                        if gv is not None:
+                            submissions_by_group.setdefault(gv, []).append(sub)
+                    for et in self.correlation_trace.event_traces:
+                        if et.outcome not in ("filter", "stop"):
+                            continue
+                        if et.event_index >= len(self.original_query_results):
+                            continue
+                        orig = self.original_query_results[et.event_index]
+                        if not isinstance(orig, dict):
+                            continue
+                        gv_raw = orig.get(self.group_by)
+                        if gv_raw is None:
+                            continue
+                        gvs = gv_raw if isinstance(gv_raw, list) else [gv_raw]
+                        for gv in gvs:
+                            for sub in submissions_by_group.get(gv, []):
+                                extra_origins_by_sub.setdefault(id(sub), set()).add(et.event_index)
+
             for submission in submissions:
                 origins = submission_origin_indices.get(id(submission), set())
+                extra_origins = extra_origins_by_sub.get(id(submission), set())
                 pos_map = events_pos_by_origin.get(id(submission), {})
                 scoped_event_traces = []
                 for et in self.correlation_trace.event_traces:
-                    if et.event_index not in origins:
+                    if et.event_index not in origins and et.event_index not in extra_origins:
                         continue
                     summary = None
                     post_idx = origin_to_post.get(et.event_index)
-                    if post_idx is not None and post_idx < len(query_results):
+                    if et.event_index in origins and post_idx is not None and post_idx < len(query_results):
                         summary = self._extract_event_summary(
                             query_results[post_idx],
                             per_event_observables.get(post_idx, []),
+                        )
+                    elif (
+                        et.event_index in extra_origins
+                        and self.original_query_results is not None
+                        and et.event_index < len(self.original_query_results)
+                        and isinstance(self.original_query_results[et.event_index], dict)
+                    ):
+                        summary = self._extract_event_summary(
+                            self.original_query_results[et.event_index], [],
                         )
                     scoped_event_traces.append(et.model_copy(update={
                         "summary": summary,
