@@ -83,6 +83,7 @@ class EventTrace(BaseModel):
     event_index: int = Field(..., description="Index of the event in the stream")
     steps: list[StepTrace] = Field(default_factory=list, description="Traces of each step executed for this event")
     outcome: str = Field(default="alert", description="Final outcome: alert, filter, stop, discard, timeout, error")
+    summary: Optional[str] = Field(default=None, description="Short human-readable summary of this event for display in collapsed UI rows")
 
 
 class StreamEvent(BaseModel):

@@ -52,6 +52,10 @@ QUERY_DETAILS_QUERY = "query"
 QUERY_DETAILS_EVENTS = "events"
 QUERY_DETAILS_CORRELATION_TRACE = "correlation_trace"
 QUERY_DETAILS_ORIGINAL_EVENTS = "original_events"
+QUERY_DETAILS_HUNT_METADATA = "hunt_metadata"
+
+# Cap for the auto-derived event summary string (header chip text)
+_EVENT_SUMMARY_MAX_LEN = 160
 
 T = TypeVar("T")
 
@@ -634,6 +638,50 @@ class QueryHunt(Hunt):
                 header=header, content="\n".join(lines), format=sd_config.format,
             )
 
+    def _extract_event_summary(self, event: dict, observables: list) -> Optional[str]:
+        """Build a short, human-readable one-line summary for a single event.
+
+        Used in the correlation trace UI to label collapsed event rows so analysts
+        can scan multiple events without expanding each one. Pulls from the hunt's
+        existing config (description_field, group_by) and from observables that
+        were already extracted for this event — no new YAML knobs.
+        """
+        parts: list[str] = []
+        seen: set[str] = set()
+
+        def _add(value):
+            if value is None:
+                return
+            if isinstance(value, list):
+                value = value[0] if value else None
+                if value is None:
+                    return
+            text = str(value).strip()
+            if not text or text in seen:
+                return
+            seen.add(text)
+            parts.append(text)
+
+        if self.description_field and self.description_field in event:
+            _add(event[self.description_field])
+        if self.group_by and self.group_by != "ALL" and self.group_by in event:
+            _add(event[self.group_by])
+
+        for obs in observables:
+            if getattr(obs, "type", None) == F_SIGNATURE_ID:
+                continue
+            _add(getattr(obs, "value", None))
+            if len(parts) >= 4:
+                break
+
+        if not parts:
+            return None
+
+        summary = " · ".join(parts)
+        if len(summary) > _EVENT_SUMMARY_MAX_LEN:
+            summary = summary[: _EVENT_SUMMARY_MAX_LEN - 1] + "…"
+        return summary
+
     def process_query_results(self, query_results, **kwargs) -> Optional[list[Submission]]:
         if query_results is None:
             return None
@@ -707,6 +755,10 @@ class QueryHunt(Hunt):
         # maps event index to the submission(s) it belongs to (for summary detail processing)
         event_submission_map: dict[int, list[Submission]] = {}
 
+        # captures the deduped observable list for each post-correlation event index so
+        # the correlation-trace UI can render a per-event summary line without re-extracting.
+        per_event_observables: dict[int, list] = {}
+
         # map results to observables
         for event_index, event in enumerate(query_results):
             event_time = self.extract_event_timestamp(event) or local_time()
@@ -723,6 +775,8 @@ class QueryHunt(Hunt):
             for ext in extracted:
                 if ext.observable not in observables:
                     observables.append(ext.observable)
+
+            per_event_observables[event_index] = observables
 
             # merge relationship tracking
             relationship_tracking.update(event_relationships)
@@ -854,6 +908,19 @@ class QueryHunt(Hunt):
 
         self._process_summary_details(query_results, event_submission_map)
 
+        # Attach hunt_metadata to every submission so the trace UI can render hunt context
+        # (name, group_by/group_value for the grouping banner) without inferring it from data.
+        for submission in submissions:
+            submission.root.details[QUERY_DETAILS_HUNT_METADATA] = {
+                "name": self.name,
+                "uuid": self.uuid,
+                "type": self.type,
+                "group_by": self.group_by,
+                "group_value": getattr(submission, "group_value", None),
+                "description_field": self.description_field,
+                "frequency": str(self.frequency) if self.frequency else None,
+            }
+
         # Attach correlation trace to each submission's details for alert persistence.
         # Each alert should only see the EventTraces for events that contributed to it, so an
         # analyst opening one alert isn't shown unrelated events from sibling alerts in
@@ -868,10 +935,26 @@ class QueryHunt(Hunt):
                 for submission in submissions_for_event:
                     submission_origin_indices.setdefault(id(submission), set()).add(origin_index)
 
+            # reverse mapping from pre-correlation event_index (used by EventTrace) back to
+            # the post-correlation index (used by query_results / per_event_observables).
+            origin_to_post = {origin: post for post, origin in enumerate(alert_event_origin_indices)}
+
             for submission in submissions:
                 origins = submission_origin_indices.get(id(submission), set())
+                scoped_event_traces = []
+                for et in self.correlation_trace.event_traces:
+                    if et.event_index not in origins:
+                        continue
+                    summary = None
+                    post_idx = origin_to_post.get(et.event_index)
+                    if post_idx is not None and post_idx < len(query_results):
+                        summary = self._extract_event_summary(
+                            query_results[post_idx],
+                            per_event_observables.get(post_idx, []),
+                        )
+                    scoped_event_traces.append(et.model_copy(update={"summary": summary}))
                 per_alert_trace = CorrelationTrace(
-                    event_traces=[et for et in self.correlation_trace.event_traces if et.event_index in origins],
+                    event_traces=scoped_event_traces,
                     stream_events=self.correlation_trace.stream_events,
                 )
                 submission.root.details[QUERY_DETAILS_CORRELATION_TRACE] = per_alert_trace.model_dump()
