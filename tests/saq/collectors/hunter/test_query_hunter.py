@@ -1099,6 +1099,77 @@ def test_event_summary_auto_derives_from_description_field_then_group_by(monkeyp
 
 
 @pytest.mark.unit
+def test_event_summary_dedupes_substrings_case_insensitive(monkeypatch):
+    """The summary should drop a candidate that is a case-insensitive substring of
+    any already-included part. In real hunts the description_field value tends
+    to embed the user / email / msg_id that the group_by field and observables
+    would also surface — without this dedup, the visible header repeats the same
+    value 2-3x and the actually-differentiating part (e.g. an IP) gets clipped
+    behind ellipsis. A candidate that supersedes an existing part replaces it.
+    """
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    correlate = CorrelateConfig.model_validate({"logic": [{"action": "alert"}]})
+
+    # Pattern: alert_title contains the userPrincipalName, the group_by IS the
+    # userPrincipalName, and observables surface the lowercase email and an IP.
+    # Only the IP differs across siblings.
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="trace_summary_substring_dedup",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="userPrincipalName",
+        description_field="alert_title",
+        observable_mapping=[
+            ObservableMapping(fields=["ip"], type="ipv4"),
+            ObservableMapping(fields=["email"], type="email_address"),
+        ],
+        correlate=correlate,
+    )
+    submissions = hunt.process_query_results([
+        {
+            "alert_title": "JaneDoe@example.com + anonymizedIPAddress + TAP",
+            "userPrincipalName": "JaneDoe@example.com",
+            "ip": "192.0.2.42",
+            "email": "janedoe@example.com",   # different case, still a substring of alert_title
+        },
+    ])
+    summary = submissions[0].root.details["correlation_trace"]["event_traces"][0]["summary"]
+    # Title and IP are both informative and present.
+    assert "JaneDoe@example.com + anonymizedIPAddress + TAP" in summary
+    assert "192.0.2.42" in summary
+    # The user value should appear only once — the description_field already
+    # contains it, so the group_by value and the (lowercased) email observable
+    # are both dropped.
+    assert summary.lower().count("janedoe@example.com") == 1
+    # And the resulting summary uses ` · ` separators between parts.
+    assert summary.count(" · ") == 1
+
+    # Replacement case: when a later candidate fully supersedes an earlier one
+    # (e.g. observable is more informative than the group_by value), the longer
+    # candidate replaces the shorter so we don't lose information.
+    hunt2 = default_hunt(
+        manager=MockManager(),
+        name="trace_summary_supersede",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="user",
+        description_field=None,
+        observable_mapping=[ObservableMapping(fields=["full_user"], type="email_address")],
+        correlate=correlate,
+    )
+    submissions2 = hunt2.process_query_results([
+        {"user": "alice", "full_user": "alice@example.com"},
+    ])
+    summary2 = submissions2[0].root.details["correlation_trace"]["event_traces"][0]["summary"]
+    # The bare "alice" substring is dropped in favor of the more informative full email.
+    assert "alice@example.com" in summary2
+    assert summary2.count("alice") == 1
+
+
+@pytest.mark.unit
 def test_grouped_alert_includes_filtered_events_with_matching_group_value(monkeypatch):
     """For grouped hunts, filter-outcome event_traces whose original event shares
     the alert's group_by value SHOULD appear on that alert. This gives analysts the

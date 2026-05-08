@@ -645,9 +645,15 @@ class QueryHunt(Hunt):
         can scan multiple events without expanding each one. Pulls from the hunt's
         existing config (description_field, group_by) and from observables that
         were already extracted for this event — no new YAML knobs.
+
+        Dedup: a hunt's description_field often already contains the user / email
+        / msg_id that group_by and observables would surface separately. Skip a
+        candidate if it's a substring of any existing part (case-insensitive);
+        if a candidate fully supersedes an existing part, replace the shorter one
+        with the more informative longer one. This keeps the header line useful
+        for telling sibling events apart instead of repeating the shared value.
         """
         parts: list[str] = []
-        seen: set[str] = set()
 
         def _add(value):
             if value is None:
@@ -657,9 +663,18 @@ class QueryHunt(Hunt):
                 if value is None:
                     return
             text = str(value).strip()
-            if not text or text in seen:
+            if not text:
                 return
-            seen.add(text)
+            text_cf = text.casefold()
+            indices_to_remove = []
+            for i, existing in enumerate(parts):
+                existing_cf = existing.casefold()
+                if text_cf == existing_cf or text_cf in existing_cf:
+                    return
+                if existing_cf in text_cf:
+                    indices_to_remove.append(i)
+            for i in reversed(indices_to_remove):
+                parts.pop(i)
             parts.append(text)
 
         if self.description_field and self.description_field in event:

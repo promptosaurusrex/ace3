@@ -603,7 +603,7 @@
                                         <span class="badge text-bg-light text-dark">event #{{ et.event_index }}</span>
                                         {{ pl_outcome_chip(et.outcome) }}
                                         {% if et.summary %}
-                                            <span class="ct-event-summary text-body-secondary text-truncate" title="{{ et.summary }}">{{ et.summary }}</span>
+                                            <span class="ct-event-summary text-body-secondary" title="{{ et.summary }}">{{ et.summary }}</span>
                                         {% endif %}
                                         <span class="text-muted small ms-auto ct-event-step-count">{{ et.steps | length }} step{{ "" if (et.steps | length) == 1 else "s" }}</span>
                                     </div>
@@ -719,7 +719,18 @@
 .ct-event-header[aria-expanded="true"] .ct-event-chevron { transform: rotate(90deg); }
 .ct-event-chevron { transition: transform 0.15s ease; }
 .ct-event-body { padding-top: 0.5rem; padding-left: 1.5rem; }
-.ct-event-summary { max-width: 60ch; overflow: hidden; }
+.ct-event-summary {
+    /* Wrap to up to 2 lines so the differentiating part of the summary
+       (e.g. an IP / time, after redundant user-name-like values are deduped)
+       stays visible instead of being clipped behind a single-line ellipsis. */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    flex: 1 1 auto;
+    min-width: 0;
+    line-height: 1.3;
+}
 .ct-event-step-count { white-space: nowrap; }
 .ct-step-wrapper { margin: 0.25rem 0; }
 .ct-step { padding: 0.25rem 0; }
