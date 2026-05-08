@@ -1,6 +1,7 @@
 import datetime
 import logging
 from abc import ABC, abstractmethod
+from typing import Optional
 
 _query_source_registry: dict[str, "QuerySource"] = {}
 
@@ -24,8 +25,14 @@ class QuerySource(ABC):
         start_time: datetime.datetime,
         end_time: datetime.datetime,
         timeout: datetime.timedelta,
+        source_options: Optional[dict] = None,
     ) -> list[dict]:
-        """Execute a query and return results as a list of dicts."""
+        """Execute a query and return results as a list of dicts.
+
+        `source_options` is the `command.source_options` dict from the hunt YAML,
+        or `None`/`{}` if the YAML omitted it. Sources should treat unrecognized
+        keys as a no-op (forward-compat) and missing keys as "use my defaults".
+        """
         raise NotImplementedError()
 
 

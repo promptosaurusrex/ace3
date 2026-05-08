@@ -25,8 +25,13 @@ class MockQuerySource(QuerySource):
         self.results = results or []
         self.calls = []
 
-    def execute_query(self, query, start_time, end_time, timeout):
-        self.calls.append({"query": query, "start_time": start_time, "end_time": end_time})
+    def execute_query(self, query, start_time, end_time, timeout, source_options=None):
+        self.calls.append({
+            "query": query,
+            "start_time": start_time,
+            "end_time": end_time,
+            "source_options": source_options,
+        })
         return self.results
 
 
@@ -35,7 +40,7 @@ class MockEpochSource(QuerySource):
     default_time_field = "ts"
     default_time_format = "epoch"
 
-    def execute_query(self, query, start_time, end_time, timeout):
+    def execute_query(self, query, start_time, end_time, timeout, source_options=None):
         return []
 
 
@@ -69,6 +74,44 @@ class TestExecuteCommand:
         lines = result.strip().split("\n")
         assert len(lines) == 2
         assert json.loads(lines[0]) == {"host": "web1"}
+
+    def test_query_command_forwards_source_options(self, tmpdir):
+        """source_options from the YAML must reach the QuerySource verbatim."""
+        source = MockQuerySource(results=[])
+        register_query_source("test_source", source)
+
+        cmd = CommandConfig(
+            type="query",
+            source="test_source",
+            query="where(host='{{ _event.host }}')",
+            source_options={"log_names": ["Firewall Activity", "DNS Activity"]},
+        )
+
+        with patch("saq.collectors.hunter.correlation.commands.get_cached_result", return_value=None), \
+             patch("saq.collectors.hunter.correlation.commands.set_cached_result"):
+            execute_command(cmd, {"host": "web1"}, [], "event", [], local_time(), str(tmpdir))
+
+        assert len(source.calls) == 1
+        assert source.calls[0]["source_options"] == {
+            "log_names": ["Firewall Activity", "DNS Activity"],
+        }
+
+    def test_query_command_omitted_source_options_is_empty_dict(self, tmpdir):
+        """When the YAML omits source_options, the source receives an empty dict."""
+        source = MockQuerySource(results=[])
+        register_query_source("test_source", source)
+
+        cmd = CommandConfig(
+            type="query",
+            source="test_source",
+            query="search index=main",
+        )
+
+        with patch("saq.collectors.hunter.correlation.commands.get_cached_result", return_value=None), \
+             patch("saq.collectors.hunter.correlation.commands.set_cached_result"):
+            execute_command(cmd, {}, [], "event", [], local_time(), str(tmpdir))
+
+        assert source.calls[0]["source_options"] == {}
 
     def test_executable_command(self, tmpdir):
         cmd = CommandConfig(

@@ -15,7 +15,7 @@ class MockQuerySource(QuerySource):
     default_time_field = "_time"
     default_time_format = "iso8601"
 
-    def execute_query(self, query, start_time, end_time, timeout):
+    def execute_query(self, query, start_time, end_time, timeout, source_options=None):
         return [{"result": "test"}]
 
 

@@ -110,3 +110,22 @@ class TestSplunkSourceMetadata:
         # relative_time_field / relative_time_format on splunk-anchored time_ranges
         assert SplunkQuerySource.default_time_field == "_time"
         assert SplunkQuerySource.default_time_format == "iso8601"
+
+    def test_execute_query_accepts_and_ignores_source_options(self):
+        """Splunk source has no per-call options today; it must accept and
+        ignore source_options to satisfy the QuerySource ABC contract."""
+        mock_client = MagicMock()
+        mock_client.query.return_value = []
+        with patch(
+            "saq.splunk.SplunkClient",
+            return_value=mock_client,
+        ):
+            source = SplunkQuerySource()
+            results = source.execute_query(
+                "search index=main",
+                datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc),
+                datetime.datetime(2024, 1, 2, tzinfo=datetime.timezone.utc),
+                datetime.timedelta(minutes=5),
+                source_options={"some_key": "some_value"},
+            )
+            assert results == []

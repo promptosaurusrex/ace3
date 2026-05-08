@@ -1,5 +1,6 @@
 import datetime
 import logging
+from typing import Optional
 
 from saq.collectors.hunter.correlation.registry import QuerySource
 
@@ -19,6 +20,7 @@ class SplunkQuerySource(QuerySource):
         start_time: datetime.datetime,
         end_time: datetime.datetime,
         timeout: datetime.timedelta,
+        source_options: Optional[dict] = None,
     ) -> list[dict]:
         from saq.splunk import SplunkClient
 

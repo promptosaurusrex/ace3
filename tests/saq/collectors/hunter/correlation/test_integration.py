@@ -23,7 +23,7 @@ class MockQuerySource(QuerySource):
     def __init__(self, results=None):
         self.results = results or []
 
-    def execute_query(self, query, start_time, end_time, timeout):
+    def execute_query(self, query, start_time, end_time, timeout, source_options=None):
         return self.results
 
 
@@ -358,7 +358,7 @@ class TestCorrelationIntegration:
             def __init__(self):
                 self.calls = []
 
-            def execute_query(self, query, start_time, end_time, timeout):
+            def execute_query(self, query, start_time, end_time, timeout, source_options=None):
                 self.calls.append({"start_time": start_time, "end_time": end_time})
                 return [{"matched": True}]
 
