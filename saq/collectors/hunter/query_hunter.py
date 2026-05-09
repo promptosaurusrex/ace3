@@ -643,8 +643,9 @@ class QueryHunt(Hunt):
 
         Used in the correlation trace UI to label collapsed event rows so analysts
         can scan multiple events without expanding each one. Pulls from the hunt's
-        existing config (description_field, group_by) and from observables that
-        were already extracted for this event — no new YAML knobs.
+        existing config (description_field, group_by), from observables that were
+        already extracted for this event, and the per-event timestamp via
+        extract_event_timestamp — no new YAML knobs.
 
         Dedup: a hunt's description_field often already contains the user / email
         / msg_id that group_by and observables would surface separately. Skip a
@@ -652,6 +653,10 @@ class QueryHunt(Hunt):
         if a candidate fully supersedes an existing part, replace the shorter one
         with the more informative longer one. This keeps the header line useful
         for telling sibling events apart instead of repeating the shared value.
+
+        Time goes last so an analyst always sees it as the trailing field — this
+        is the difference-of-last-resort for siblings whose other fields all match
+        (e.g. multiple records emitted seconds apart for the same user).
         """
         parts: list[str] = []
 
@@ -688,6 +693,16 @@ class QueryHunt(Hunt):
             _add(getattr(obs, "value", None))
             if len(parts) >= 4:
                 break
+
+        try:
+            evt_time = self.extract_event_timestamp(event)
+        except Exception:
+            evt_time = None
+        if evt_time is not None:
+            try:
+                _add(evt_time.strftime("%H:%M:%S"))
+            except Exception:
+                pass
 
         if not parts:
             return None

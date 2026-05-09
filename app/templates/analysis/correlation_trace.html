@@ -278,36 +278,43 @@
     {% endif %}
 {% endmacro %}
 
-{#-- Inline pane that holds the full structured property value for a single transform
-     step. Rendered after the step row so the collapsible spans full width. The JSON
-     tree is built lazily on first expansion to keep first-paint cheap when traces
-     contain many transforms. --#}
+{#-- Inline pane that lazily renders any structured value as a JSON tree on first
+     expansion. Used by both the per-step transform rows and the Compare-table cells
+     so analysts can drill into the full untruncated value from either view.
+     `value` should be JSON-serializable (a list/dict/scalar from details["events"]). --#}
+{% macro render_full_value_pane(uid, value) %}
+    <div class="collapse ct-fullvalue-pane mt-1" id="ct_full_{{ uid }}">
+        <div class="ct-fullvalue-tree" id="ct_full_tree_{{ uid }}"></div>
+    </div>
+    <script type="application/json" id="ct_full_data_{{ uid }}">{{ value | tojson }}</script>
+    <script>
+    (function() {
+        var pane = document.getElementById('ct_full_{{ uid }}');
+        var dataEl = document.getElementById('ct_full_data_{{ uid }}');
+        if (!pane || !dataEl) return;
+        var rendered = false;
+        pane.addEventListener('shown.bs.collapse', function() {
+            if (rendered) return;
+            rendered = true;
+            var data;
+            try { data = JSON.parse(dataEl.textContent); } catch (e) { data = null; }
+            if (typeof renderJsonTree === 'function') {
+                renderJsonTree(data, 'ct_full_tree_{{ uid }}', { emptyMessage: 'no value', collapsed: false, useArrayIndexAsKey: true });
+            } else {
+                document.getElementById('ct_full_tree_{{ uid }}').textContent = JSON.stringify(data, null, 2);
+            }
+        });
+    })();
+    </script>
+{% endmacro %}
+
+{#-- Per-step wrapper that emits the full-value pane only for transforms whose
+     event has the property — preserves the previous behavior of the
+     transform-specific macro while delegating the actual rendering. --#}
 {% macro render_transform_full_value_pane(step_wrapper, uid, event_full) %}
     {% set trans = step_wrapper.step %}
     {% if trans.property_name and event_full is mapping and trans.property_name in event_full %}
-        <div class="collapse ct-fullvalue-pane mt-1" id="ct_full_{{ uid }}">
-            <div class="ct-fullvalue-tree" id="ct_full_tree_{{ uid }}"></div>
-        </div>
-        <script type="application/json" id="ct_full_data_{{ uid }}">{{ event_full[trans.property_name] | tojson }}</script>
-        <script>
-        (function() {
-            var pane = document.getElementById('ct_full_{{ uid }}');
-            var dataEl = document.getElementById('ct_full_data_{{ uid }}');
-            if (!pane || !dataEl) return;
-            var rendered = false;
-            pane.addEventListener('shown.bs.collapse', function() {
-                if (rendered) return;
-                rendered = true;
-                var data;
-                try { data = JSON.parse(dataEl.textContent); } catch (e) { data = null; }
-                if (typeof renderJsonTree === 'function') {
-                    renderJsonTree(data, 'ct_full_tree_{{ uid }}', { emptyMessage: 'no value', collapsed: false, useArrayIndexAsKey: true });
-                } else {
-                    document.getElementById('ct_full_tree_{{ uid }}').textContent = JSON.stringify(data, null, 2);
-                }
-            });
-        })();
-        </script>
+        {{ render_full_value_pane(uid, event_full[trans.property_name]) }}
     {% endif %}
 {% endmacro %}
 
@@ -464,6 +471,10 @@
             {% endif %}
         {% endfor %}
     {% endif %}
+
+    {# Alias used by both Per-event and Compare loops to look up the full
+       structured event from the alert's persisted events list. #}
+    {% set _events_list_for_compare = analysis.details.get('events') or [] %}
 
     {# Compare table: collect (step_position, property_name) → {event_index: property_value}.
        Only TransformTrace steps with a property_name contribute. Walks nested condition
@@ -664,25 +675,41 @@
                                     <tbody>
                                         {% for key in _compare.order %}
                                             {% set row = _compare.by_key[key] %}
-                                            {# Determine the mode value to highlight cells that differ. #}
-                                            {% set _val_counts = {} %}
-                                            {% for et in _display_events %}
-                                                {% set v = row.cells.get(et.event_index) %}
-                                                {% if v is not none %}
-                                                    {% set _ = _val_counts.update({v: (_val_counts.get(v, 0) + 1)}) %}
-                                                {% endif %}
-                                            {% endfor %}
-                                            {% set _mode = namespace(value=none, count=0) %}
-                                            {% for v, c in _val_counts.items() %}
-                                                {% if c > _mode.count %}{% set _mode.value = v %}{% set _mode.count = c %}{% endif %}
-                                            {% endfor %}
+                                            {% set _row_uid = "cmp_" ~ loop.index %}
                                             <tr>
                                                 <th class="ct-compare-rowhead"><code class="ct-prop">{{ row.property_name }}</code></th>
                                                 {% for et in _display_events %}
                                                     {% set cell = row.cells.get(et.event_index) %}
-                                                    <td class="ct-compare-cell{% if cell is none %} ct-compare-cell-missing{% elif _mode.value is not none and cell != _mode.value %} ct-cell-diff{% endif %}" title="{{ cell or '' }}">
-                                                        {% if cell is none %}<span class="text-muted">—</span>
-                                                        {% else %}<code class="ct-val">{{ cell | truncate(60, true) }}</code>{% endif %}
+                                                    {# Look up the untruncated structured value for this cell so the
+                                                       analyst can drill in (and so JS can compare structurally instead
+                                                       of comparing trace-truncated reprs that may collide on the first
+                                                       few rows of differently-ordered lists). #}
+                                                    {% set _full_value_cmp = none %}
+                                                    {% set _ev_pos_cmp = et.get('events_position') if et is mapping else et.events_position %}
+                                                    {% if _ev_pos_cmp is not none and _ev_pos_cmp < (_events_list_for_compare | length) %}
+                                                        {% set _evt = _events_list_for_compare[_ev_pos_cmp] %}
+                                                        {% if _evt is mapping and row.property_name in _evt %}
+                                                            {% set _full_value_cmp = _evt[row.property_name] %}
+                                                        {% endif %}
+                                                    {% elif _ev_pos_cmp is none and (_display_events | length) == (_events_list_for_compare | length) and loop.index0 < (_events_list_for_compare | length) %}
+                                                        {% set _evt = _events_list_for_compare[loop.index0] %}
+                                                        {% if _evt is mapping and row.property_name in _evt %}
+                                                            {% set _full_value_cmp = _evt[row.property_name] %}
+                                                        {% endif %}
+                                                    {% endif %}
+                                                    {% set _cell_uid = _row_uid ~ "_" ~ et.event_index %}
+                                                    <td class="ct-compare-cell{% if cell is none %} ct-compare-cell-missing{% endif %}" title="{{ cell or '' }}">
+                                                        {% if cell is none %}
+                                                            <span class="text-muted">—</span>
+                                                        {% else %}
+                                                            <div class="ct-compare-cell-text"><code class="ct-val">{{ cell | truncate(60, true) }}</code></div>
+                                                            {% if _full_value_cmp is not none %}
+                                                                <a role="button" class="btn btn-link btn-xs ct-fullvalue-toggle text-decoration-none ct-compare-cell-toggle" data-bs-toggle="collapse" data-bs-target="#ct_full_{{ _cell_uid }}" aria-expanded="false">
+                                                                    <i class="bi bi-arrows-angle-expand"></i> view
+                                                                </a>
+                                                                {{ render_full_value_pane(_cell_uid, _full_value_cmp) }}
+                                                            {% endif %}
+                                                        {% endif %}
                                                     </td>
                                                 {% endfor %}
                                             </tr>
@@ -784,8 +811,20 @@
 .ct-compare-outcome { margin-top: 0.25rem; }
 .ct-compare-cell { vertical-align: top; word-break: break-word; max-width: 24rem; }
 .ct-compare-cell-missing { background: rgba(0,0,0,0.02); }
-.ct-cell-diff { background: rgba(255, 193, 7, 0.18); }
+/* Distinct, obvious highlight when a cell's value differs from the row mode.
+   Override --bs-table-bg directly because Bootstrap's `.table > * > *` rule
+   sets background-color from the variable at higher specificity than a plain
+   class selector. (Bootstrap also uses `box-shadow: inset 0 0 0 9999px var(...)`
+   for table state, so we can't add a left-edge accent that way — the bg color
+   alone reads clearly enough at this saturation against the otherwise-white
+   table.) */
+.ct-cell-diff {
+    --bs-table-bg: #fff3cd;
+    background-color: #fff3cd;
+}
 .ct-compare-cell-summary { font-style: italic; color: #495057; }
+.ct-compare-cell-text { display: block; }
+.ct-compare-cell-toggle { font-size: 0.75rem; padding: 0 0.25rem; margin-top: 0.25rem; }
 </style>
 
 <script>
@@ -851,6 +890,50 @@
                 panes.forEach(function(p) {
                     p.style.display = (p.getAttribute('data-view-pane') === view) ? '' : 'none';
                 });
+            });
+        });
+
+        // Recompute Compare-table diff highlights using the cell's *full structured
+        // value* rather than the engine-truncated repr. We normalize before comparing
+        // so list-ordering noise (e.g. Splunk `stats count` not sorting) doesn't show
+        // up as a fake diff. A cell whose normalized value doesn't match the row's
+        // mode value gets the .ct-cell-diff class.
+        function structuralKey(v) {
+            if (v === null || v === undefined) return 'null';
+            if (Array.isArray(v)) {
+                var parts = v.map(structuralKey);
+                parts.sort();
+                return '[' + parts.join(',') + ']';
+            }
+            if (typeof v === 'object') {
+                var keys = Object.keys(v).sort();
+                return '{' + keys.map(function(k) { return JSON.stringify(k) + ':' + structuralKey(v[k]); }).join(',') + '}';
+            }
+            return JSON.stringify(v);
+        }
+        root.querySelectorAll('.ct-compare-pane tbody tr').forEach(function(tr) {
+            var cells = Array.from(tr.querySelectorAll('td.ct-compare-cell'));
+            // Build the structural key for each cell from its embedded JSON;
+            // missing data / cells without a full value get a synthetic placeholder
+            // so they don't accidentally collide with each other.
+            var keys = cells.map(function(td) {
+                if (td.classList.contains('ct-compare-cell-missing')) return '__missing__';
+                var dataEl = td.querySelector('script[type="application/json"]');
+                if (!dataEl) return null;
+                try { return structuralKey(JSON.parse(dataEl.textContent)); }
+                catch (e) { return null; }
+            });
+            // Pick the most common non-null key.
+            var counts = {};
+            keys.forEach(function(k) { if (k !== null && k !== '__missing__') counts[k] = (counts[k] || 0) + 1; });
+            var modeKey = null, modeCount = 0;
+            Object.keys(counts).forEach(function(k) { if (counts[k] > modeCount) { modeKey = k; modeCount = counts[k]; } });
+            // Apply highlights.
+            cells.forEach(function(td, i) {
+                td.classList.remove('ct-cell-diff');
+                if (modeKey !== null && keys[i] !== null && keys[i] !== '__missing__' && keys[i] !== modeKey) {
+                    td.classList.add('ct-cell-diff');
+                }
             });
         });
     });

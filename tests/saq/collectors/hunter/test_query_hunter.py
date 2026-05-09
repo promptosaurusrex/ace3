@@ -1099,6 +1099,73 @@ def test_event_summary_auto_derives_from_description_field_then_group_by(monkeyp
 
 
 @pytest.mark.unit
+def test_event_summary_includes_event_time_as_trailing_part(monkeypatch):
+    """The summary should include each event's timestamp as the trailing part so
+    sibling events whose user / IP / other fields are identical are still
+    distinguishable in the collapsed UI rows. Real-world example: a hunt may
+    return two records emitted seconds apart for the same user from the same IP
+    — without the time, the rows look like duplicates."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    correlate = CorrelateConfig.model_validate({"logic": [{"action": "alert"}]})
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="trace_summary_with_time",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="user",
+        description_field=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+
+    # The base QueryHunt's extract_event_timestamp returns None; subclasses
+    # (e.g. SplunkHunt) parse a real timestamp out of the event. Stub it here.
+    def fake_ts(event):
+        raw = event.get("_time")
+        return datetime.fromisoformat(raw) if raw else None
+    monkeypatch.setattr(hunt, "extract_event_timestamp", fake_ts)
+
+    submissions = hunt.process_query_results([
+        {"user": "alice", "src": "1.1.1.1", "_time": "2026-05-08T15:48:47+00:00"},
+        {"user": "alice", "src": "1.1.1.1", "_time": "2026-05-08T15:49:13+00:00"},
+    ])
+    assert submissions and len(submissions) == 1  # both grouped under "alice"
+
+    traces = submissions[0].root.details["correlation_trace"]["event_traces"]
+    summaries = [et["summary"] for et in traces]
+    assert len(summaries) == 2
+    # Both summaries end with their individual HH:MM:SS so analysts can pick
+    # them apart at a glance.
+    assert summaries[0].endswith("15:48:47")
+    assert summaries[1].endswith("15:49:13")
+    # The time is what makes them differ — without it the rows would be identical.
+    assert summaries[0] != summaries[1]
+    assert summaries[0].rsplit(" · ", 1)[0] == summaries[1].rsplit(" · ", 1)[0]
+
+    # When extract_event_timestamp returns None (unsupported hunt type or
+    # missing _time field), the summary just omits the time tail rather than
+    # erroring. Use a fresh hunt; previously-stubbed events have _time set.
+    hunt_no_time = default_hunt(
+        manager=MockManager(),
+        name="trace_summary_no_time",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        description_field=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+    subs2 = hunt_no_time.process_query_results([{"src": "2.2.2.2"}])
+    summary = subs2[0].root.details["correlation_trace"]["event_traces"][0]["summary"]
+    # The base extract_event_timestamp returns None, so no time is appended;
+    # only the IP observable shows up.
+    assert summary == "2.2.2.2"
+
+
+@pytest.mark.unit
 def test_event_summary_dedupes_substrings_case_insensitive(monkeypatch):
     """The summary should drop a candidate that is a case-insensitive substring of
     any already-included part. In real hunts the description_field value tends
