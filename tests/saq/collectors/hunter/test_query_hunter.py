@@ -4371,3 +4371,29 @@ def test_name_jinja_signature_id_display_value_matches(monkeypatch):
     assert len(submissions) == 1
     sig = next(o for o in submissions[0].root.observables if o.type == F_SIGNATURE_ID)
     assert sig._display_value == "hunt for 1.2.3.4"
+
+
+@pytest.mark.unit
+def test_create_root_analysis_pivot_links_pair_same_field(monkeypatch, tmpdir):
+    """pivot_link url+text referencing the same multi-valued field stay paired."""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="pivot_pair_test",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        pivot_links=[{
+            "url": "https://example.com/?q=${app}",
+            "text": "${app} info",
+        }],
+    )
+    root = hunt.create_root_analysis({"app": ["incomplete", "not-applicable"]})
+
+    assert len(root.pivot_links) == 2
+    pairs = sorted((p.url, p.text) for p in root.pivot_links)
+    assert pairs == [
+        ("https://example.com/?q=incomplete", "incomplete info"),
+        ("https://example.com/?q=not-applicable", "not-applicable info"),
+    ]

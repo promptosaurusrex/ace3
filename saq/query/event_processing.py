@@ -120,104 +120,133 @@ def extract_event_value(event: dict, lookup_type: str, field_path: str) -> tuple
 def interpolate_event_value(value: str, event: dict) -> list[str]:
     """Interpolates event data into the given value.
 
-    This supports fields that resolve to either scalar values or lists:
-    - If a placeholder resolves to a scalar, it is interpolated normally.
-    - If a placeholder resolves to a list, each element is interpolated separately.
-    - If multiple placeholders resolve to lists, all combinations are returned.
+    Delegates to ``interpolate_event_values`` so that multiple references to the
+    same field within the template stay paired (e.g. ``${a}-${a}`` with
+    ``a=["x","y"]`` yields ``["x-x","y-y"]``, not the cartesian product).
+    References to *different* fields still expand as a cartesian product.
     """
-    assert isinstance(value, str)
+    return [row[0] for row in interpolate_event_values([value], event)]
+
+
+def interpolate_event_values(templates: list[str], event: dict) -> list[list[str]]:
+    """Interpolates event data into a list of templates, pairing same-field refs.
+
+    Returns ``list[list[str]]`` where each inner list has one entry per input
+    template, aligned positionally. References to the same field (canonicalized
+    as ``(lookup_type, field_path)``) — within one template or across templates —
+    share the same iteration index, so they always resolve to the same value.
+    References to different fields are combined via cartesian product, matching
+    the historical single-template behavior.
+
+    Edge cases:
+    - Missing field: keep the original ``${...}`` text in templates that
+      reference it; do not affect other templates.
+    - Resolved ``None``: rendered as empty string.
+    - Resolved empty list: short-circuits to ``[]``.
+    - Scalar values act as length-1 axes.
+    """
+    assert isinstance(templates, list)
     assert isinstance(event, dict)
 
-    # if there are no interpolation patterns, then we just return the value as is
-    if not _FIELD_PATTERN.search(value):
-        return [value]
+    # Parsed segments per template. Each segment is one of:
+    #   ("literal", text)        - literal text or an unresolved placeholder
+    #                              kept verbatim
+    #   ("field", field_id)      - reference to a resolved field, looked up by
+    #                              the index assigned to that field
+    template_segments: list[list[tuple]] = []
 
-    # We build the output by treating the string as a sequence of segments.
-    # Each segment is a list of possible strings:
-    # - Literal text segments have a single option.
-    # - Placeholder segments may have multiple options (if their value is a list).
-    segments: list[list[str]] = []
-    last_index = 0
+    # Maps (lookup_type, field_path) -> field_id (0-indexed).
+    field_ids: dict[tuple[str, str], int] = {}
+    # field_id -> list of string options (length 1 for scalars; N for lists).
+    field_values: list[list[str]] = []
 
-    for match in _FIELD_PATTERN.finditer(value):
-        # literal text before this match
-        if match.start() > last_index:
-            literal = value[last_index : match.start()]
-            segments.append([literal])
+    for template in templates:
+        assert isinstance(template, str)
+        segments: list[tuple] = []
+        last_index = 0
 
-        lookup_type = match.group(1)  # can be None, empty string, FIELD_LOOKUP_TYPE_KEY, or FIELD_LOOKUP_TYPE_DOT
-        field_path = match.group(2).strip()
+        for match in _FIELD_PATTERN.finditer(template):
+            if match.start() > last_index:
+                segments.append(("literal", template[last_index : match.start()]))
 
-        # default behavior if something goes wrong with this placeholder:
-        # keep the original text for this match
-        default_segment = [match.group(0)]
+            raw_lookup_type = match.group(1)
+            raw_field_path = match.group(2).strip()
+            literal_passthrough = ("literal", match.group(0))
 
-        if not field_path:
-            # empty lookup, leave placeholder as-is
-            segments.append(default_segment)
-            last_index = match.end()
-            continue
+            if not raw_field_path:
+                segments.append(literal_passthrough)
+                last_index = match.end()
+                continue
 
-        field_path = _unescape_lookup_value(field_path)
+            field_path = _unescape_lookup_value(raw_field_path)
+            lookup_type = raw_lookup_type or FIELD_LOOKUP_TYPE_KEY
 
-        # default to "key" if no type specified (None or empty string)
-        if not lookup_type:
-            lookup_type = FIELD_LOOKUP_TYPE_KEY
+            if lookup_type not in (FIELD_LOOKUP_TYPE_KEY, FIELD_LOOKUP_TYPE_DOT):
+                segments.append(literal_passthrough)
+                last_index = match.end()
+                continue
 
-        # validate lookup type
-        if lookup_type not in (FIELD_LOOKUP_TYPE_KEY, FIELD_LOOKUP_TYPE_DOT):
-            segments.append(default_segment)
-            last_index = match.end()
-            continue
+            key = (lookup_type, field_path)
+            if key in field_ids:
+                segments.append(("field", field_ids[key]))
+                last_index = match.end()
+                continue
 
-        success, resolved_value = extract_event_value(event, lookup_type, field_path)
+            success, resolved_value = extract_event_value(event, lookup_type, field_path)
+            if not success:
+                segments.append(literal_passthrough)
+                last_index = match.end()
+                continue
 
-        if not success:
-            segments.append(default_segment)
-            last_index = match.end()
-            continue
-
-        # Build the list of replacement options for this placeholder.
-        if resolved_value is None:
-            # Preserve previous behavior: None becomes empty string.
-            segment_values = [""]
-
-        elif isinstance(resolved_value, list):
-            # Each element of the list becomes a separate interpolation.
-            # Convert elements to strings, treating None as empty string.
-            if not resolved_value:
-                # An empty list yields no options; this effectively results in no
-                # combinations that include this placeholder.
-                segment_values = []
-            else:
-                segment_values = [
+            if resolved_value is None:
+                options = [""]
+            elif isinstance(resolved_value, list):
+                if not resolved_value:
+                    return []
+                options = [
                     "" if item is None else str(item) for item in resolved_value
                 ]
+            else:
+                options = [str(resolved_value)]
 
-        else:
-            segment_values = [str(resolved_value)]
+            field_id = len(field_values)
+            field_ids[key] = field_id
+            field_values.append(options)
+            segments.append(("field", field_id))
+            last_index = match.end()
 
-        # If there are no options (empty list), then there are no valid
-        # combinations that include this placeholder.
-        if not segment_values:
-            return []
+        if last_index < len(template):
+            segments.append(("literal", template[last_index:]))
 
-        segments.append(segment_values)
-        last_index = match.end()
+        template_segments.append(segments)
 
-    # trailing literal text after the last match
-    if last_index < len(value):
-        segments.append([value[last_index:]])
+    def render(segments: list[tuple], indices: tuple[int, ...]) -> str:
+        parts: list[str] = []
+        for segment in segments:
+            if segment[0] == "literal":
+                parts.append(segment[1])
+            else:
+                parts.append(field_values[segment[1]][indices[segment[1]]])
+        return "".join(parts)
 
-    # Now compute the cartesian product across all segments to generate all
-    # interpolated strings.
-    results: list[str] = [""]
-    for segment_options in segments:
-        new_results: list[str] = []
-        for base in results:
-            for option in segment_options:
-                new_results.append(base + option)
+    if not field_values:
+        return [[render(segments, ()) for segments in template_segments]]
 
-        results = new_results
+    results: list[list[str]] = []
+    indices = [0] * len(field_values)
+    while True:
+        results.append(
+            [render(segments, tuple(indices)) for segments in template_segments]
+        )
+        # Increment indices like an odometer (rightmost field varies fastest).
+        carry = len(indices) - 1
+        while carry >= 0:
+            indices[carry] += 1
+            if indices[carry] < len(field_values[carry]):
+                break
+            indices[carry] = 0
+            carry -= 1
+        if carry < 0:
+            break
 
     return results
