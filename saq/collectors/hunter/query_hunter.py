@@ -52,6 +52,10 @@ QUERY_DETAILS_QUERY = "query"
 QUERY_DETAILS_EVENTS = "events"
 QUERY_DETAILS_CORRELATION_TRACE = "correlation_trace"
 QUERY_DETAILS_ORIGINAL_EVENTS = "original_events"
+QUERY_DETAILS_HUNT_METADATA = "hunt_metadata"
+
+# Cap for the auto-derived event summary string (header chip text)
+_EVENT_SUMMARY_MAX_LEN = 160
 
 T = TypeVar("T")
 
@@ -634,6 +638,80 @@ class QueryHunt(Hunt):
                 header=header, content="\n".join(lines), format=sd_config.format,
             )
 
+    def _extract_event_summary(self, event: dict, observables: list) -> Optional[str]:
+        """Build a short, human-readable one-line summary for a single event.
+
+        Used in the correlation trace UI to label collapsed event rows so analysts
+        can scan multiple events without expanding each one. Pulls from the hunt's
+        existing config (description_field, group_by), from observables that were
+        already extracted for this event, and the per-event timestamp via
+        extract_event_timestamp — no new YAML knobs.
+
+        Dedup: a hunt's description_field often already contains the user / email
+        / msg_id that group_by and observables would surface separately. Skip a
+        candidate if it's a substring of any existing part (case-insensitive);
+        if a candidate fully supersedes an existing part, replace the shorter one
+        with the more informative longer one. This keeps the header line useful
+        for telling sibling events apart instead of repeating the shared value.
+
+        Time goes last so an analyst always sees it as the trailing field — this
+        is the difference-of-last-resort for siblings whose other fields all match
+        (e.g. multiple records emitted seconds apart for the same user).
+        """
+        parts: list[str] = []
+
+        def _add(value):
+            if value is None:
+                return
+            if isinstance(value, list):
+                value = value[0] if value else None
+                if value is None:
+                    return
+            text = str(value).strip()
+            if not text:
+                return
+            text_cf = text.casefold()
+            indices_to_remove = []
+            for i, existing in enumerate(parts):
+                existing_cf = existing.casefold()
+                if text_cf == existing_cf or text_cf in existing_cf:
+                    return
+                if existing_cf in text_cf:
+                    indices_to_remove.append(i)
+            for i in reversed(indices_to_remove):
+                parts.pop(i)
+            parts.append(text)
+
+        if self.description_field and self.description_field in event:
+            _add(event[self.description_field])
+        if self.group_by and self.group_by != "ALL" and self.group_by in event:
+            _add(event[self.group_by])
+
+        for obs in observables:
+            if getattr(obs, "type", None) == F_SIGNATURE_ID:
+                continue
+            _add(getattr(obs, "value", None))
+            if len(parts) >= 4:
+                break
+
+        try:
+            evt_time = self.extract_event_timestamp(event)
+        except Exception:
+            evt_time = None
+        if evt_time is not None:
+            try:
+                _add(evt_time.strftime("%H:%M:%S"))
+            except Exception:
+                pass
+
+        if not parts:
+            return None
+
+        summary = " · ".join(parts)
+        if len(summary) > _EVENT_SUMMARY_MAX_LEN:
+            summary = summary[: _EVENT_SUMMARY_MAX_LEN - 1] + "…"
+        return summary
+
     def process_query_results(self, query_results, **kwargs) -> Optional[list[Submission]]:
         if query_results is None:
             return None
@@ -707,6 +785,10 @@ class QueryHunt(Hunt):
         # maps event index to the submission(s) it belongs to (for summary detail processing)
         event_submission_map: dict[int, list[Submission]] = {}
 
+        # captures the deduped observable list for each post-correlation event index so
+        # the correlation-trace UI can render a per-event summary line without re-extracting.
+        per_event_observables: dict[int, list] = {}
+
         # map results to observables
         for event_index, event in enumerate(query_results):
             event_time = self.extract_event_timestamp(event) or local_time()
@@ -723,6 +805,8 @@ class QueryHunt(Hunt):
             for ext in extracted:
                 if ext.observable not in observables:
                     observables.append(ext.observable)
+
+            per_event_observables[event_index] = observables
 
             # merge relationship tracking
             relationship_tracking.update(event_relationships)
@@ -854,24 +938,115 @@ class QueryHunt(Hunt):
 
         self._process_summary_details(query_results, event_submission_map)
 
+        # Attach hunt_metadata to every submission so the trace UI can render hunt context
+        # (name, group_by/group_value for the grouping banner) without inferring it from data.
+        for submission in submissions:
+            submission.root.details[QUERY_DETAILS_HUNT_METADATA] = {
+                "name": self.name,
+                "uuid": self.uuid,
+                "type": self.type,
+                "group_by": self.group_by,
+                "group_value": getattr(submission, "group_value", None),
+                "description_field": self.description_field,
+                "frequency": str(self.frequency) if self.frequency else None,
+            }
+
         # Attach correlation trace to each submission's details for alert persistence.
-        # Each alert should only see the EventTraces for events that contributed to it, so an
-        # analyst opening one alert isn't shown unrelated events from sibling alerts in
-        # the same hunt run. Stream events stay shared (timeouts/resets are hunt-level
-        # context relevant to every alert from the run).
+        # Each alert should see the EventTraces that contributed to it (origins) plus any
+        # filter/stop EventTraces from the same group_by value (extra_origins) — so an
+        # analyst sees the rejection context for "this user / this msg_id / etc." without
+        # importing unrelated events from sibling alerts in the same run. Stream events
+        # stay shared (timeouts/resets are hunt-run-level context).
         if hasattr(self, "correlation_trace") and self.correlation_trace is not None:
             submission_origin_indices: dict[int, set[int]] = {}
-            for post_correlation_index, submissions_for_event in event_submission_map.items():
+            # Per-submission map from a pre-correlation event_index to that event's position in
+            # the submission's details["events"] list. Lets the trace UI surface the full
+            # structured property value (untruncated) by indexing back into details["events"].
+            events_pos_by_origin: dict[int, dict[int, int]] = {}
+            for post_correlation_index in sorted(event_submission_map):
                 if post_correlation_index >= len(alert_event_origin_indices):
                     continue
                 origin_index = alert_event_origin_indices[post_correlation_index]
-                for submission in submissions_for_event:
+                for submission in event_submission_map[post_correlation_index]:
                     submission_origin_indices.setdefault(id(submission), set()).add(origin_index)
+                    sub_pos_map = events_pos_by_origin.setdefault(id(submission), {})
+                    if origin_index not in sub_pos_map:
+                        sub_pos_map[origin_index] = len(sub_pos_map)
+
+            # reverse mapping from pre-correlation event_index (used by EventTrace) back to
+            # the post-correlation index (used by query_results / per_event_observables).
+            origin_to_post = {origin: post for post, origin in enumerate(alert_event_origin_indices)}
+
+            # Build extra_origins for grouped hunts: filter/stop event_traces whose
+            # original event shares the alert's group_by value get included so analysts
+            # can see what was rejected for the same key. Ungrouped hunts get nothing
+            # extra (no natural mapping); discard kills the run; alert/error/timeout are
+            # already covered by `origins` since the engine routes them onto the alert.
+            extra_origins_by_sub: dict[int, set[int]] = {}
+            if (
+                self.original_query_results is not None
+                and self.group_by is not None
+            ):
+                if self.group_by == "ALL":
+                    for et in self.correlation_trace.event_traces:
+                        if et.outcome not in ("filter", "stop"):
+                            continue
+                        if et.event_index >= len(self.original_query_results):
+                            continue
+                        for submission in submissions:
+                            extra_origins_by_sub.setdefault(id(submission), set()).add(et.event_index)
+                else:
+                    submissions_by_group: dict[any, list[Submission]] = {}
+                    for sub in submissions:
+                        gv = getattr(sub, "group_value", None)
+                        if gv is not None:
+                            submissions_by_group.setdefault(gv, []).append(sub)
+                    for et in self.correlation_trace.event_traces:
+                        if et.outcome not in ("filter", "stop"):
+                            continue
+                        if et.event_index >= len(self.original_query_results):
+                            continue
+                        orig = self.original_query_results[et.event_index]
+                        if not isinstance(orig, dict):
+                            continue
+                        gv_raw = orig.get(self.group_by)
+                        if gv_raw is None:
+                            continue
+                        gvs = gv_raw if isinstance(gv_raw, list) else [gv_raw]
+                        for gv in gvs:
+                            for sub in submissions_by_group.get(gv, []):
+                                extra_origins_by_sub.setdefault(id(sub), set()).add(et.event_index)
 
             for submission in submissions:
                 origins = submission_origin_indices.get(id(submission), set())
+                extra_origins = extra_origins_by_sub.get(id(submission), set())
+                pos_map = events_pos_by_origin.get(id(submission), {})
+                scoped_event_traces = []
+                for et in self.correlation_trace.event_traces:
+                    if et.event_index not in origins and et.event_index not in extra_origins:
+                        continue
+                    summary = None
+                    post_idx = origin_to_post.get(et.event_index)
+                    if et.event_index in origins and post_idx is not None and post_idx < len(query_results):
+                        summary = self._extract_event_summary(
+                            query_results[post_idx],
+                            per_event_observables.get(post_idx, []),
+                        )
+                    elif (
+                        et.event_index in extra_origins
+                        and self.original_query_results is not None
+                        and et.event_index < len(self.original_query_results)
+                        and isinstance(self.original_query_results[et.event_index], dict)
+                    ):
+                        summary = self._extract_event_summary(
+                            self.original_query_results[et.event_index], [],
+                        )
+                    scoped_event_traces.append(et.model_copy(update={
+                        "summary": summary,
+                        "events_position": pos_map.get(et.event_index),
+                    }))
                 per_alert_trace = CorrelationTrace(
-                    event_traces=[et for et in self.correlation_trace.event_traces if et.event_index in origins],
+                    event_traces=scoped_event_traces,
                     stream_events=self.correlation_trace.stream_events,
                 )
                 submission.root.details[QUERY_DETAILS_CORRELATION_TRACE] = per_alert_trace.model_dump()

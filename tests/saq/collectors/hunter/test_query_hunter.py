@@ -881,6 +881,19 @@ def test_correlation_trace_scoped_per_alert_no_grouping(monkeypatch):
     assert traces[0]["stream_events"] == []
     assert traces[1]["stream_events"] == []
 
+    # Without group_by, hunt_metadata still attaches but group_by is None.
+    for s in submissions:
+        hm = s.root.details["hunt_metadata"]
+        assert hm["name"] == "trace_per_alert"
+        assert hm["group_by"] is None
+        assert hm["group_value"] is None
+
+    # Per-event summaries fall back to extracted observable values when no
+    # description_field/group_by are configured; the IP value should appear.
+    assert traces[0]["event_traces"][0]["summary"] is not None
+    assert "1.2.3.4" in traces[0]["event_traces"][0]["summary"]
+    assert "5.6.7.8" in traces[1]["event_traces"][0]["summary"]
+
 
 @pytest.mark.unit
 def test_correlation_trace_scoped_per_alert_with_grouping(monkeypatch):
@@ -922,6 +935,449 @@ def test_correlation_trace_scoped_per_alert_with_grouping(monkeypatch):
 
     # Group A contributed indices 0 and 1; group B contributed index 2.
     assert by_msg_id == {"A": [0, 1], "B": [2]}
+
+    # hunt_metadata is attached and carries the right group_by + group_value per submission.
+    by_group = {}
+    for s in submissions:
+        hm = s.root.details["hunt_metadata"]
+        assert hm["group_by"] == "msg_id"
+        assert hm["name"] == "trace_per_grouped_alert"
+        by_group[hm["group_value"]] = s
+    assert set(by_group) == {"A", "B"}
+
+    # Each EventTrace should carry a summary that mentions the group_value (msg_id).
+    for group_value, s in by_group.items():
+        for et in s.root.details["correlation_trace"]["event_traces"]:
+            assert et["summary"], f"missing summary on {group_value}/{et['event_index']}"
+            assert group_value in et["summary"]
+
+
+@pytest.mark.unit
+def test_event_trace_events_position_indexes_into_alert_events(monkeypatch):
+    """Each scoped EventTrace should carry an `events_position` field that points at
+    the entry in this submission's `details["events"]` list whose dict matches the
+    trace event. The trace UI uses this to display the untruncated structured value
+    of any property a transform step set on the event."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    correlate = CorrelateConfig.model_validate({"logic": [{"action": "alert"}]})
+
+    # Ungrouped: each event becomes its own alert with events_position == 0.
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="events_position_no_group",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+    submissions = hunt.process_query_results([
+        {"src": "1.1.1.1"},
+        {"src": "2.2.2.2"},
+    ])
+    assert submissions and len(submissions) == 2
+    for s in submissions:
+        events = s.root.details["events"]
+        traces = s.root.details["correlation_trace"]["event_traces"]
+        assert len(events) == 1 and len(traces) == 1
+        pos = traces[0]["events_position"]
+        assert pos == 0
+        assert events[pos]["src"] == s.root.details["events"][0]["src"]
+
+    # Grouped: a single submission can hold N events. events_position must index into
+    # this submission's events list (not the hunt-wide one) and be 1:1 with the trace.
+    hunt2 = default_hunt(
+        manager=MockManager(),
+        name="events_position_grouped",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="msg_id",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+    submissions2 = hunt2.process_query_results([
+        {"msg_id": "A", "src": "1.1.1.1"},
+        {"msg_id": "B", "src": "2.2.2.2"},
+        {"msg_id": "A", "src": "3.3.3.3"},
+        {"msg_id": "A", "src": "4.4.4.4"},
+    ])
+    assert submissions2 and len(submissions2) == 2
+
+    by_msg_id = {s.root.details["events"][0]["msg_id"]: s for s in submissions2}
+    a_sub = by_msg_id["A"]
+    a_events = a_sub.root.details["events"]
+    a_traces = a_sub.root.details["correlation_trace"]["event_traces"]
+    assert len(a_events) == 3 and len(a_traces) == 3
+    # Each trace's events_position must point at an event with the same src as the
+    # one the engine processed for that EventTrace.
+    for et in a_traces:
+        pos = et["events_position"]
+        assert pos is not None
+        assert 0 <= pos < len(a_events)
+    # Positions must be unique within a submission (no two traces map to the same event).
+    a_positions = sorted(et["events_position"] for et in a_traces)
+    assert a_positions == [0, 1, 2]
+
+    b_sub = by_msg_id["B"]
+    b_traces = b_sub.root.details["correlation_trace"]["event_traces"]
+    assert len(b_traces) == 1
+    assert b_traces[0]["events_position"] == 0
+
+
+@pytest.mark.unit
+def test_event_summary_auto_derives_from_description_field_then_group_by(monkeypatch):
+    """The auto-derived per-event summary should prefer description_field, then group_by,
+    then observable values, in that order — and de-duplicate identical strings so the
+    line stays short. This is what drives the collapsed-event header line in the trace UI.
+    """
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    correlate = CorrelateConfig.model_validate({
+        "logic": [{"action": "alert"}],
+    })
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="trace_summary_derivation",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="user",
+        description_field="alert_title",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+
+    submissions = hunt.process_query_results([
+        {"alert_title": "Suspicious sign-in", "user": "alice@example.com", "src": "1.2.3.4"},
+    ])
+    assert submissions and len(submissions) == 1
+    et = submissions[0].root.details["correlation_trace"]["event_traces"][0]
+    summary = et["summary"]
+    # All three signals must be present, in that order, separated by " · ".
+    assert "Suspicious sign-in" in summary
+    assert "alice@example.com" in summary
+    assert "1.2.3.4" in summary
+    assert summary.index("Suspicious sign-in") < summary.index("alice@example.com") < summary.index("1.2.3.4")
+
+    # Description-field-only hunt: summary uses the description value and the observable;
+    # group_by is None so it isn't appended.
+    hunt2 = default_hunt(
+        manager=MockManager(),
+        name="trace_summary_no_group",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        description_field="alert_title",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+    submissions2 = hunt2.process_query_results([
+        {"alert_title": "Repeated event", "src": "9.9.9.9"},
+    ])
+    summary2 = submissions2[0].root.details["correlation_trace"]["event_traces"][0]["summary"]
+    assert "Repeated event" in summary2
+    assert "9.9.9.9" in summary2
+
+    # When description_field value equals the group_by value, the summary
+    # de-duplicates so the same string isn't repeated.
+    hunt3 = default_hunt(
+        manager=MockManager(),
+        name="trace_summary_dedup",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="user",
+        description_field="user",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+    submissions3 = hunt3.process_query_results([
+        {"user": "bob@example.com", "src": "8.8.8.8"},
+    ])
+    summary3 = submissions3[0].root.details["correlation_trace"]["event_traces"][0]["summary"]
+    assert summary3.count("bob@example.com") == 1
+
+
+@pytest.mark.unit
+def test_event_summary_includes_event_time_as_trailing_part(monkeypatch):
+    """The summary should include each event's timestamp as the trailing part so
+    sibling events whose user / IP / other fields are identical are still
+    distinguishable in the collapsed UI rows. Real-world example: a hunt may
+    return two records emitted seconds apart for the same user from the same IP
+    — without the time, the rows look like duplicates."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    correlate = CorrelateConfig.model_validate({"logic": [{"action": "alert"}]})
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="trace_summary_with_time",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="user",
+        description_field=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+
+    # The base QueryHunt's extract_event_timestamp returns None; subclasses
+    # (e.g. SplunkHunt) parse a real timestamp out of the event. Stub it here.
+    def fake_ts(event):
+        raw = event.get("_time")
+        return datetime.fromisoformat(raw) if raw else None
+    monkeypatch.setattr(hunt, "extract_event_timestamp", fake_ts)
+
+    submissions = hunt.process_query_results([
+        {"user": "alice", "src": "1.1.1.1", "_time": "2026-05-08T15:48:47+00:00"},
+        {"user": "alice", "src": "1.1.1.1", "_time": "2026-05-08T15:49:13+00:00"},
+    ])
+    assert submissions and len(submissions) == 1  # both grouped under "alice"
+
+    traces = submissions[0].root.details["correlation_trace"]["event_traces"]
+    summaries = [et["summary"] for et in traces]
+    assert len(summaries) == 2
+    # Both summaries end with their individual HH:MM:SS so analysts can pick
+    # them apart at a glance.
+    assert summaries[0].endswith("15:48:47")
+    assert summaries[1].endswith("15:49:13")
+    # The time is what makes them differ — without it the rows would be identical.
+    assert summaries[0] != summaries[1]
+    assert summaries[0].rsplit(" · ", 1)[0] == summaries[1].rsplit(" · ", 1)[0]
+
+    # When extract_event_timestamp returns None (unsupported hunt type or
+    # missing _time field), the summary just omits the time tail rather than
+    # erroring. Use a fresh hunt; previously-stubbed events have _time set.
+    hunt_no_time = default_hunt(
+        manager=MockManager(),
+        name="trace_summary_no_time",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        description_field=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+    subs2 = hunt_no_time.process_query_results([{"src": "2.2.2.2"}])
+    summary = subs2[0].root.details["correlation_trace"]["event_traces"][0]["summary"]
+    # The base extract_event_timestamp returns None, so no time is appended;
+    # only the IP observable shows up.
+    assert summary == "2.2.2.2"
+
+
+@pytest.mark.unit
+def test_event_summary_dedupes_substrings_case_insensitive(monkeypatch):
+    """The summary should drop a candidate that is a case-insensitive substring of
+    any already-included part. In real hunts the description_field value tends
+    to embed the user / email / msg_id that the group_by field and observables
+    would also surface — without this dedup, the visible header repeats the same
+    value 2-3x and the actually-differentiating part (e.g. an IP) gets clipped
+    behind ellipsis. A candidate that supersedes an existing part replaces it.
+    """
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    correlate = CorrelateConfig.model_validate({"logic": [{"action": "alert"}]})
+
+    # Pattern: alert_title contains the userPrincipalName, the group_by IS the
+    # userPrincipalName, and observables surface the lowercase email and an IP.
+    # Only the IP differs across siblings.
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="trace_summary_substring_dedup",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="userPrincipalName",
+        description_field="alert_title",
+        observable_mapping=[
+            ObservableMapping(fields=["ip"], type="ipv4"),
+            ObservableMapping(fields=["email"], type="email_address"),
+        ],
+        correlate=correlate,
+    )
+    submissions = hunt.process_query_results([
+        {
+            "alert_title": "JaneDoe@example.com + anonymizedIPAddress + TAP",
+            "userPrincipalName": "JaneDoe@example.com",
+            "ip": "192.0.2.42",
+            "email": "janedoe@example.com",   # different case, still a substring of alert_title
+        },
+    ])
+    summary = submissions[0].root.details["correlation_trace"]["event_traces"][0]["summary"]
+    # Title and IP are both informative and present.
+    assert "JaneDoe@example.com + anonymizedIPAddress + TAP" in summary
+    assert "192.0.2.42" in summary
+    # The user value should appear only once — the description_field already
+    # contains it, so the group_by value and the (lowercased) email observable
+    # are both dropped.
+    assert summary.lower().count("janedoe@example.com") == 1
+    # And the resulting summary uses ` · ` separators between parts.
+    assert summary.count(" · ") == 1
+
+    # Replacement case: when a later candidate fully supersedes an earlier one
+    # (e.g. observable is more informative than the group_by value), the longer
+    # candidate replaces the shorter so we don't lose information.
+    hunt2 = default_hunt(
+        manager=MockManager(),
+        name="trace_summary_supersede",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="user",
+        description_field=None,
+        observable_mapping=[ObservableMapping(fields=["full_user"], type="email_address")],
+        correlate=correlate,
+    )
+    submissions2 = hunt2.process_query_results([
+        {"user": "alice", "full_user": "alice@example.com"},
+    ])
+    summary2 = submissions2[0].root.details["correlation_trace"]["event_traces"][0]["summary"]
+    # The bare "alice" substring is dropped in favor of the more informative full email.
+    assert "alice@example.com" in summary2
+    assert summary2.count("alice") == 1
+
+
+@pytest.mark.unit
+def test_grouped_alert_includes_filtered_events_with_matching_group_value(monkeypatch):
+    """For grouped hunts, filter-outcome event_traces whose original event shares
+    the alert's group_by value SHOULD appear on that alert. This gives analysts the
+    rejection context for the same key (e.g., "for this user, here's what was
+    filtered alongside the kept events"). It also must not pollute sibling alerts
+    that have a different group_by value — the original PR #185 behavior is
+    preserved for cross-alert events."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    # Filter events tagged "drop"; everything else alerts. Two msg_id groups, one
+    # of which has both kept and filtered events.
+    correlate = CorrelateConfig.model_validate({
+        "logic": [
+            {
+                "when": {"type": "equals", "value": "drop", "property": "tag"},
+                "execute": [{"action": "filter"}],
+            },
+        ],
+    })
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="trace_filters_attached_grouped",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="msg_id",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+
+    submissions = hunt.process_query_results([
+        {"msg_id": "A", "src": "1.1.1.1", "tag": "keep"},   # idx 0 → A alert
+        {"msg_id": "A", "src": "2.2.2.2", "tag": "drop"},   # idx 1 → filtered, A's
+        {"msg_id": "B", "src": "3.3.3.3", "tag": "drop"},   # idx 2 → filtered, B has no alert
+        {"msg_id": "A", "src": "4.4.4.4", "tag": "keep"},   # idx 3 → A alert
+        {"msg_id": "C", "src": "5.5.5.5", "tag": "keep"},   # idx 4 → C alert
+    ])
+    assert submissions and len(submissions) == 2  # A and C; B got filtered with no alert
+
+    by_msg_id = {s.root.details["events"][0]["msg_id"]: s for s in submissions}
+    assert set(by_msg_id) == {"A", "C"}
+
+    a_traces = by_msg_id["A"].root.details["correlation_trace"]["event_traces"]
+    c_traces = by_msg_id["C"].root.details["correlation_trace"]["event_traces"]
+
+    a_indices = sorted(et["event_index"] for et in a_traces)
+    a_outcomes = sorted(et["outcome"] for et in a_traces)
+    # Alert A keeps idx 0 and 3 (kept) and gains idx 1 (filtered, same msg_id).
+    assert a_indices == [0, 1, 3]
+    assert a_outcomes == ["alert", "alert", "filter"]
+
+    # Alert C only gets its own kept event; B's filter (idx 2) doesn't leak in
+    # because B has a different group_by value.
+    c_indices = sorted(et["event_index"] for et in c_traces)
+    c_outcomes = sorted(et["outcome"] for et in c_traces)
+    assert c_indices == [4]
+    assert c_outcomes == ["alert"]
+
+    # The filter event added to A should still carry a useful summary derived from
+    # the pre-correlation event (it's not in details["events"] for A).
+    filter_et = next(et for et in a_traces if et["outcome"] == "filter")
+    assert filter_et["summary"] is not None
+    assert "A" in filter_et["summary"]
+    # events_position is not set for extras — they don't have a slot in details["events"].
+    assert filter_et["events_position"] is None
+
+
+@pytest.mark.unit
+def test_grouped_alert_includes_stop_outcome_events(monkeypatch):
+    """`stop` is another way an event was rejected — analysts should see it on the
+    alert for the same group_by value, like filter."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    correlate = CorrelateConfig.model_validate({
+        "logic": [
+            {
+                "when": {"type": "equals", "value": "halt", "property": "tag"},
+                "execute": [{"action": "stop"}],
+            },
+        ],
+    })
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="trace_stop_attached_grouped",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="msg_id",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+    # The stop action breaks the engine loop entirely — once tripped, no later
+    # events are processed. So put the stop event LAST so we still get an alert
+    # for msg_id="A" before the stop.
+    submissions = hunt.process_query_results([
+        {"msg_id": "A", "src": "1.1.1.1", "tag": "keep"},
+        {"msg_id": "A", "src": "2.2.2.2", "tag": "halt"},  # stop here
+    ])
+    assert submissions and len(submissions) == 1
+    a_traces = submissions[0].root.details["correlation_trace"]["event_traces"]
+    a_outcomes = sorted(et["outcome"] for et in a_traces)
+    assert a_outcomes == ["alert", "stop"]
+
+
+@pytest.mark.unit
+def test_group_by_all_attaches_every_filtered_event(monkeypatch):
+    """When group_by == "ALL", a hunt run produces a single submission. Every
+    filtered event from the run goes on it."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    correlate = CorrelateConfig.model_validate({
+        "logic": [
+            {
+                "when": {"type": "equals", "value": "drop", "property": "tag"},
+                "execute": [{"action": "filter"}],
+            },
+        ],
+    })
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="trace_group_by_all",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="ALL",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        correlate=correlate,
+    )
+    submissions = hunt.process_query_results([
+        {"src": "1.1.1.1", "tag": "keep"},
+        {"src": "2.2.2.2", "tag": "drop"},
+        {"src": "3.3.3.3", "tag": "drop"},
+        {"src": "4.4.4.4", "tag": "keep"},
+    ])
+    assert submissions and len(submissions) == 1
+    traces = submissions[0].root.details["correlation_trace"]["event_traces"]
+    assert sorted(et["event_index"] for et in traces) == [0, 1, 2, 3]
+    assert sorted(et["outcome"] for et in traces) == ["alert", "alert", "filter", "filter"]
 
 
 @pytest.mark.unit

@@ -1,7 +1,22 @@
 {# Correlation Trace panel — shown for any hunt alert whose details include a
    correlation_trace (see saq/collectors/hunter/correlation/trace.py). Included
    from analysis/alert.html outside any overridable block so every hunt type
-   and custom template inherits it automatically. #}
+   and custom template inherits it automatically.
+
+   Layout:
+     - Card header: title, expand/collapse-all controls, view toggle (Per event / Compare).
+     - Card body:
+        - Hunt context strip + grouping banner (when group_by is set).
+        - Summary strip with click-to-filter outcome chips.
+        - Stream events callout.
+        - Per-event list (collapsibles with summary line, plain-language steps,
+          and a per-step "details" toggle that shows the original technical badges).
+        - Compare-events table (alternate view; toggled from the card header).
+#}
+
+{#-- =====================================================================
+     Technical (existing) renderers — used inside the per-step "details" pane
+     ===================================================================== --#}
 
 {#-- Expression formatter: returns a compact one-liner for a single expression. --#}
 {% macro render_expression(expr) %}
@@ -53,7 +68,7 @@
     {%- endif -%}
 {% endmacro %}
 
-{#-- Condition step: when/expression → execute|else branch, with nested steps. --#}
+{#-- Condition step (technical view): when/expression → execute|else branch, with nested steps. --#}
 {% macro render_condition_step(cond, depth) %}
     <div class="ct-step ct-step-condition">
         <div class="ct-step-header">
@@ -87,7 +102,7 @@
     </div>
 {% endmacro %}
 
-{#-- Transform step: sets a property via a command. On error the event short-circuits to alert. --#}
+{#-- Transform step (technical view): sets a property via a command. On error the event short-circuits to alert. --#}
 {% macro render_transform_step(trans, depth, uid) %}
     <div class="ct-step ct-step-transform">
         <div class="ct-step-header">
@@ -133,7 +148,7 @@
     </div>
 {% endmacro %}
 
-{#-- Action step: terminal (filter/stop/discard/alert/log). --#}
+{#-- Action step (technical view): terminal (filter/stop/discard/alert/log). --#}
 {% macro render_action_step(action) %}
     <div class="ct-step ct-step-action">
         <div class="ct-step-header">
@@ -168,7 +183,7 @@
     </div>
 {% endmacro %}
 
-{#-- Dispatch macro: description caption + trace_type routing. --#}
+{#-- Dispatch macro for the technical view (used inside per-step details panes). --#}
 {% macro render_step(step_wrapper, depth) %}
     {% set step = step_wrapper.step %}
     <div class="ct-step-wrapper" style="{% if depth > 0 %}margin-left: 0;{% endif %}">
@@ -185,12 +200,226 @@
     </div>
 {% endmacro %}
 
+{#-- =====================================================================
+     Plain-language renderers — primary visible row per step
+     ===================================================================== --#}
+
+{#-- Render an outcome badge. The schema's "alert" outcome means "the event was kept
+     and contributes to this ACE alert" (vs. filtered/stopped/discarded). We display
+     it as "kept" to avoid colliding with the ACE-alert concept analysts work with. --#}
+{% macro pl_outcome_chip(outcome) %}
+    {% if outcome == "alert" %}
+        <span class="badge text-bg-success ct-pl-outcome" title="kept on this alert (passed all filter checks)"><i class="bi bi-check-circle-fill"></i> kept</span>
+    {% elif outcome == "filter" %}
+        <span class="badge text-bg-secondary ct-pl-outcome" title="filtered out by a check"><i class="bi bi-funnel-fill"></i> filter</span>
+    {% elif outcome == "stop" %}
+        <span class="badge text-bg-warning ct-pl-outcome" title="stop action halted further processing for this event"><i class="bi bi-stop-circle-fill"></i> stop</span>
+    {% elif outcome == "discard" %}
+        <span class="badge text-bg-dark ct-pl-outcome" title="discard action threw out the entire run"><i class="bi bi-trash-fill"></i> discard</span>
+    {% elif outcome == "timeout" %}
+        <span class="badge text-bg-warning ct-pl-outcome" title="correlation timeout reached before this event was processed"><i class="bi bi-hourglass-split"></i> timeout</span>
+    {% elif outcome == "error" %}
+        <span class="badge text-bg-danger ct-pl-outcome" title="a step raised an error while processing this event"><i class="bi bi-exclamation-triangle-fill"></i> error</span>
+    {% else %}
+        <span class="badge text-bg-light text-dark ct-pl-outcome">{{ outcome }}</span>
+    {% endif %}
+{% endmacro %}
+
+{% macro render_condition_pl(step_wrapper) %}
+    {% set cond = step_wrapper.step %}
+    <i class="bi bi-question-circle text-primary"></i>
+    <span class="ct-pl-label">
+        {% if step_wrapper.description %}{{ step_wrapper.description }}
+        {% else %}Check{% endif %}
+    </span>
+    <span class="text-muted">→</span>
+    {% if cond.error %}
+        <span class="badge text-bg-danger"><i class="bi bi-exclamation-triangle-fill"></i> error</span>
+    {% elif cond.branch_taken == "execute" %}
+        <span class="badge text-bg-success"><i class="bi bi-check2"></i> matched</span>
+    {% elif cond.branch_taken == "else" %}
+        <span class="badge text-bg-info"><i class="bi bi-arrow-return-right"></i> else branch</span>
+    {% else %}
+        <span class="badge text-bg-secondary"><i class="bi bi-dash-circle"></i> not matched</span>
+    {% endif %}
+{% endmacro %}
+
+{% macro render_transform_pl(step_wrapper, uid="", event_full=none) %}
+    {% set trans = step_wrapper.step %}
+    {% set _full_value = none %}
+    {% if trans.property_name and event_full is mapping and trans.property_name in event_full %}
+        {% set _full_value = event_full[trans.property_name] %}
+    {% endif %}
+    <i class="bi bi-arrow-repeat text-info"></i>
+    <span class="ct-pl-label">
+        {% if step_wrapper.description %}{{ step_wrapper.description }}
+        {% elif trans.property_name %}Set <code class="ct-prop">{{ trans.property_name }}</code>
+        {% elif trans.transform_type == "stream" %}Replace event stream
+        {% else %}Transform{% endif %}
+    </span>
+    {% if trans.error %}
+        <span class="text-muted">→</span>
+        <span class="badge text-bg-danger"><i class="bi bi-exclamation-triangle-fill"></i> error</span>
+    {% elif trans.result_count is not none %}
+        <span class="text-muted">→</span>
+        {% if trans.result_count > 0 %}
+            <span class="badge text-bg-info"><i class="bi bi-database-fill-check"></i> {{ trans.result_count }} row{{ "" if trans.result_count == 1 else "s" }}</span>
+        {% else %}
+            <span class="badge text-bg-secondary"><i class="bi bi-database"></i> 0 rows</span>
+        {% endif %}
+    {% endif %}
+    {% if trans.property_name and trans.property_value %}
+        <code class="ct-val ct-pl-value" title="{{ trans.property_value }}">{{ trans.property_value | truncate(80, true) }}</code>
+    {% endif %}
+    {% if _full_value is not none and uid %}
+        <a role="button" class="btn btn-link btn-xs ct-fullvalue-toggle text-decoration-none" data-bs-toggle="collapse" data-bs-target="#ct_full_{{ uid }}" aria-expanded="false" title="Show the untruncated structured value from this event">
+            <i class="bi bi-arrows-angle-expand"></i> view full value
+        </a>
+    {% endif %}
+{% endmacro %}
+
+{#-- Inline pane that lazily renders any structured value as a JSON tree on first
+     expansion. Used by both the per-step transform rows and the Compare-table cells
+     so analysts can drill into the full untruncated value from either view.
+     `value` should be JSON-serializable (a list/dict/scalar from details["events"]). --#}
+{% macro render_full_value_pane(uid, value) %}
+    <div class="collapse ct-fullvalue-pane mt-1" id="ct_full_{{ uid }}">
+        <div class="ct-fullvalue-tree" id="ct_full_tree_{{ uid }}"></div>
+    </div>
+    <script type="application/json" id="ct_full_data_{{ uid }}">{{ value | tojson }}</script>
+    <script>
+    (function() {
+        var pane = document.getElementById('ct_full_{{ uid }}');
+        var dataEl = document.getElementById('ct_full_data_{{ uid }}');
+        if (!pane || !dataEl) return;
+        var rendered = false;
+        pane.addEventListener('shown.bs.collapse', function() {
+            if (rendered) return;
+            rendered = true;
+            var data;
+            try { data = JSON.parse(dataEl.textContent); } catch (e) { data = null; }
+            if (typeof renderJsonTree === 'function') {
+                renderJsonTree(data, 'ct_full_tree_{{ uid }}', { emptyMessage: 'no value', collapsed: false, useArrayIndexAsKey: true });
+            } else {
+                document.getElementById('ct_full_tree_{{ uid }}').textContent = JSON.stringify(data, null, 2);
+            }
+        });
+    })();
+    </script>
+{% endmacro %}
+
+{#-- Per-step wrapper that emits the full-value pane only for transforms whose
+     event has the property — preserves the previous behavior of the
+     transform-specific macro while delegating the actual rendering. --#}
+{% macro render_transform_full_value_pane(step_wrapper, uid, event_full) %}
+    {% set trans = step_wrapper.step %}
+    {% if trans.property_name and event_full is mapping and trans.property_name in event_full %}
+        {{ render_full_value_pane(uid, event_full[trans.property_name]) }}
+    {% endif %}
+{% endmacro %}
+
+{% macro render_action_pl(step_wrapper) %}
+    {% set action = step_wrapper.step %}
+    {% if action.action_type == "filter" %}
+        <i class="bi bi-funnel text-secondary"></i>
+        <span class="ct-pl-label">Filtered out{% if step_wrapper.description %}: {{ step_wrapper.description }}{% elif action.rendered_log_message %}: {{ action.rendered_log_message }}{% endif %}</span>
+    {% elif action.action_type == "stop" %}
+        <i class="bi bi-stop-circle text-warning"></i>
+        <span class="ct-pl-label">Stopped processing{% if step_wrapper.description %}: {{ step_wrapper.description }}{% elif action.rendered_log_message %}: {{ action.rendered_log_message }}{% endif %}</span>
+    {% elif action.action_type == "discard" %}
+        <i class="bi bi-trash text-dark"></i>
+        <span class="ct-pl-label">Discarded entire run{% if step_wrapper.description %}: {{ step_wrapper.description }}{% endif %}</span>
+    {% elif action.action_type == "alert" %}
+        <i class="bi bi-exclamation-octagon text-danger"></i>
+        <span class="ct-pl-label">Raised alert{% if step_wrapper.description %}: {{ step_wrapper.description }}{% endif %}</span>
+    {% elif action.action_type == "log" %}
+        <i class="bi bi-journal-text text-info"></i>
+        <span class="ct-pl-label">Logged{% if action.rendered_log_message %}: {{ action.rendered_log_message }}{% endif %}</span>
+    {% else %}
+        <i class="bi bi-circle text-muted"></i>
+        <span class="ct-pl-label">{{ action.action_type }}</span>
+    {% endif %}
+    {% if action.error %}
+        <span class="text-muted">→</span>
+        <span class="badge text-bg-danger"><i class="bi bi-exclamation-triangle-fill"></i> error</span>
+    {% endif %}
+{% endmacro %}
+
+{#-- Renders a step's plain-language summary plus a "details" toggle that reveals the
+     existing technical badge view. Recursively renders children of a condition step in
+     plain-language form so the analyst gets a coherent narrative without expanding details. --#}
+{#-- Compose the plain-language step row plus type-specific reveal panes:
+        - transform: a `command` toggle reveals the rendered query (and any error).
+        - condition: an `expression` toggle reveals the actual evaluated expression
+          tree (jinja/equals/glob/and/or/not breakdown).
+        - action: no extra toggle — the row already states the outcome.
+     The previous generic "details" toggle showed the same badges and value chip
+     that were already in the row, so it was pure noise.  --#}
+{% macro render_step_pl(step_wrapper, depth, uid, event_full=none) %}
+    {% set step = step_wrapper.step %}
+    <div class="ct-pl-step ct-pl-step-{{ step.trace_type }}">
+        <div class="ct-pl-row d-flex align-items-center gap-2 flex-wrap">
+            {% if step.trace_type == "condition" %}
+                {{ render_condition_pl(step_wrapper) }}
+                <a role="button" class="ms-auto btn btn-link btn-xs ct-details-toggle text-decoration-none" data-bs-toggle="collapse" data-bs-target="#ct_expr_{{ uid }}" aria-expanded="false" title="Show the actual expression that was evaluated">
+                    <i class="bi bi-chevron-down ct-details-chevron"></i> expression
+                </a>
+            {% elif step.trace_type == "transform" %}
+                {{ render_transform_pl(step_wrapper, uid, event_full) }}
+                {% if step.rendered_command or step.error %}
+                    <a role="button" class="ms-auto btn btn-link btn-xs ct-details-toggle text-decoration-none" data-bs-toggle="collapse" data-bs-target="#ct_cmd_{{ uid }}" aria-expanded="false" title="Show the rendered query / command">
+                        <i class="bi bi-code-slash"></i> command
+                    </a>
+                {% endif %}
+            {% elif step.trace_type == "action" %}
+                {{ render_action_pl(step_wrapper) }}
+            {% endif %}
+        </div>
+        {% if step.trace_type == "transform" %}
+            {{ render_transform_full_value_pane(step_wrapper, uid, event_full) }}
+            {% if step.rendered_command or step.error %}
+                <div class="collapse ct-pl-details" id="ct_cmd_{{ uid }}">
+                    {% if step.rendered_command %}
+                        <pre class="ct-cmd">{{ step.rendered_command }}</pre>
+                    {% endif %}
+                    {% if step.error %}
+                        <div class="alert alert-danger ct-error py-1 px-2 mb-1">
+                            <i class="bi bi-exclamation-triangle-fill"></i>
+                            <code>{{ step.error }}</code>
+                        </div>
+                    {% endif %}
+                </div>
+            {% endif %}
+        {% elif step.trace_type == "condition" %}
+            <div class="collapse ct-pl-details" id="ct_expr_{{ uid }}">
+                <div class="ct-step-header py-1">
+                    {{ render_expression(step.expression) }}
+                </div>
+                {% if step.error %}
+                    <div class="alert alert-danger ct-error py-1 px-2 mb-1">
+                        <i class="bi bi-exclamation-triangle-fill"></i>
+                        <code>{{ step.error }}</code>
+                    </div>
+                {% endif %}
+            </div>
+        {% endif %}
+        {% if step.trace_type == "condition" and step.branch_steps %}
+            <div class="ct-nested ct-rail-primary">
+                {% for child in step.branch_steps %}
+                    {{ render_step_pl(child, depth + 1, uid ~ "_" ~ loop.index, event_full) }}
+                {% endfor %}
+            </div>
+        {% endif %}
+    </div>
+{% endmacro %}
+
 
 {#-- =========================================================================
      Outer panel: only render if this alert has a correlation_trace
      ========================================================================= --#}
 {% if analysis.details and analysis.details.get('correlation_trace') %}
     {% set ct = analysis.details.get('correlation_trace') %}
+    {% set hm = analysis.details.get('hunt_metadata') or {} %}
     {% set event_traces = ct.get('event_traces', []) or [] %}
     {% set stream_events = ct.get('stream_events', []) or [] %}
 
@@ -230,41 +459,125 @@
         {% if se.event_type == "timeout" %}{% set _stream_severity = "danger" %}{% endif %}
     {% endfor %}
 
+    {# Smart default-expand: only one event → expand it; otherwise, expand the first
+       alert-or-error event so the analyst lands on the meaningful one. #}
+    {% set _default_expand = namespace(idx=none) %}
+    {% if (_display_events | length) == 1 %}
+        {% set _default_expand.idx = _display_events[0].event_index %}
+    {% else %}
+        {% for et in _display_events %}
+            {% if _default_expand.idx is none and et.outcome in ['alert', 'error'] %}
+                {% set _default_expand.idx = et.event_index %}
+            {% endif %}
+        {% endfor %}
+    {% endif %}
+
+    {# Alias used by both Per-event and Compare loops to look up the full
+       structured event from the alert's persisted events list. #}
+    {% set _events_list_for_compare = analysis.details.get('events') or [] %}
+
+    {# Compare table: collect (step_position, property_name) → {event_index: property_value}.
+       Only TransformTrace steps with a property_name contribute. Walks nested condition
+       branch_steps so steps inside an "execute" path are still represented. #}
+    {% set _compare = namespace(rows=[], by_key={}, order=[]) %}
+    {% for et in _display_events %}
+        {% set _walk = namespace(steps=et.steps or []) %}
+        {# Flatten: top-level steps + one level of nested branch_steps for conditions. #}
+        {% set _flat = [] %}
+        {% for s in _walk.steps %}
+            {% set _ = _flat.append(s) %}
+            {% if s.step.trace_type == "condition" and s.step.branch_steps %}
+                {% for cs in s.step.branch_steps %}
+                    {% set _ = _flat.append(cs) %}
+                {% endfor %}
+            {% endif %}
+        {% endfor %}
+        {% for s in _flat %}
+            {% if s.step.trace_type == "transform" and s.step.property_name %}
+                {% set key = (loop.index0 ~ ":" ~ s.step.property_name) %}
+                {% if key not in _compare.by_key %}
+                    {% set _ = _compare.order.append(key) %}
+                    {% set _ = _compare.by_key.update({key: {"property_name": s.step.property_name, "cells": {}}}) %}
+                {% endif %}
+                {% set _ = _compare.by_key[key]["cells"].update({et.event_index: s.step.property_value}) %}
+            {% endif %}
+        {% endfor %}
+    {% endfor %}
+
 <div class="row">
     <div class="col">
         <div class="card mb-3">
-            <div class="card-header">
-                <h5>
+            <div class="card-header d-flex flex-wrap align-items-center gap-2">
+                <h5 class="mb-0 me-auto">
                     <i class="bi bi-diagram-3-fill"></i>
                     Correlation Trace
                     <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_correlation_trace" aria-expanded="true" aria-controls="collapse_correlation_trace">(hide/show)</a>
                 </h5>
+                <div class="btn-group btn-group-sm ct-event-controls" role="group" aria-label="Expand controls">
+                    <button type="button" class="btn btn-outline-secondary ct-expand-all" title="Expand all events"><i class="bi bi-arrows-expand"></i> Expand all</button>
+                    <button type="button" class="btn btn-outline-secondary ct-collapse-all" title="Collapse all events"><i class="bi bi-arrows-collapse"></i> Collapse all</button>
+                </div>
+                <div class="btn-group btn-group-sm ct-view-controls" role="group" aria-label="View toggle">
+                    <button type="button" class="btn btn-outline-primary active ct-view-toggle" data-view="per-event"><i class="bi bi-list-ul"></i> Per event</button>
+                    <button type="button" class="btn btn-outline-primary ct-view-toggle" data-view="compare" {% if (_display_events | length) < 2 or (_compare.order | length) == 0 %}disabled title="Compare needs 2+ events with property transforms"{% endif %}><i class="bi bi-table"></i> Compare</button>
+                </div>
             </div>
             <div class="card-body">
-                <div class="card-text collapse show" id="collapse_correlation_trace">
+                <div class="card-text collapse show ct-root" id="collapse_correlation_trace">
 
-                    {#-- Summary strip --#}
-                    <div class="ct-summary d-flex flex-wrap gap-2 align-items-center mb-3">
-                        <span class="badge text-bg-secondary">
+                    {#-- Hunt context strip --#}
+                    {% if hm %}
+                        <div class="ct-hunt-meta text-body-secondary small mb-2 d-flex flex-wrap gap-3">
+                            {% if hm.name %}<span><i class="bi bi-bullseye"></i> Hunt: <strong>{{ hm.name }}</strong></span>{% endif %}
+                            {% if hm.type %}<span>Type: <code>{{ hm.type }}</code></span>{% endif %}
+                            {% if hm.frequency %}<span>Every: <code>{{ hm.frequency }}</code></span>{% endif %}
+                            {% if hm.uuid %}<span class="text-truncate" title="{{ hm.uuid }}">UUID: <code>{{ hm.uuid }}</code></span>{% endif %}
+                        </div>
+                    {% endif %}
+
+                    {#-- Grouping banner: appears when the hunt uses group_by and this alert was grouped. --#}
+                    {% if hm.group_by and hm.group_value is not none and hm.group_by != "ALL" %}
+                        <div class="alert alert-info py-2 mb-3 ct-grouping-banner">
+                            <i class="bi bi-collection-fill"></i>
+                            This alert was produced by grouping
+                            <strong>{{ _total }} event{{ "" if _total == 1 else "s" }}</strong>
+                            by <code>{{ hm.group_by }} = {{ hm.group_value }}</code>.
+                            <span class="text-body-secondary small ms-1">All events listed below share this group key.</span>
+                        </div>
+                    {% elif hm.group_by == "ALL" %}
+                        <div class="alert alert-info py-2 mb-3 ct-grouping-banner">
+                            <i class="bi bi-collection-fill"></i>
+                            This alert groups <strong>all {{ _total }} event{{ "" if _total == 1 else "s" }}</strong>
+                            from this hunt run together (<code>group_by: ALL</code>).
+                        </div>
+                    {% endif %}
+
+                    {#-- Summary strip — outcome chips are clickable filters. The
+                         "kept" chip corresponds to the schema's "alert" outcome
+                         (events that survived correlation and contribute to this alert);
+                         we relabel here to avoid confusing it with ACE alerts. --#}
+                    <div class="ct-summary d-flex flex-wrap gap-2 align-items-center mb-3" role="toolbar" aria-label="Outcome filter">
+                        <span class="text-body-secondary small me-1">Filter:</span>
+                        <button type="button" class="btn btn-sm btn-outline-secondary ct-outcome-chip ct-outcome-chip-all active" data-outcome-filter="" title="Show all events">
                             <i class="bi bi-list-ol"></i> {{ _total }} event{{ "" if _total == 1 else "s" }}
-                        </span>
+                        </button>
                         {% if counts.alert > 0 %}
-                            <span class="badge text-bg-danger"><i class="bi bi-exclamation-octagon-fill"></i> {{ counts.alert }} alert</span>
+                            <button type="button" class="btn btn-sm btn-outline-success ct-outcome-chip" data-outcome-filter="alert" title="Click to show only the {{ counts.alert }} event{{ '' if counts.alert == 1 else 's' }} kept on this alert"><i class="bi bi-check-circle-fill"></i> {{ counts.alert }} kept</button>
                         {% endif %}
                         {% if counts.filter > 0 %}
-                            <span class="badge text-bg-secondary"><i class="bi bi-funnel-fill"></i> {{ counts.filter }} filtered</span>
+                            <button type="button" class="btn btn-sm btn-outline-secondary ct-outcome-chip" data-outcome-filter="filter" title="Click to show only the {{ counts.filter }} event{{ '' if counts.filter == 1 else 's' }} that were filtered out"><i class="bi bi-funnel-fill"></i> {{ counts.filter }} filtered</button>
                         {% endif %}
                         {% if counts.stop > 0 %}
-                            <span class="badge text-bg-warning"><i class="bi bi-stop-circle-fill"></i> {{ counts.stop }} stopped</span>
+                            <button type="button" class="btn btn-sm btn-outline-warning ct-outcome-chip" data-outcome-filter="stop" title="Click to show only the {{ counts.stop }} event{{ '' if counts.stop == 1 else 's' }} that hit a stop action"><i class="bi bi-stop-circle-fill"></i> {{ counts.stop }} stopped</button>
                         {% endif %}
                         {% if counts.discard > 0 %}
-                            <span class="badge text-bg-dark"><i class="bi bi-trash-fill"></i> {{ counts.discard }} discarded</span>
+                            <button type="button" class="btn btn-sm btn-outline-dark ct-outcome-chip" data-outcome-filter="discard" title="Click to show only the {{ counts.discard }} event{{ '' if counts.discard == 1 else 's' }} that hit a discard action"><i class="bi bi-trash-fill"></i> {{ counts.discard }} discarded</button>
                         {% endif %}
                         {% if counts.timeout > 0 %}
-                            <span class="badge text-bg-warning"><i class="bi bi-hourglass-split"></i> {{ counts.timeout }} timeout</span>
+                            <button type="button" class="btn btn-sm btn-outline-warning ct-outcome-chip" data-outcome-filter="timeout" title="Click to show only the {{ counts.timeout }} event{{ '' if counts.timeout == 1 else 's' }} that hit the correlation timeout"><i class="bi bi-hourglass-split"></i> {{ counts.timeout }} timeout</button>
                         {% endif %}
                         {% if counts.error > 0 %}
-                            <span class="badge text-bg-danger"><i class="bi bi-exclamation-triangle-fill"></i> {{ counts.error }} error</span>
+                            <button type="button" class="btn btn-sm btn-outline-danger ct-outcome-chip" data-outcome-filter="error" title="Click to show only the {{ counts.error }} event{{ '' if counts.error == 1 else 's' }} where a step raised an error"><i class="bi bi-exclamation-triangle-fill"></i> {{ counts.error }} error</button>
                         {% endif %}
                         {% if counts.other > 0 %}
                             <span class="badge text-bg-light text-dark">{{ counts.other }} other</span>
@@ -289,36 +602,36 @@
                         </div>
                     {% endif %}
 
-                    {#-- Per-event list --#}
+                    {#-- Per-event view (default) --#}
                     {% if _display_events %}
-                        <ul class="list-group ct-event-list">
+                        <ul class="list-group ct-event-list ct-view-pane" data-view-pane="per-event">
                             {% for et in _display_events %}
                                 {% set et_id = "ct_event_" ~ et.event_index %}
-                                <li class="list-group-item ct-event-item">
-                                    <div class="ct-event-header d-flex align-items-center gap-2" role="button" data-bs-toggle="collapse" data-bs-target="#{{ et_id }}" aria-expanded="false">
+                                {% set _is_default_open = (et.event_index == _default_expand.idx) %}
+                                <li class="list-group-item ct-event-item" data-outcome="{{ et.outcome }}">
+                                    <div class="ct-event-header d-flex align-items-center gap-2" role="button" data-bs-toggle="collapse" data-bs-target="#{{ et_id }}" aria-expanded="{{ 'true' if _is_default_open else 'false' }}">
                                         <i class="bi bi-chevron-right ct-event-chevron"></i>
                                         <span class="badge text-bg-light text-dark">event #{{ et.event_index }}</span>
-                                        {% if et.outcome == 'alert' %}
-                                            <span class="badge text-bg-danger"><i class="bi bi-exclamation-octagon-fill"></i> alert</span>
-                                        {% elif et.outcome == 'filter' %}
-                                            <span class="badge text-bg-secondary"><i class="bi bi-funnel-fill"></i> filter</span>
-                                        {% elif et.outcome == 'stop' %}
-                                            <span class="badge text-bg-warning"><i class="bi bi-stop-circle-fill"></i> stop</span>
-                                        {% elif et.outcome == 'discard' %}
-                                            <span class="badge text-bg-dark"><i class="bi bi-trash-fill"></i> discard</span>
-                                        {% elif et.outcome == 'timeout' %}
-                                            <span class="badge text-bg-warning"><i class="bi bi-hourglass-split"></i> timeout</span>
-                                        {% elif et.outcome == 'error' %}
-                                            <span class="badge text-bg-danger"><i class="bi bi-exclamation-triangle-fill"></i> error</span>
-                                        {% else %}
-                                            <span class="badge text-bg-light text-dark">{{ et.outcome }}</span>
+                                        {{ pl_outcome_chip(et.outcome) }}
+                                        {% if et.summary %}
+                                            <span class="ct-event-summary text-body-secondary" title="{{ et.summary }}">{{ et.summary }}</span>
                                         {% endif %}
-                                        <span class="text-muted small ms-auto">{{ et.steps | length }} step{{ "" if (et.steps | length) == 1 else "s" }}</span>
+                                        <span class="text-muted small ms-auto ct-event-step-count">{{ et.steps | length }} step{{ "" if (et.steps | length) == 1 else "s" }}</span>
                                     </div>
-                                    <div class="collapse ct-event-body" id="{{ et_id }}">
+                                    <div class="collapse ct-event-body{% if _is_default_open %} show{% endif %}" id="{{ et_id }}">
+                                        {% set _event_full = none %}
+                                        {% set _events_list = analysis.details.get('events') or [] %}
+                                        {% set _ev_pos = et.get('events_position') if et is mapping else et.events_position %}
+                                        {% if _ev_pos is not none and _ev_pos < (_events_list | length) %}
+                                            {% set _event_full = _events_list[_ev_pos] %}
+                                        {% elif _ev_pos is none and (_display_events | length) == (_events_list | length) and loop.index0 < (_events_list | length) %}
+                                            {# Fall back to loop position for traces persisted before events_position
+                                               existed. Safe when no events were dropped / cap'd in display. #}
+                                            {% set _event_full = _events_list[loop.index0] %}
+                                        {% endif %}
                                         {% if et.steps %}
                                             {% for step in et.steps %}
-                                                {{ render_step(step, 0) }}
+                                                {{ render_step_pl(step, 0, et.event_index ~ "_" ~ loop.index, _event_full) }}
                                             {% endfor %}
                                         {% else %}
                                             <div class="text-muted small fst-italic">no steps recorded</div>
@@ -329,6 +642,82 @@
                         </ul>
                     {% else %}
                         <div class="text-muted fst-italic">No event traces recorded.</div>
+                    {% endif %}
+
+                    {#-- Compare view (alternate) — table where each row is a property and each column is an event,
+                         with cells highlighted when they differ from the column's mode value. --#}
+                    {% if (_display_events | length) >= 2 and (_compare.order | length) > 0 %}
+                        <div class="ct-view-pane ct-compare-pane" data-view-pane="compare" style="display: none;">
+                            <div class="text-body-secondary small mb-2">
+                                Side-by-side view of properties set by transform steps. Cells that <span class="ct-cell-diff px-1">differ</span> from the most-common value in the row are highlighted so you can see what's actually different between events.
+                            </div>
+                            <div class="table-responsive">
+                                <table class="table table-sm table-bordered ct-compare-table">
+                                    <thead>
+                                        <tr>
+                                            <th class="ct-compare-rowhead">property</th>
+                                            {% for et in _display_events %}
+                                                <th class="ct-compare-eventhead">
+                                                    <div>event #{{ et.event_index }}</div>
+                                                    <div class="ct-compare-outcome">{{ pl_outcome_chip(et.outcome) }}</div>
+                                                </th>
+                                            {% endfor %}
+                                        </tr>
+                                        {% if _display_events | selectattr('summary') | list | length > 0 %}
+                                            <tr class="ct-compare-summary-row">
+                                                <th class="ct-compare-rowhead">summary</th>
+                                                {% for et in _display_events %}
+                                                    <td class="ct-compare-cell ct-compare-cell-summary" title="{{ et.summary or '' }}">{{ et.summary or "—" }}</td>
+                                                {% endfor %}
+                                            </tr>
+                                        {% endif %}
+                                    </thead>
+                                    <tbody>
+                                        {% for key in _compare.order %}
+                                            {% set row = _compare.by_key[key] %}
+                                            {% set _row_uid = "cmp_" ~ loop.index %}
+                                            <tr>
+                                                <th class="ct-compare-rowhead"><code class="ct-prop">{{ row.property_name }}</code></th>
+                                                {% for et in _display_events %}
+                                                    {% set cell = row.cells.get(et.event_index) %}
+                                                    {# Look up the untruncated structured value for this cell so the
+                                                       analyst can drill in (and so JS can compare structurally instead
+                                                       of comparing trace-truncated reprs that may collide on the first
+                                                       few rows of differently-ordered lists). #}
+                                                    {% set _full_value_cmp = none %}
+                                                    {% set _ev_pos_cmp = et.get('events_position') if et is mapping else et.events_position %}
+                                                    {% if _ev_pos_cmp is not none and _ev_pos_cmp < (_events_list_for_compare | length) %}
+                                                        {% set _evt = _events_list_for_compare[_ev_pos_cmp] %}
+                                                        {% if _evt is mapping and row.property_name in _evt %}
+                                                            {% set _full_value_cmp = _evt[row.property_name] %}
+                                                        {% endif %}
+                                                    {% elif _ev_pos_cmp is none and (_display_events | length) == (_events_list_for_compare | length) and loop.index0 < (_events_list_for_compare | length) %}
+                                                        {% set _evt = _events_list_for_compare[loop.index0] %}
+                                                        {% if _evt is mapping and row.property_name in _evt %}
+                                                            {% set _full_value_cmp = _evt[row.property_name] %}
+                                                        {% endif %}
+                                                    {% endif %}
+                                                    {% set _cell_uid = _row_uid ~ "_" ~ et.event_index %}
+                                                    <td class="ct-compare-cell{% if cell is none %} ct-compare-cell-missing{% endif %}" title="{{ cell or '' }}">
+                                                        {% if cell is none %}
+                                                            <span class="text-muted">—</span>
+                                                        {% else %}
+                                                            <div class="ct-compare-cell-text"><code class="ct-val">{{ cell | truncate(60, true) }}</code></div>
+                                                            {% if _full_value_cmp is not none %}
+                                                                <a role="button" class="btn btn-link btn-xs ct-fullvalue-toggle text-decoration-none ct-compare-cell-toggle" data-bs-toggle="collapse" data-bs-target="#ct_full_{{ _cell_uid }}" aria-expanded="false">
+                                                                    <i class="bi bi-arrows-angle-expand"></i> view
+                                                                </a>
+                                                                {{ render_full_value_pane(_cell_uid, _full_value_cmp) }}
+                                                            {% endif %}
+                                                        {% endif %}
+                                                    </td>
+                                                {% endfor %}
+                                            </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
                     {% endif %}
 
                     {#-- Cap notice + raw JSON fallback --#}
@@ -357,6 +746,19 @@
 .ct-event-header[aria-expanded="true"] .ct-event-chevron { transform: rotate(90deg); }
 .ct-event-chevron { transition: transform 0.15s ease; }
 .ct-event-body { padding-top: 0.5rem; padding-left: 1.5rem; }
+.ct-event-summary {
+    /* Wrap to up to 2 lines so the differentiating part of the summary
+       (e.g. an IP / time, after redundant user-name-like values are deduped)
+       stays visible instead of being clipped behind a single-line ellipsis. */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    flex: 1 1 auto;
+    min-width: 0;
+    line-height: 1.3;
+}
+.ct-event-step-count { white-space: nowrap; }
 .ct-step-wrapper { margin: 0.25rem 0; }
 .ct-step { padding: 0.25rem 0; }
 .ct-step-header { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
@@ -375,7 +777,167 @@
 .ct-log-message { font-family: var(--bs-font-monospace); font-size: 0.85rem; color: #495057; }
 .ct-description { margin-bottom: 0.15rem; }
 .ct-error code { background: transparent; color: inherit; }
-.ct-cmd-toggle { font-size: 0.75rem; padding: 0.1rem 0.4rem; }
+.ct-cmd-toggle, .btn-xs { font-size: 0.75rem; padding: 0.1rem 0.4rem; }
+
+/* Plain-language step rendering */
+.ct-pl-step { padding: 0.2rem 0; }
+.ct-pl-row { font-size: 0.95rem; }
+.ct-pl-label { font-weight: 500; }
+.ct-pl-value { max-width: 60ch; overflow: hidden; }
+.ct-pl-details { padding: 0.25rem 0 0.25rem 1.25rem; border-left: 2px solid rgba(0,0,0,0.06); margin-top: 0.25rem; }
+.ct-details-toggle { font-size: 0.75rem; padding: 0 0.25rem; }
+.ct-details-toggle[aria-expanded="true"] .ct-details-chevron { transform: rotate(180deg); }
+.ct-details-chevron { transition: transform 0.15s ease; }
+
+/* Outcome filter chips */
+.ct-outcome-chip { display: inline-flex; align-items: center; gap: 0.25rem; }
+.ct-event-list[data-active-filter="alert"] .ct-event-item:not([data-outcome="alert"]) { display: none; }
+.ct-event-list[data-active-filter="filter"] .ct-event-item:not([data-outcome="filter"]) { display: none; }
+.ct-event-list[data-active-filter="stop"] .ct-event-item:not([data-outcome="stop"]) { display: none; }
+.ct-event-list[data-active-filter="discard"] .ct-event-item:not([data-outcome="discard"]) { display: none; }
+.ct-event-list[data-active-filter="timeout"] .ct-event-item:not([data-outcome="timeout"]) { display: none; }
+.ct-event-list[data-active-filter="error"] .ct-event-item:not([data-outcome="error"]) { display: none; }
+
+/* Full-value inline JSON tree pane (rendered lazily on first expand) */
+.ct-fullvalue-pane { background: #f6f8fa; border: 1px solid #dee2e6; border-radius: 0.25rem; padding: 0.5rem 0.75rem; max-height: 30rem; overflow: auto; font-size: 0.85rem; width: 100%; }
+.ct-fullvalue-tree ul { margin-bottom: 0; padding-left: 0; }
+.ct-fullvalue-toggle { font-size: 0.75rem; padding: 0 0.25rem; }
+.ct-fullvalue-toggle[aria-expanded="true"] .bi-arrows-angle-expand { transform: rotate(45deg); }
+
+/* Compare table */
+.ct-compare-table { font-size: 0.85rem; }
+.ct-compare-rowhead { background: #f8f9fa; white-space: nowrap; }
+.ct-compare-eventhead { background: #f8f9fa; text-align: center; min-width: 12rem; }
+.ct-compare-outcome { margin-top: 0.25rem; }
+.ct-compare-cell { vertical-align: top; word-break: break-word; max-width: 24rem; }
+.ct-compare-cell-missing { background: rgba(0,0,0,0.02); }
+/* Distinct, obvious highlight when a cell's value differs from the row mode.
+   Override --bs-table-bg directly because Bootstrap's `.table > * > *` rule
+   sets background-color from the variable at higher specificity than a plain
+   class selector. (Bootstrap also uses `box-shadow: inset 0 0 0 9999px var(...)`
+   for table state, so we can't add a left-edge accent that way — the bg color
+   alone reads clearly enough at this saturation against the otherwise-white
+   table.) */
+.ct-cell-diff {
+    --bs-table-bg: #fff3cd;
+    background-color: #fff3cd;
+}
+.ct-compare-cell-summary { font-style: italic; color: #495057; }
+.ct-compare-cell-text { display: block; }
+.ct-compare-cell-toggle { font-size: 0.75rem; padding: 0 0.25rem; margin-top: 0.25rem; }
 </style>
+
+<script>
+(function() {
+    // Each Correlation Trace render gets its own scoped behaviors. Multiple traces on
+    // a page (one per analysis section) wire up independently.
+    document.querySelectorAll('.ct-root').forEach(function(root) {
+        // Expand all / Collapse all events
+        var card = root.closest('.card');
+        if (!card) return;
+
+        var expandBtn = card.querySelector('.ct-expand-all');
+        var collapseBtn = card.querySelector('.ct-collapse-all');
+        var bodies = root.querySelectorAll('.ct-event-body');
+        var headers = root.querySelectorAll('.ct-event-header');
+
+        if (expandBtn) {
+            expandBtn.addEventListener('click', function() {
+                bodies.forEach(function(b) { b.classList.add('show'); });
+                headers.forEach(function(h) { h.setAttribute('aria-expanded', 'true'); });
+            });
+        }
+        if (collapseBtn) {
+            collapseBtn.addEventListener('click', function() {
+                bodies.forEach(function(b) { b.classList.remove('show'); });
+                headers.forEach(function(h) { h.setAttribute('aria-expanded', 'false'); });
+            });
+        }
+
+        // Outcome filter chips: clicking sets data-active-filter on the event list;
+        // clicking the active chip (or the "all" chip) clears it.
+        var eventList = root.querySelector('.ct-event-list');
+        var chips = root.querySelectorAll('.ct-outcome-chip');
+        chips.forEach(function(chip) {
+            chip.addEventListener('click', function() {
+                var filter = chip.getAttribute('data-outcome-filter') || '';
+                if (eventList) {
+                    if (filter && eventList.getAttribute('data-active-filter') !== filter) {
+                        eventList.setAttribute('data-active-filter', filter);
+                    } else {
+                        eventList.removeAttribute('data-active-filter');
+                    }
+                }
+                chips.forEach(function(c) { c.classList.remove('active'); });
+                if (eventList && eventList.getAttribute('data-active-filter')) {
+                    chip.classList.add('active');
+                } else {
+                    var allChip = root.querySelector('.ct-outcome-chip-all');
+                    if (allChip) allChip.classList.add('active');
+                }
+            });
+        });
+
+        // View toggle: Per event vs. Compare. Only one pane visible at a time.
+        var viewButtons = card.querySelectorAll('.ct-view-toggle');
+        var panes = root.querySelectorAll('.ct-view-pane');
+        viewButtons.forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                if (btn.disabled) return;
+                var view = btn.getAttribute('data-view');
+                viewButtons.forEach(function(b) { b.classList.remove('active'); });
+                btn.classList.add('active');
+                panes.forEach(function(p) {
+                    p.style.display = (p.getAttribute('data-view-pane') === view) ? '' : 'none';
+                });
+            });
+        });
+
+        // Recompute Compare-table diff highlights using the cell's *full structured
+        // value* rather than the engine-truncated repr. We normalize before comparing
+        // so list-ordering noise (e.g. Splunk `stats count` not sorting) doesn't show
+        // up as a fake diff. A cell whose normalized value doesn't match the row's
+        // mode value gets the .ct-cell-diff class.
+        function structuralKey(v) {
+            if (v === null || v === undefined) return 'null';
+            if (Array.isArray(v)) {
+                var parts = v.map(structuralKey);
+                parts.sort();
+                return '[' + parts.join(',') + ']';
+            }
+            if (typeof v === 'object') {
+                var keys = Object.keys(v).sort();
+                return '{' + keys.map(function(k) { return JSON.stringify(k) + ':' + structuralKey(v[k]); }).join(',') + '}';
+            }
+            return JSON.stringify(v);
+        }
+        root.querySelectorAll('.ct-compare-pane tbody tr').forEach(function(tr) {
+            var cells = Array.from(tr.querySelectorAll('td.ct-compare-cell'));
+            // Build the structural key for each cell from its embedded JSON;
+            // missing data / cells without a full value get a synthetic placeholder
+            // so they don't accidentally collide with each other.
+            var keys = cells.map(function(td) {
+                if (td.classList.contains('ct-compare-cell-missing')) return '__missing__';
+                var dataEl = td.querySelector('script[type="application/json"]');
+                if (!dataEl) return null;
+                try { return structuralKey(JSON.parse(dataEl.textContent)); }
+                catch (e) { return null; }
+            });
+            // Pick the most common non-null key.
+            var counts = {};
+            keys.forEach(function(k) { if (k !== null && k !== '__missing__') counts[k] = (counts[k] || 0) + 1; });
+            var modeKey = null, modeCount = 0;
+            Object.keys(counts).forEach(function(k) { if (counts[k] > modeCount) { modeKey = k; modeCount = counts[k]; } });
+            // Apply highlights.
+            cells.forEach(function(td, i) {
+                td.classList.remove('ct-cell-diff');
+                if (modeKey !== null && keys[i] !== null && keys[i] !== '__missing__' && keys[i] !== modeKey) {
+                    td.classList.add('ct-cell-diff');
+                }
+            });
+        });
+    });
+})();
+</script>
 
 {% endif %}

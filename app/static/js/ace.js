@@ -211,11 +211,13 @@ function loadMoreClosedEvents() {
  * @param {Object} options - Optional configuration
  * @param {boolean} options.collapsed - Whether to start collapsed (default: true)
  * @param {string} options.emptyMessage - Message to show when data is empty (default: 'No data available')
+ * @param {boolean} options.useArrayIndexAsKey - When the top-level value is an array, label items by their numeric index ("0", "1"...) instead of "Event N". Default false to preserve the splunk events label.
  */
 function renderJsonTree(data, container, options) {
     options = options || {};
     var startCollapsed = options.collapsed !== false;
     var emptyMessage = options.emptyMessage || 'No data available';
+    var useArrayIndexAsKey = options.useArrayIndexAsKey === true;
 
     var targetElement = typeof container === 'string'
         ? document.getElementById(container)
@@ -340,7 +342,8 @@ function renderJsonTree(data, container, options) {
 
     if (Array.isArray(data)) {
         data.forEach(function(item, index) {
-            ul.appendChild(renderNode('Event ' + (index + 1), item, startCollapsed));
+            var label = useArrayIndexAsKey ? String(index) : ('Event ' + (index + 1));
+            ul.appendChild(renderNode(label, item, startCollapsed));
         });
     } else if (typeof data === 'object' && data !== null) {
         Object.keys(data).forEach(function(key) {
