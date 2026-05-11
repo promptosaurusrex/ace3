@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.45] - 2026-05-11
+
+- [Adds generic support for source_options](https://github.com/ACE-Collective/ace3/pull/207)
+- [Correlation Trace UI improvements](https://github.com/ACE-Collective/ace3/pull/208)
+- [Fix issue with phishkit runtime error being treated as a module level error](https://github.com/ACE-Collective/ace3/pull/209)
+
 ## [3.0.44] - 2026-05-07
 
 - [Fixes several rfc822 parsing bugs](https://github.com/ACE-Collective/ace3/pull/203)
