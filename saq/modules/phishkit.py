@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import re
-import subprocess
 from typing import Optional, List, Type, override
 from urlfinderlib.url import URL
 
@@ -269,9 +268,16 @@ class PhishkitAnalyzer(AnalysisModule):
         logging.info(f"checking for phishkit scan results for {observable} job ID {analysis.job_id}")
         try:
             scan_results = get_async_scan_result(analysis.job_id, analysis.output_dir, timeout=1)
-        except subprocess.TimeoutExpired:
-            logging.warning("phishkit scan timed out for %s job ID %s", observable, analysis.job_id)
-            analysis.error = f"phishkit scan timed out for {observable} job ID {analysis.job_id}"
+        except TimeoutError as e:
+            error_msg = f"phishkit scan timed out for {observable} job ID {analysis.job_id}: {e}"
+            logging.warning(error_msg)
+            analysis.error = error_msg
+            return AnalysisExecutionResult.COMPLETED
+        except Exception as e:
+            error_msg = f"phishkit scan failed for {observable} job ID {analysis.job_id}: {e}"
+            logging.error(error_msg)
+            report_exception()
+            analysis.error = error_msg
             return AnalysisExecutionResult.COMPLETED
 
         if scan_results is None:

@@ -1,6 +1,5 @@
 import json
 import os
-import subprocess
 import tempfile
 from unittest.mock import MagicMock
 
@@ -665,7 +664,7 @@ def test_phishkit_analyzer_continue_analysis_not_ready(monkeypatch, test_context
 
 @pytest.mark.integration
 def test_phishkit_analyzer_continue_analysis_timeout(monkeypatch, test_context):
-    """Test continue_analysis handles subprocess.TimeoutExpired gracefully."""
+    """continue_analysis should treat TimeoutError from the async scan as a warning, not an error."""
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
 
@@ -675,9 +674,8 @@ def test_phishkit_analyzer_continue_analysis_timeout(monkeypatch, test_context):
     analysis.output_dir = "/tmp/test-output"
     url_observable.add_analysis(analysis)
 
-    # Mock get_async_scan_result to raise subprocess.TimeoutExpired
     def mock_get_async_scan_result(job_id, output_dir, timeout=1):
-        raise subprocess.TimeoutExpired(cmd="phishkit", timeout=60)
+        raise TimeoutError("scan exceeded budget")
 
     monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result", mock_get_async_scan_result)
 
@@ -689,6 +687,35 @@ def test_phishkit_analyzer_continue_analysis_timeout(monkeypatch, test_context):
     assert result == AnalysisExecutionResult.COMPLETED
     assert "timed out" in analysis.error
     assert "test-job-timeout" in analysis.error
+
+
+@pytest.mark.integration
+def test_phishkit_analyzer_continue_analysis_worker_exception(monkeypatch, test_context):
+    """continue_analysis should absorb worker-side exceptions from the Celery AsyncResult and mark the analysis failed."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
+    analysis = PhishkitAnalysis()
+    analysis.job_id = "test-job-worker-exc"
+    analysis.output_dir = "/tmp/test-output"
+    url_observable.add_analysis(analysis)
+
+    worker_error = "scan failed: TypeError: argument of type 'NoneType' is not iterable"
+
+    def mock_get_async_scan_result(job_id, output_dir, timeout=1):
+        raise Exception(worker_error)
+
+    monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result", mock_get_async_scan_result)
+
+    analyzer = PhishkitAnalyzer(
+        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+        context=create_test_context(root=root))
+    result = analyzer.continue_analysis(url_observable, analysis)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert "test-job-worker-exc" in analysis.error
+    assert worker_error in analysis.error
 
 
 @pytest.mark.integration
