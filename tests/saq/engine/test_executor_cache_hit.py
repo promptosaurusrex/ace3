@@ -112,7 +112,7 @@ class TestApplyCachedDelta:
         hit_logs = [r for r in caplog.records if "analysis cache hit" in r.getMessage()]
         assert hit_logs
         msg = hit_logs[0].getMessage()
-        assert f"module={module.config.name}" in msg
+        assert f"module_name={module.config.name}" in msg
         assert f"observable_type={F_FQDN}" in msg
         assert "cache_key_prefix=" in msg
         assert "replay_ms=" in msg

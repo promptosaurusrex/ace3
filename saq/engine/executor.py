@@ -1052,12 +1052,18 @@ class AnalysisExecutor:
 
         cache_key_prefix = (delta.cache_key or "")[:12] or "n/a"
         logging.info(
-            "analysis cache hit module=%s observable_type=%s "
+            "analysis cache hit module_name=%s observable_type=%s "
             "cache_key_prefix=%s replay_ms=%d",
             module.config.name,
             observable.type,
             cache_key_prefix,
             replay_ms,
+            extra={
+                "module_name": module.config.name,
+                "observable_type": observable.type,
+                "cache_key_prefix": cache_key_prefix,
+                "replay_ms": replay_ms,
+            },
         )
 
     def _execute_module_analysis(
@@ -1145,8 +1151,15 @@ class AnalysisExecutor:
                         return
                 except Exception:
                     logging.warning(
-                        "cache replay failed for %s on %s — falling through to live run",
-                        analysis_module, work_item.observable, exc_info=True,
+                        "cache replay failed module_name=%s observable_uuid=%s "
+                        "— falling through to live run",
+                        analysis_module.config.name, work_item.observable.uuid,
+                        exc_info=True,
+                        extra={
+                            "module_name": analysis_module.config.name,
+                            "observable_uuid": work_item.observable.uuid,
+                            "observable_type": work_item.observable.type,
+                        },
                     )
                     # Intentional: do not return, do not re-raise.
 
@@ -1181,9 +1194,14 @@ class AnalysisExecutor:
                         snapshot_before = ModuleExecutionSnapshot.narrow(root, work_item.observable, analysis_module)
                 except Exception:
                     logging.warning(
-                        "failed to capture pre-execution snapshot for %s on %s",
-                        analysis_module, work_item.observable,
+                        "failed to capture pre-execution snapshot module_name=%s "
+                        "observable_uuid=%s",
+                        analysis_module.config.name, work_item.observable.uuid,
                         exc_info=True,
+                        extra={
+                            "module_name": analysis_module.config.name,
+                            "observable_uuid": work_item.observable.uuid,
+                        },
                     )
                 delta_start_ns = time.monotonic_ns()
 
@@ -1214,8 +1232,14 @@ class AnalysisExecutor:
 
                         if delta.has_removals:
                             logging.info(
-                                "module %s produced removals in delta for observable %s",
-                                analysis_module.config.name, work_item.observable,
+                                "module produced removals in delta module_name=%s "
+                                "observable_uuid=%s",
+                                analysis_module.config.name, work_item.observable.uuid,
+                                extra={
+                                    "module_name": analysis_module.config.name,
+                                    "observable_uuid": work_item.observable.uuid,
+                                    "observable_type": work_item.observable.type,
+                                },
                             )
 
                         # Phase 2: persist the delta to the analysis result
@@ -1233,15 +1257,25 @@ class AnalysisExecutor:
                                 put_cached_delta(delta, analysis_module, get_blob_store())
                             except Exception:
                                 logging.warning(
-                                    "failed to write analysis cache for %s on %s",
-                                    analysis_module, work_item.observable,
+                                    "failed to write analysis cache module_name=%s "
+                                    "observable_uuid=%s",
+                                    analysis_module.config.name, work_item.observable.uuid,
                                     exc_info=True,
+                                    extra={
+                                        "module_name": analysis_module.config.name,
+                                        "observable_uuid": work_item.observable.uuid,
+                                    },
                                 )
                     except Exception:
                         logging.warning(
-                            "failed to record module execution delta for %s on %s",
-                            analysis_module, work_item.observable,
+                            "failed to record module execution delta module_name=%s "
+                            "observable_uuid=%s",
+                            analysis_module.config.name, work_item.observable.uuid,
                             exc_info=True,
+                            extra={
+                                "module_name": analysis_module.config.name,
+                                "observable_uuid": work_item.observable.uuid,
+                            },
                         )
 
                 logging.debug(

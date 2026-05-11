@@ -130,7 +130,7 @@ class TestGetCachedDelta:
         misses = [r for r in caplog.records if "analysis cache miss" in r.getMessage()]
         assert misses
         assert "reason=not_found" in misses[0].getMessage()
-        assert f"module={module.config.name}" in misses[0].getMessage()
+        assert f"module_name={module.config.name}" in misses[0].getMessage()
 
     @pytest.mark.integration
     def test_hit_round_trips(self, blob_store):

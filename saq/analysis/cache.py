@@ -122,8 +122,15 @@ def put_cached_delta(
             return False
         if delta.has_removals:
             logging.warning(
-                "refusing to cache delta for %s on observable %s:%s — contains removals",
+                "refusing to cache delta module_name=%s observable_type=%s "
+                "observable_value=%s refusal_reason=removals",
                 module.config.name, delta.observable_type, delta.observable_value,
+                extra={
+                    "module_name": module.config.name,
+                    "observable_type": delta.observable_type,
+                    "observable_value": delta.observable_value,
+                    "refusal_reason": "removals",
+                },
             )
             return False
         # Step 3.2: refuse to cache deltas captured mid-delay. Replay path
@@ -135,8 +142,15 @@ def put_cached_delta(
         # intermediate cycle and is expected behavior.
         if delta.analysis is not None and delta.analysis.get("delayed"):
             logging.info(
-                "skipping cache write for %s on observable %s:%s — analysis still delayed",
+                "skipping cache write module_name=%s observable_type=%s "
+                "observable_value=%s skip_reason=still_delayed",
                 module.config.name, delta.observable_type, delta.observable_value,
+                extra={
+                    "module_name": module.config.name,
+                    "observable_type": delta.observable_type,
+                    "observable_value": delta.observable_value,
+                    "skip_reason": "still_delayed",
+                },
             )
             return False
         # Step 3.3: refuse to cache deltas that would spawn file
@@ -146,8 +160,15 @@ def put_cached_delta(
         # bytes don't exist in the target storage_dir.
         if delta.has_file_observables:
             logging.warning(
-                "refusing to cache delta for %s on observable %s:%s — contains file observables",
+                "refusing to cache delta module_name=%s observable_type=%s "
+                "observable_value=%s refusal_reason=file_observables",
                 module.config.name, delta.observable_type, delta.observable_value,
+                extra={
+                    "module_name": module.config.name,
+                    "observable_type": delta.observable_type,
+                    "observable_value": delta.observable_value,
+                    "refusal_reason": "file_observables",
+                },
             )
             return False
         if not get_config().analysis_cache.enabled:
@@ -175,9 +196,19 @@ def put_cached_delta(
 
         if len(delta_zstd) > max_compressed_bytes:
             logging.warning(
-                "refusing to cache delta for %s on %s:%s — compressed size %d exceeds cap %d",
+                "refusing to cache delta module_name=%s observable_type=%s "
+                "observable_value=%s refusal_reason=size_cap compressed_bytes=%d "
+                "max_compressed_bytes=%d",
                 module.config.name, delta.observable_type, delta.observable_value,
                 len(delta_zstd), max_compressed_bytes,
+                extra={
+                    "module_name": module.config.name,
+                    "observable_type": delta.observable_type,
+                    "observable_value": delta.observable_value,
+                    "refusal_reason": "size_cap",
+                    "compressed_bytes": len(delta_zstd),
+                    "max_compressed_bytes": max_compressed_bytes,
+                },
             )
             # If we spilled details but are bailing out, unreference the blob
             # so the prune/GC story doesn't hold onto it for a cache row that
@@ -188,8 +219,9 @@ def put_cached_delta(
                         blob_store.unreference(sha, REFERRER_KIND_CACHE_ROW, cache_key)
                     except Exception:
                         logging.warning(
-                            "failed to unreference blob %s after size-cap bailout",
+                            "failed to unreference blob sha256=%s after size-cap bailout",
                             sha, exc_info=True,
+                            extra={"sha256": sha},
                         )
             return False
 
@@ -231,11 +263,12 @@ def put_cached_delta(
         # refreshed" and 1 means "new URL seen for the first time".
         op = "insert" if result.rowcount == 1 else "update"
 
-        # Splunk-friendly size telemetry. Aggregate via, e.g.:
-        #   index=ace "wrote analysis cache entry" | stats count,
-        #     avg(compressed_bytes), p99(compressed_bytes), max(compressed_bytes) by module
+        # Splunk-friendly size telemetry. With ExtraAwareFluentFormatter the
+        # extras land as top-level JSON fields, so aggregations like
+        # ``| stats avg(compressed_bytes), p99(compressed_bytes) by module_name``
+        # work without per-query rex.
         logging.info(
-            "wrote analysis cache entry op=%s module=%s observable_type=%s "
+            "wrote analysis cache entry op=%s module_name=%s observable_type=%s "
             "uncompressed_bytes=%d compressed_bytes=%d has_blob_refs=%s "
             "ttl_seconds=%d write_ms=%d",
             op,
@@ -246,13 +279,24 @@ def put_cached_delta(
             bool(has_blob_refs),
             ttl_seconds,
             write_ms,
+            extra={
+                "op": op,
+                "module_name": module.config.name,
+                "observable_type": delta.observable_type,
+                "uncompressed_bytes": uncompressed_size,
+                "compressed_bytes": len(delta_zstd),
+                "has_blob_refs": bool(has_blob_refs),
+                "ttl_seconds": ttl_seconds,
+                "write_ms": write_ms,
+            },
         )
         return True
     except Exception:
+        module_name = getattr(getattr(module, "config", None), "name", "<unknown>")
         logging.warning(
-            "failed to write analysis cache entry for module %s",
-            getattr(getattr(module, "config", None), "name", "<unknown>"),
-            exc_info=True,
+            "failed to write analysis cache entry module_name=%s",
+            module_name, exc_info=True,
+            extra={"module_name": module_name},
         )
         try:
             get_db().rollback()
@@ -352,8 +396,9 @@ def prune(blob_store: BlobStore, batch_size: Optional[int] = None) -> int:
                 blob_store.unreference(sha, REFERRER_KIND_CACHE_ROW, referrer_id)
             except Exception:
                 logging.warning(
-                    "blob_store.unreference failed for sha %s ref %s",
+                    "blob_store.unreference failed sha256=%s referrer_id=%s",
                     sha, referrer_id, exc_info=True,
+                    extra={"sha256": sha, "referrer_id": referrer_id},
                 )
 
         total += len(cache_keys)
@@ -479,9 +524,16 @@ def get_cached_delta(
     def _miss(reason: str) -> None:
         lookup_ms = (time.monotonic_ns() - lookup_start_ns) // 1_000_000
         logging.info(
-            "analysis cache miss module=%s observable_type=%s "
+            "analysis cache miss module_name=%s observable_type=%s "
             "cache_key_prefix=%s reason=%s lookup_ms=%d",
             module_name, observable_type, cache_key_prefix, reason, lookup_ms,
+            extra={
+                "module_name": module_name,
+                "observable_type": observable_type,
+                "cache_key_prefix": cache_key_prefix,
+                "reason": reason,
+                "lookup_ms": lookup_ms,
+            },
         )
 
     try:
@@ -506,8 +558,12 @@ def get_cached_delta(
             delta_dict = json.loads(delta_json.decode("utf-8"))
         except Exception:
             logging.warning(
-                "failed to decode cached delta for %s cache_key_prefix=%s",
+                "failed to decode cached delta module_name=%s cache_key_prefix=%s",
                 module_name, cache_key_prefix, exc_info=True,
+                extra={
+                    "module_name": module_name,
+                    "cache_key_prefix": cache_key_prefix,
+                },
             )
             _miss("decode_error")
             return None
@@ -526,8 +582,14 @@ def get_cached_delta(
                 _inline_blob_refs(delta_dict, blob_store)
             except BlobNotFound as e:
                 logging.warning(
-                    "cached delta for %s cache_key_prefix=%s references missing blob %s",
+                    "cached delta references missing blob module_name=%s "
+                    "cache_key_prefix=%s sha256=%s",
                     module_name, cache_key_prefix, e, exc_info=False,
+                    extra={
+                        "module_name": module_name,
+                        "cache_key_prefix": cache_key_prefix,
+                        "sha256": str(e),
+                    },
                 )
                 _miss("blob_missing")
                 return None
@@ -536,8 +598,12 @@ def get_cached_delta(
             delta = ModuleExecutionDelta.from_dict(delta_dict)
         except Exception:
             logging.warning(
-                "failed to deserialize cached delta for %s cache_key_prefix=%s",
+                "failed to deserialize cached delta module_name=%s cache_key_prefix=%s",
                 module_name, cache_key_prefix, exc_info=True,
+                extra={
+                    "module_name": module_name,
+                    "cache_key_prefix": cache_key_prefix,
+                },
             )
             _miss("decode_error")
             return None
@@ -548,19 +614,30 @@ def get_cached_delta(
         # proceed — the row is presumed good enough for replay.
         recomputed = generate_cache_key(observable, module)
         if recomputed != cache_key:
+            recomputed_prefix = (recomputed or "")[:12]
             logging.warning(
-                "cache_key mismatch on lookup module=%s observable_type=%s "
+                "cache_key mismatch on lookup module_name=%s observable_type=%s "
                 "stored_prefix=%s recomputed_prefix=%s",
                 module_name, observable_type,
-                cache_key_prefix, (recomputed or "")[:12],
+                cache_key_prefix, recomputed_prefix,
+                extra={
+                    "module_name": module_name,
+                    "observable_type": observable_type,
+                    "stored_prefix": cache_key_prefix,
+                    "recomputed_prefix": recomputed_prefix,
+                },
             )
 
         return delta
 
     except Exception:
         logging.warning(
-            "cache lookup failed for module %s cache_key_prefix=%s",
+            "cache lookup failed module_name=%s cache_key_prefix=%s",
             module_name, cache_key_prefix, exc_info=True,
+            extra={
+                "module_name": module_name,
+                "cache_key_prefix": cache_key_prefix,
+            },
         )
         _miss("decode_error")
         return None
@@ -592,9 +669,14 @@ def apply_delta(
         # Read-time refusal — guards against malformed rows from a prior
         # buggy build. Treat as a no-op rather than partially applying.
         logging.warning(
-            "refusing to replay cached delta for %s on observable %s — "
-            "contains file observables (Phase 4 territory)",
+            "refusing to replay cached delta module_path=%s observable_uuid=%s "
+            "refusal_reason=file_observables (Phase 4 territory)",
             delta.module_path, target_observable.uuid,
+            extra={
+                "module_path": delta.module_path,
+                "observable_uuid": target_observable.uuid,
+                "refusal_reason": "file_observables",
+            },
         )
         return
 
@@ -650,8 +732,10 @@ def _rehydrate_analysis(
         analysis = _class()
     except Exception as e:
         logging.warning(
-            "failed to instantiate %s for cache replay: %s — falling back to UnknownAnalysis",
+            "failed to instantiate analysis for cache replay module_path=%s error=%s "
+            "— falling back to UnknownAnalysis",
             module_path, e,
+            extra={"module_path": module_path},
         )
         analysis = UnknownAnalysis(module_path)
 
@@ -672,8 +756,12 @@ def _rehydrate_analysis(
         analysis.json = stripped
     except Exception:
         logging.warning(
-            "failed to apply cached analysis dict for %s on observable %s",
+            "failed to apply cached analysis dict module_path=%s observable_uuid=%s",
             module_path, target_observable.uuid, exc_info=True,
+            extra={
+                "module_path": module_path,
+                "observable_uuid": target_observable.uuid,
+            },
         )
 
     if isinstance(cached_details, dict):

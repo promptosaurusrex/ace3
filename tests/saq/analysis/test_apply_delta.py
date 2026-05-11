@@ -343,8 +343,9 @@ class TestApplyDeltaContractEnforcement:
             apply_delta(root, target, delta)
         # Nothing should have been applied — caller is told via log.
         assert "should-not-apply" not in target.tags
-        warns = [r for r in caplog.records if "contains file observables" in r.getMessage()]
+        warns = [r for r in caplog.records if "refusal_reason=file_observables" in r.getMessage()]
         assert warns
+        assert warns[0].refusal_reason == "file_observables"
 
 
 class TestApplyDeltaRootLevel:

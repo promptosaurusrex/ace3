@@ -114,7 +114,7 @@ class TestPutCachedDelta:
             assert telemetry, "expected 'wrote analysis cache entry' log line"
             msg = telemetry[0].getMessage()
             assert "op=insert" in msg
-            assert f"module={module.config.name}" in msg
+            assert f"module_name={module.config.name}" in msg
             assert "observable_type=url" in msg
             assert "uncompressed_bytes=" in msg
             assert "compressed_bytes=" in msg
@@ -198,9 +198,12 @@ class TestPutCachedDelta:
         with caplog.at_level(logging.INFO):
             assert put_cached_delta(delta, module, blob_store) is False
         assert _row_count(delta.cache_key) == 0
-        skip_logs = [r for r in caplog.records if "still delayed" in r.getMessage()]
+        skip_logs = [r for r in caplog.records if "skip_reason=still_delayed" in r.getMessage()]
         assert skip_logs
         assert skip_logs[0].levelno == logging.INFO
+        # ExtraAwareFluentFormatter surfaces these as top-level JSON fields.
+        assert skip_logs[0].skip_reason == "still_delayed"
+        assert skip_logs[0].module_name == module.config.name
 
     @pytest.mark.integration
     def test_refuses_delta_with_file_observables(self, blob_store, caplog):
@@ -217,9 +220,11 @@ class TestPutCachedDelta:
         with caplog.at_level(logging.WARNING):
             assert put_cached_delta(delta, module, blob_store) is False
         assert _row_count(delta.cache_key) == 0
-        warn_logs = [r for r in caplog.records if "contains file observables" in r.getMessage()]
+        warn_logs = [r for r in caplog.records if "refusal_reason=file_observables" in r.getMessage()]
         assert warn_logs
         assert warn_logs[0].levelno == logging.WARNING
+        assert warn_logs[0].refusal_reason == "file_observables"
+        assert warn_logs[0].module_name == module.config.name
 
     @pytest.mark.integration
     def test_upsert_idempotent_on_duplicate_key(self, blob_store):
