@@ -27,7 +27,7 @@ class _RecordingSource(QuerySource):
         self.label = label
         self.calls = []
 
-    def execute_query(self, query, start_time, end_time, timeout):
+    def execute_query(self, query, start_time, end_time, timeout, source_options=None):
         self.calls.append((query, start_time, end_time, timeout))
         return []
 
@@ -39,7 +39,7 @@ class _BoomSource(QuerySource):
     def __init__(self):
         raise RuntimeError("constructor boom")
 
-    def execute_query(self, query, start_time, end_time, timeout):
+    def execute_query(self, query, start_time, end_time, timeout, source_options=None):
         return []
 
 

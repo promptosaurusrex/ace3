@@ -215,8 +215,13 @@ class _RecordingSource(QuerySource):
         self.results = results or []
         self.calls = []
 
-    def execute_query(self, query, start_time, end_time, timeout):
-        self.calls.append({"query": query, "start_time": start_time, "end_time": end_time})
+    def execute_query(self, query, start_time, end_time, timeout, source_options=None):
+        self.calls.append({
+            "query": query,
+            "start_time": start_time,
+            "end_time": end_time,
+            "source_options": source_options,
+        })
         return list(self.results)
 
 
@@ -228,8 +233,13 @@ class _EpochSource(QuerySource):
         self.results = results or []
         self.calls = []
 
-    def execute_query(self, query, start_time, end_time, timeout):
-        self.calls.append({"query": query, "start_time": start_time, "end_time": end_time})
+    def execute_query(self, query, start_time, end_time, timeout, source_options=None):
+        self.calls.append({
+            "query": query,
+            "start_time": start_time,
+            "end_time": end_time,
+            "source_options": source_options,
+        })
         return list(self.results)
 
 

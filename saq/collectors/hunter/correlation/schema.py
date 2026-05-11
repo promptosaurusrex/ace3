@@ -55,6 +55,7 @@ class CommandConfig(BaseModel):
     source: Optional[str] = Field(default=None, description="Query source name (e.g. splunk, logscale)")
     query: Optional[str] = Field(default=None, description="Query string (jinja interpolated)")
     time_range: Optional[TimeRangeConfig] = Field(default=None, description="Time range for query")
+    source_options: dict[str, Any] = Field(default_factory=dict, description="Per-call options forwarded to the QuerySource (vendor-specific keys, e.g. rapid7's 'log_names')")
 
     # executable-specific fields
     path: Optional[str] = Field(default=None, description="Path to executable")
@@ -224,6 +225,7 @@ class PredefinedCommandConfig(BaseModel):
     source: Optional[str] = Field(default=None, description="Query source name")
     query: Optional[str] = Field(default=None, description="Query string")
     time_range: Optional[TimeRangeConfig] = Field(default=None, description="Time range for query")
+    source_options: dict[str, Any] = Field(default_factory=dict, description="Per-call options forwarded to the QuerySource (vendor-specific keys, e.g. rapid7's 'log_names')")
 
     # executable-specific fields
     path: Optional[str] = Field(default=None, description="Path to executable")

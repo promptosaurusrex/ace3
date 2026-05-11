@@ -120,7 +120,7 @@ def _execute_query(
     timeout = parse_timespec(command.timeout)
 
     source = get_query_source(command.source)
-    results = source.execute_query(query_str, start_time, end_time, timeout)
+    results = source.execute_query(query_str, start_time, end_time, timeout, source_options=command.source_options)
 
     output = "\n".join(json.dumps(row) for row in results)
 

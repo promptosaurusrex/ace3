@@ -94,6 +94,41 @@ class TestCommandConfig:
         cmd = CommandConfig(type="executable", path="/usr/bin/test")
         assert cmd.env is None
 
+    def test_source_options_defaults_to_empty_dict(self):
+        cmd = CommandConfig(type="query", source="splunk", query="search index=main")
+        assert cmd.source_options == {}
+
+    def test_source_options_accepts_dict(self):
+        cmd = CommandConfig(
+            type="query",
+            source="rapid7",
+            query="where(...)",
+            source_options={"log_names": ["Firewall Activity"], "ingestion_lag_buffer": "1h"},
+        )
+        assert cmd.source_options == {"log_names": ["Firewall Activity"], "ingestion_lag_buffer": "1h"}
+
+    def test_predefined_command_source_options_round_trip(self):
+        predef = PredefinedCommandConfig(
+            name="rapid7_default",
+            type="query",
+            source="rapid7",
+            query="where(...)",
+            source_options={"log_names": ["Authentication"]},
+        )
+        cmd = predef.to_command_config()
+        assert cmd.source_options == {"log_names": ["Authentication"]}
+
+    def test_predefined_command_source_options_overridable(self):
+        predef = PredefinedCommandConfig(
+            name="rapid7_default",
+            type="query",
+            source="rapid7",
+            query="where(...)",
+            source_options={"log_names": ["Authentication"]},
+        )
+        cmd = predef.to_command_config({"source_options": {"log_names": ["Firewall Activity"]}})
+        assert cmd.source_options == {"log_names": ["Firewall Activity"]}
+
 
 @pytest.mark.unit
 class TestTransformConfig:
