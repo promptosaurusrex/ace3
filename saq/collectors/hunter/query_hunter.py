@@ -393,6 +393,8 @@ class QueryHunt(Hunt):
         extensions = {}
         if self.playbook_url:
             for url_value in interpolate_event_value(self.playbook_url, event):
+                if contains_unresolved_placeholders(url_value):
+                    continue
                 extensions.update({
                     KEY_PLAYBOOK_URL: url_value,
                 })
@@ -443,6 +445,11 @@ class QueryHunt(Hunt):
             for url_value, text_value in interpolate_event_values(
                 [pivot_link["url"], pivot_link["text"]], event
             ):
+                if (
+                    contains_unresolved_placeholders(url_value)
+                    or contains_unresolved_placeholders(text_value)
+                ):
+                    continue
                 root.add_pivot_link(url_value, pivot_link.get("icon", None), text_value)
 
         return root

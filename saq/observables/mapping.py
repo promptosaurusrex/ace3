@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 from pydantic import BaseModel, Field, model_validator
 
 from saq.query.decoder import DecoderType
+from saq.query.event_processing import contains_unresolved_placeholders
 
 if TYPE_CHECKING:
     from saq.analysis.observable import Observable
@@ -188,10 +189,14 @@ def apply_mapping_properties(
     if interpolate_fn is not None and event is not None:
         for directive in mapping.directives:
             for directive_value in interpolate_fn(directive, event):
+                if contains_unresolved_placeholders(directive_value):
+                    continue
                 observable.add_directive(directive_value)
 
         for tag in mapping.tags:
             for tag_value in interpolate_fn(tag, event):
+                if contains_unresolved_placeholders(tag_value):
+                    continue
                 observable.add_tag(tag_value)
     else:
         for tag in mapping.tags:
