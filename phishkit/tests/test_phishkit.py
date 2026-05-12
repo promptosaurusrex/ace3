@@ -24,11 +24,11 @@ FULL_CONFIG = {"proxy_fallback": FULL_PROXY_FALLBACK}
 
 
 # ---------------------------------------------------------------------------
-# _has_proxy_error
+# _matched_proxy_error_patterns
 # ---------------------------------------------------------------------------
 
 
-class TestHasProxyError:
+class TestMatchedProxyErrorPatterns:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("pattern", [
@@ -37,50 +37,65 @@ class TestHasProxyError:
         "ERR_PROXY_AUTH_FAILED",
         "ERR_PROXY_CERTIFICATE_INVALID",
     ])
-    def test_has_proxy_error_each_pattern(self, pattern):
-        from phishkit import _has_proxy_error
+    def test_matched_each_pattern(self, pattern):
+        from phishkit import _matched_proxy_error_patterns
         patterns = FULL_PROXY_FALLBACK["error_patterns"]
 
-        assert _has_proxy_error(f"some output {pattern} here", "", patterns) is True
+        assert _matched_proxy_error_patterns(f"some output {pattern} here", "", patterns) == [pattern]
 
     @pytest.mark.unit
-    def test_has_proxy_error_no_match(self):
-        from phishkit import _has_proxy_error
+    def test_no_match_returns_empty(self):
+        from phishkit import _matched_proxy_error_patterns
         patterns = FULL_PROXY_FALLBACK["error_patterns"]
 
-        assert _has_proxy_error("all good", "no errors", patterns) is False
+        assert _matched_proxy_error_patterns("all good", "no errors", patterns) == []
 
     @pytest.mark.unit
-    def test_has_proxy_error_none_inputs(self):
-        from phishkit import _has_proxy_error
+    def test_none_inputs(self):
+        from phishkit import _matched_proxy_error_patterns
         patterns = FULL_PROXY_FALLBACK["error_patterns"]
 
-        assert _has_proxy_error(None, None, patterns) is False
+        assert _matched_proxy_error_patterns(None, None, patterns) == []
 
     @pytest.mark.unit
-    def test_has_proxy_error_in_stderr_only(self):
-        from phishkit import _has_proxy_error
+    def test_match_in_stderr_only(self):
+        from phishkit import _matched_proxy_error_patterns
         patterns = FULL_PROXY_FALLBACK["error_patterns"]
 
-        assert _has_proxy_error("", "ERR_TUNNEL_CONNECTION_FAILED", patterns) is True
+        assert _matched_proxy_error_patterns(
+            "", "ERR_TUNNEL_CONNECTION_FAILED", patterns,
+        ) == ["ERR_TUNNEL_CONNECTION_FAILED"]
 
     @pytest.mark.unit
-    def test_has_proxy_error_custom_patterns(self):
-        from phishkit import _has_proxy_error
+    def test_custom_patterns(self):
+        from phishkit import _matched_proxy_error_patterns
 
-        assert _has_proxy_error("CUSTOM_ERR occurred", "", ["CUSTOM_ERR"]) is True
-        assert _has_proxy_error("CUSTOM_ERR occurred", "", ["OTHER_ERR"]) is False
+        assert _matched_proxy_error_patterns(
+            "CUSTOM_ERR occurred", "", ["CUSTOM_ERR"]
+        ) == ["CUSTOM_ERR"]
+        assert _matched_proxy_error_patterns(
+            "CUSTOM_ERR occurred", "", ["OTHER_ERR"]
+        ) == []
+
+    @pytest.mark.unit
+    def test_multiple_matches_returns_all(self):
+        from phishkit import _matched_proxy_error_patterns
+        patterns = ["ERR_A", "ERR_B", "ERR_C"]
+
+        assert _matched_proxy_error_patterns(
+            "ERR_A in stdout", "ERR_C in stderr", patterns,
+        ) == ["ERR_A", "ERR_C"]
 
 
 # ---------------------------------------------------------------------------
-# _has_proxy_status_code
+# _matched_proxy_status_code
 # ---------------------------------------------------------------------------
 
-class TestHasProxyStatusCode:
+class TestMatchedProxyStatusCode:
 
     @pytest.mark.unit
     def test_matching_status_code(self, tmpdir):
-        from phishkit import _has_proxy_status_code
+        from phishkit import _matched_proxy_status_code
 
         output_dir = str(tmpdir)
         requests_data = [
@@ -90,11 +105,11 @@ class TestHasProxyStatusCode:
         with open(os.path.join(output_dir, "requests.json"), "w") as f:
             json.dump(requests_data, f)
 
-        assert _has_proxy_status_code(output_dir, [502, 504]) is True
+        assert _matched_proxy_status_code(output_dir, [502, 504]) == 502
 
     @pytest.mark.unit
     def test_non_matching_status_code(self, tmpdir):
-        from phishkit import _has_proxy_status_code
+        from phishkit import _matched_proxy_status_code
 
         output_dir = str(tmpdir)
         requests_data = [
@@ -104,33 +119,33 @@ class TestHasProxyStatusCode:
         with open(os.path.join(output_dir, "requests.json"), "w") as f:
             json.dump(requests_data, f)
 
-        assert _has_proxy_status_code(output_dir, [502, 504]) is False
+        assert _matched_proxy_status_code(output_dir, [502, 504]) is None
 
     @pytest.mark.unit
     def test_missing_requests_json(self, tmpdir):
-        from phishkit import _has_proxy_status_code
+        from phishkit import _matched_proxy_status_code
 
-        assert _has_proxy_status_code(str(tmpdir), [502]) is False
+        assert _matched_proxy_status_code(str(tmpdir), [502]) is None
 
     @pytest.mark.unit
     def test_empty_requests_json(self, tmpdir):
-        from phishkit import _has_proxy_status_code
+        from phishkit import _matched_proxy_status_code
 
         output_dir = str(tmpdir)
         with open(os.path.join(output_dir, "requests.json"), "w") as f:
             json.dump([], f)
 
-        assert _has_proxy_status_code(output_dir, [502]) is False
+        assert _matched_proxy_status_code(output_dir, [502]) is None
 
     @pytest.mark.unit
     def test_empty_status_codes_list(self, tmpdir):
-        from phishkit import _has_proxy_status_code
+        from phishkit import _matched_proxy_status_code
 
-        assert _has_proxy_status_code(str(tmpdir), []) is False
+        assert _matched_proxy_status_code(str(tmpdir), []) is None
 
     @pytest.mark.unit
     def test_only_checks_first_response(self, tmpdir):
-        from phishkit import _has_proxy_status_code
+        from phishkit import _matched_proxy_status_code
 
         output_dir = str(tmpdir)
         requests_data = [
@@ -141,7 +156,47 @@ class TestHasProxyStatusCode:
         with open(os.path.join(output_dir, "requests.json"), "w") as f:
             json.dump(requests_data, f)
 
-        assert _has_proxy_status_code(output_dir, [502]) is False
+        assert _matched_proxy_status_code(output_dir, [502]) is None
+
+
+# ---------------------------------------------------------------------------
+# _sanitize_proxy_for_display
+# ---------------------------------------------------------------------------
+
+class TestSanitizeProxyForDisplay:
+
+    @pytest.mark.unit
+    def test_none_returns_none(self):
+        from phishkit import _sanitize_proxy_for_display
+
+        assert _sanitize_proxy_for_display(None) is None
+
+    @pytest.mark.unit
+    def test_empty_returns_none(self):
+        from phishkit import _sanitize_proxy_for_display
+
+        assert _sanitize_proxy_for_display("") is None
+
+    @pytest.mark.unit
+    def test_no_credentials_passthrough(self):
+        from phishkit import _sanitize_proxy_for_display
+
+        assert _sanitize_proxy_for_display("socks5://gate.example:1080") == "socks5://gate.example:1080"
+        assert _sanitize_proxy_for_display("proxy.example:8080") == "proxy.example:8080"
+
+    @pytest.mark.unit
+    def test_strips_credentials_with_scheme(self):
+        from phishkit import _sanitize_proxy_for_display
+
+        assert _sanitize_proxy_for_display(
+            "socks5://user:p@ss@gate.example:1080"
+        ) == "socks5://gate.example:1080"
+
+    @pytest.mark.unit
+    def test_strips_credentials_without_scheme(self):
+        from phishkit import _sanitize_proxy_for_display
+
+        assert _sanitize_proxy_for_display("user:pass@gate.example:1080") == "gate.example:1080"
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +306,15 @@ class TestRunScanner:
         with open(os.path.join(output_dir, "exit.code")) as f:
             assert f.read() == "0"
 
+        # no proxy configured — proxy.json records final_route=none
+        with open(os.path.join(output_dir, "proxy.json")) as f:
+            proxy_status = json.load(f)
+        assert proxy_status["configured"] is False
+        assert proxy_status["fallback_triggered"] is False
+        assert proxy_status["fallback_reason"] is None
+        assert proxy_status["final_route"] == "none"
+        assert proxy_status["host"] is None
+
         # finally-block cleanup always attempts to stop the container, even on success
         mock_force_stop.assert_called_with("phishkit-scan-test-job")
 
@@ -333,6 +397,15 @@ class TestRunScanner:
         assert "DIRECT ATTEMPT" in stdout
         assert rc == 0
 
+        with open(os.path.join(output_dir, "proxy.json")) as f:
+            proxy_status = json.load(f)
+        assert proxy_status["configured"] is True
+        assert proxy_status["host"] == "http://proxy:8080"
+        assert proxy_status["fallback_enabled"] is True
+        assert proxy_status["fallback_triggered"] is True
+        assert proxy_status["fallback_reason"] == "timeout"
+        assert proxy_status["final_route"] == "direct"
+
     @pytest.mark.unit
     @patch("phishkit._force_stop_container")
     @patch("phishkit._sync_config", return_value=None)
@@ -410,6 +483,15 @@ class TestRunScanner:
         assert "DIRECT ATTEMPT" in stdout
         assert rc == 0
 
+        with open(os.path.join(output_dir, "proxy.json")) as f:
+            proxy_status = json.load(f)
+        assert proxy_status["fallback_triggered"] is True
+        assert proxy_status["fallback_reason"] == "error_pattern"
+        assert proxy_status["fallback_details"]["matched_error_patterns"] == [
+            "ERR_TUNNEL_CONNECTION_FAILED",
+        ]
+        assert proxy_status["final_route"] == "direct"
+
     @pytest.mark.unit
     @patch("phishkit._force_stop_container")
     @patch("phishkit._sync_config", return_value=None)
@@ -456,6 +538,13 @@ class TestRunScanner:
         assert "PROXY ATTEMPT (failed, retried direct)" in stdout
         assert rc == 0
 
+        with open(os.path.join(output_dir, "proxy.json")) as f:
+            proxy_status = json.load(f)
+        assert proxy_status["fallback_triggered"] is True
+        assert proxy_status["fallback_reason"] == "status_code"
+        assert proxy_status["fallback_details"]["matched_status_code"] == 502
+        assert proxy_status["final_route"] == "direct"
+
     @pytest.mark.unit
     @patch("phishkit._force_stop_container")
     @patch("phishkit._sync_config", return_value=None)
@@ -483,6 +572,15 @@ class TestRunScanner:
 
         # should only be called once (no retry)
         assert mock_popen.call_count == 1
+
+        # proxy was configured but fallback disabled — final_route stays "proxy"
+        with open(os.path.join(output_dir, "proxy.json")) as f:
+            proxy_status = json.load(f)
+        assert proxy_status["configured"] is True
+        assert proxy_status["fallback_enabled"] is False
+        assert proxy_status["fallback_triggered"] is False
+        assert proxy_status["fallback_reason"] is None
+        assert proxy_status["final_route"] == "proxy"
 
     @pytest.mark.unit
     @patch("phishkit._force_stop_container")
