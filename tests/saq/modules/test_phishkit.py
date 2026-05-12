@@ -9,7 +9,7 @@ import pytest
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODULE_PHISHKIT_ANALYZER, DIRECTIVE_CRAWL, DIRECTIVE_RENDER, F_FILE, F_URL, AnalysisExecutionResult
 from saq.modules.phishkit import (
-    PhishkitAnalysis, 
+    PhishkitAnalysis,
     PhishkitAnalyzer,
     FIELD_OUTPUT_DIR,
     FIELD_JOB_ID,
@@ -20,6 +20,7 @@ from saq.modules.phishkit import (
     FIELD_EXIT_CODE,
     FIELD_STDOUT,
     FIELD_STDERR,
+    FIELD_PROXY_STATUS,
     SCAN_TYPE_URL,
     SCAN_TYPE_FILE
 )
@@ -41,73 +42,105 @@ def test_phishkit_analysis_init():
     assert analysis.details[FIELD_SCAN_RESULT] is None
     assert analysis.details[FIELD_OUTPUT_FILES] == []
     assert analysis.details[FIELD_ERROR] is None
+    assert analysis.details[FIELD_PROXY_STATUS] is None
 
 
 @pytest.mark.unit
 def test_phishkit_analysis_properties():
     """Test PhishkitAnalysis property getters and setters."""
     analysis = PhishkitAnalysis()
-    
+
     # Test exit_code
     analysis.exit_code = 0
     assert analysis.exit_code == 0
-    
+
     # Test stdout
     analysis.stdout = "test stdout"
     assert analysis.stdout == "test stdout"
-    
+
     # Test stderr
     analysis.stderr = "test stderr"
     assert analysis.stderr == "test stderr"
-    
+
     # Test output_dir
     analysis.output_dir = "/tmp/test"
     assert analysis.output_dir == "/tmp/test"
-    
+
     # Test job_id
     analysis.job_id = "test-job-123"
     assert analysis.job_id == "test-job-123"
-    
+
     # Test scan_type
     analysis.scan_type = SCAN_TYPE_URL
     assert analysis.scan_type == SCAN_TYPE_URL
-    
+
     # Test scan_result
     analysis.scan_result = "test result"
     assert analysis.scan_result == "test result"
-    
+
     # Test output_files
     analysis.output_files = ["/tmp/file1.txt", "/tmp/file2.txt"]
     assert analysis.output_files == ["/tmp/file1.txt", "/tmp/file2.txt"]
-    
+
     # Test error
     analysis.error = "test error"
     assert analysis.error == "test error"
+
+    # Test proxy_status
+    proxy_payload = {"configured": True, "final_route": "proxy"}
+    analysis.proxy_status = proxy_payload
+    assert analysis.proxy_status == proxy_payload
 
 
 @pytest.mark.unit
 def test_phishkit_analysis_generate_summary():
     """Test PhishkitAnalysis summary generation."""
     analysis = PhishkitAnalysis()
-    
+
     # Test error state
     analysis.error = "Something went wrong"
     assert analysis.generate_summary() == "Phishkit Analysis: failed: Something went wrong"
-    
+
     # Test URL scan
     analysis.error = None
     analysis.scan_type = SCAN_TYPE_URL
     analysis.output_files = ["/tmp/file1.txt", "/tmp/file2.txt"]
     assert analysis.generate_summary() == "Phishkit Analysis: output files created (/tmp/file1.txt, /tmp/file2.txt)"
-    
+
     # Test file scan
     analysis.scan_type = SCAN_TYPE_FILE
     analysis.output_files = ["/tmp/file1.txt"]
     assert analysis.generate_summary() == "Phishkit Analysis: output files created (/tmp/file1.txt)"
-    
+
     # Test unknown scan type
     analysis.scan_type = "unknown"
     assert analysis.generate_summary() == "Phishkit Analysis: completed"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("proxy_status,expected_suffix", [
+    # No proxy configured — no clause
+    ({"configured": False, "fallback_triggered": False, "fallback_reason": None, "final_route": "none"}, ""),
+    # Proxy used successfully
+    ({"configured": True, "fallback_triggered": False, "fallback_reason": None, "final_route": "proxy"}, " - fetched via proxy"),
+    # Proxy failed via error pattern, fell back to direct
+    ({"configured": True, "fallback_triggered": True, "fallback_reason": "error_pattern", "final_route": "direct"},
+     " - proxy failed (error_pattern), fetched direct"),
+    # Proxy failed via status code, fell back to direct
+    ({"configured": True, "fallback_triggered": True, "fallback_reason": "status_code", "final_route": "direct"},
+     " - proxy failed (status_code), fetched direct"),
+    # Proxy timed out, fell back to direct
+    ({"configured": True, "fallback_triggered": True, "fallback_reason": "timeout", "final_route": "direct"},
+     " - proxy failed (timeout), fetched direct"),
+])
+def test_phishkit_analysis_generate_summary_proxy_routes(proxy_status, expected_suffix):
+    """The summary appends a proxy clause that matches the final_route."""
+    analysis = PhishkitAnalysis()
+    analysis.scan_type = SCAN_TYPE_URL
+    analysis.output_files = ["/tmp/file1.txt"]
+    analysis.proxy_status = proxy_status
+    expected = "Phishkit Analysis: output files created (/tmp/file1.txt)" + expected_suffix
+    assert analysis.generate_summary() == expected
 
 
 @pytest.mark.integration
@@ -751,43 +784,55 @@ def test_phishkit_analyzer_continue_analysis_success(monkeypatch, test_context):
     """Test successful analysis completion."""
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
-    
+
     url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
     analysis = PhishkitAnalysis()
     analysis.job_id = "test-job-123"
     analysis.output_dir = "/tmp/test-output"
     url_observable.add_analysis(analysis)
-    
+
     # Create temporary files for test
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create mock output files
         exit_code_file = os.path.join(temp_dir, "exit.code")
         stdout_file = os.path.join(temp_dir, "std.out")
         stderr_file = os.path.join(temp_dir, "std.err")
+        proxy_file = os.path.join(temp_dir, "proxy.json")
         other_file = os.path.join(temp_dir, "result.json")
-        
+
         with open(exit_code_file, "w") as f:
             f.write("0")
         with open(stdout_file, "w") as f:
             f.write("scan completed")
         with open(stderr_file, "w") as f:
             f.write("no errors")
+        proxy_payload = {
+            "configured": True,
+            "host": "socks5://gate.proxy.example:1080",
+            "fallback_enabled": True,
+            "fallback_triggered": True,
+            "fallback_reason": "error_pattern",
+            "fallback_details": {"matched_error_patterns": ["ERR_PROXY_CONNECTION_FAILED"]},
+            "final_route": "direct",
+        }
+        with open(proxy_file, "w") as f:
+            json.dump(proxy_payload, f)
         with open(other_file, "w") as f:
             f.write('{"result": "success"}')
-        
-        output_files = [exit_code_file, stdout_file, stderr_file, other_file]
-        
+
+        output_files = [exit_code_file, stdout_file, stderr_file, proxy_file, other_file]
+
         # Mock get_async_scan_result to return file list
         def mock_get_async_scan_result(job_id, output_dir, timeout=1):
             return output_files
-        
+
         monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result", mock_get_async_scan_result)
-        
+
         analyzer = PhishkitAnalyzer(
             get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
             context=create_test_context(root=root))
         result = analyzer.continue_analysis(url_observable, analysis)
-        
+
         assert result == AnalysisExecutionResult.COMPLETED
         # Only non-special files are added to output_files, and they're stored as relative paths
         assert len(analysis.output_files) == 1  # Only result.json should be in output_files
@@ -797,6 +842,41 @@ def test_phishkit_analyzer_continue_analysis_success(monkeypatch, test_context):
         assert analysis.exit_code == 0
         assert analysis.stdout == "scan completed"
         assert analysis.stderr == "no errors"
+        assert analysis.proxy_status == proxy_payload
+
+
+@pytest.mark.integration
+def test_phishkit_analyzer_continue_analysis_no_proxy_json(monkeypatch, test_context):
+    """Missing proxy.json (older worker / in-flight scan) leaves proxy_status None."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
+    analysis = PhishkitAnalysis()
+    analysis.job_id = "test-job-no-proxy-json"
+    analysis.output_dir = "/tmp/test-output"
+    url_observable.add_analysis(analysis)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        exit_code_file = os.path.join(temp_dir, "exit.code")
+        stdout_file = os.path.join(temp_dir, "std.out")
+        with open(exit_code_file, "w") as f:
+            f.write("0")
+        with open(stdout_file, "w") as f:
+            f.write("scan completed")
+
+        output_files = [exit_code_file, stdout_file]
+        monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result",
+                            lambda job_id, output_dir, timeout=1: output_files)
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+        result = analyzer.continue_analysis(url_observable, analysis)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        assert analysis.exit_code == 0
+        assert analysis.proxy_status is None
 
 
 @pytest.mark.unit
