@@ -3715,6 +3715,89 @@ def test_multiple_matching_rules_emit_distinct_signature_ids():
     assert emitted == {uuid_a, uuid_b}
 
 
+@pytest.mark.unit
+def test_pre_phase_signature_id_survives_worker_handoff():
+    """A pre-phase rule's signature_id must be emitted even when execute_final_analysis
+    runs on a fresh analyzer instance (simulating the root being resumed by a
+    different worker process). Regression test for the bug where pre-phase matches
+    were held only in in-memory module state and lost across worker hand-offs."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com/page.html")
+    rule_uuid = "a1b2c3d4-0000-4000-8000-000000000001"
+    rules = [{
+        "name": "pre rule with sig",
+        "uuid": rule_uuid,
+        "phase": "pre",
+        "conditions": {"observable_types": ["url"]},
+        "actions": {"add_directives": ["extract_iocs"]},
+    }]
+
+    # Worker A: runs the pre-phase pass.
+    adapter_a = _create_analyzer_with_rules(root, rules)
+    result = adapter_a.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.INCOMPLETE
+
+    # Worker B: completely fresh analyzer instance, simulating a different
+    # process pulling the root off the workload queue between phases.
+    adapter_b = _create_analyzer_with_rules(root, rules)
+    result = adapter_b.analyze(observable, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
+    assert analysis is not None
+    rule_uuids = [r["uuid"] for r in analysis.details["matched_rules"]]
+    assert rule_uuids == [rule_uuid]
+
+    sig_observables = [o for o in analysis.observables if o.type == F_SIGNATURE_ID]
+    assert [o.value for o in sig_observables] == [rule_uuid]
+
+
+@pytest.mark.unit
+def test_pre_and_post_phase_signature_ids_survive_worker_handoff():
+    """Pre and post phase matches across separate analyzer instances must
+    each contribute exactly one signature_id observable to the final analysis."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com/page.html")
+    pre_uuid = "a1b2c3d4-0000-4000-8000-000000000010"
+    post_uuid = "a1b2c3d4-0000-4000-8000-000000000020"
+    rules = [
+        {
+            "name": "pre rule",
+            "uuid": pre_uuid,
+            "phase": "pre",
+            "conditions": {"observable_types": ["url"]},
+            "actions": {"add_directives": ["pre_dir"]},
+        },
+        {
+            "name": "post rule",
+            "uuid": post_uuid,
+            "phase": "post",
+            "conditions": {"observable_types": ["url"]},
+            "actions": {"add_tags": ["post_tag"]},
+        },
+    ]
+
+    # Worker A handles pre-phase only.
+    adapter_a = _create_analyzer_with_rules(root, rules)
+    adapter_a.execute_analysis(observable)
+
+    # Worker B (fresh instance) handles post-phase.
+    adapter_b = _create_analyzer_with_rules(root, rules)
+    adapter_b.analyze(observable, final_analysis=True)
+
+    analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
+    assert analysis is not None
+    rule_uuids = sorted(r["uuid"] for r in analysis.details["matched_rules"])
+    assert rule_uuids == sorted([pre_uuid, post_uuid])
+
+    emitted = sorted(o.value for o in analysis.observables if o.type == F_SIGNATURE_ID)
+    assert emitted == sorted([pre_uuid, post_uuid])
+
+
 # ============================================================
 # Crawl URLs from iCalendar files (analyst_data rule)
 # ============================================================
