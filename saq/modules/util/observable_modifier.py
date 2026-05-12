@@ -383,7 +383,6 @@ class ObservableModifierAnalyzer(AnalysisModule):
         super().__init__(*args, **kwargs)
         self._initialized = False
         self._rules: list[Rule] = []
-        self._pre_phase_matches: dict[str, list[dict]] = {}
 
     @classmethod
     def get_config_class(cls) -> Type[AnalysisModuleConfig]:
@@ -617,10 +616,14 @@ class ObservableModifierAnalyzer(AnalysisModule):
                 logging.info(f"observable modifier pre-phase rule '{rule.name}' matched {observable}")
 
         if matched_rules:
-            self._pre_phase_matches[observable.uuid] = matched_rules
+            # Persist pre-phase matches in the analysis itself rather than
+            # in-memory module state, so the post-phase pass survives a
+            # worker hand-off (root saved to disk and resumed by a different
+            # worker process whose module instance has no in-memory carryover).
+            self._persist_matches(observable, matched_rules, emitted_uuids=set())
 
         # Return INCOMPLETE so execute_final_analysis runs later
-        # for post-phase rules (and to merge pre-phase results into analysis).
+        # for post-phase rules.
         return AnalysisExecutionResult.INCOMPLETE
 
     def execute_final_analysis(self, observable: Observable) -> AnalysisExecutionResult:
@@ -633,7 +636,18 @@ class ObservableModifierAnalyzer(AnalysisModule):
         if not self._any_rule_could_match(observable, root):
             return AnalysisExecutionResult.COMPLETED
 
-        matched_rules = list(self._pre_phase_matches.pop(observable.uuid, []))
+        # Recover any pre-phase matches from the analysis that pre-phase
+        # persisted to the observable. This survives a worker hand-off that
+        # in-memory state on the analyzer instance would not.
+        existing = observable.get_and_load_analysis(ObservableModifierAnalysis)
+        if existing:
+            matched_rules = list(existing.details.get("matched_rules", []))
+            emitted_uuids: set[str] = {
+                m["uuid"] for m in matched_rules if m.get("uuid")
+            }
+        else:
+            matched_rules = []
+            emitted_uuids = set()
 
         ignore_rules = []
 
@@ -685,17 +699,33 @@ class ObservableModifierAnalyzer(AnalysisModule):
                 logging.info(f"observable modifier rule '{rule.name}' globally ignored {observable}")
 
         if matched_rules:
-            analysis = self.create_analysis(observable)
-            analysis.details["matched_rules"] = matched_rules
-            analysis.summary = analysis.generate_summary()
-
-            # Emit a signature_id observable for each distinct matched rule uuid.
-            # Dedup protects against the same rule matching in both pre and post phases.
-            emitted_uuids: set[str] = set()
-            for match in matched_rules:
-                rule_uuid = match.get("uuid")
-                if rule_uuid and rule_uuid not in emitted_uuids:
-                    analysis.add_observable_by_spec(F_SIGNATURE_ID, rule_uuid)
-                    emitted_uuids.add(rule_uuid)
+            self._persist_matches(observable, matched_rules, emitted_uuids)
 
         return AnalysisExecutionResult.COMPLETED
+
+    def _persist_matches(
+        self,
+        observable: Observable,
+        matched_rules: list[dict],
+        emitted_uuids: set[str],
+    ) -> None:
+        """Write matched_rules into the observable's ObservableModifierAnalysis
+        and emit a signature_id observable for each not-yet-emitted rule uuid.
+
+        Idempotent: create_analysis returns an existing analysis if one was
+        already created (e.g. by pre-phase), and add_observable_by_spec dedups
+        signature_id observables by (type, value).
+
+        ``emitted_uuids`` is the set of rule uuids that have already been
+        emitted as signature_id observables; it is mutated in place to include
+        any newly emitted uuids.
+        """
+        analysis = self.create_analysis(observable)
+        analysis.details["matched_rules"] = matched_rules
+        analysis.summary = analysis.generate_summary()
+
+        for match in matched_rules:
+            rule_uuid = match.get("uuid")
+            if rule_uuid and rule_uuid not in emitted_uuids:
+                analysis.add_observable_by_spec(F_SIGNATURE_ID, rule_uuid)
+                emitted_uuids.add(rule_uuid)
