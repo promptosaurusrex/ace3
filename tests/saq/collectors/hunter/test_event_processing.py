@@ -4,6 +4,7 @@ from saq.query.event_processing import (
     _build_path_components,
     contains_unresolved_placeholders,
     interpolate_event_value,
+    interpolate_event_values,
 )
 
 
@@ -691,3 +692,90 @@ def test_interpolate_observable_value_list_single_element():
 def test_contains_unresolved_placeholders(value, expected):
     """test that contains_unresolved_placeholders detects ${...} patterns"""
     assert contains_unresolved_placeholders(value) == expected
+
+
+@pytest.mark.unit
+def test_interpolate_same_scalar_field_referenced_twice():
+    """same scalar referenced twice resolves to one paired result"""
+    event = {"app": "x"}
+    assert interpolate_event_value("${app}-${app}", event) == ["x-x"]
+
+
+@pytest.mark.unit
+def test_interpolate_same_list_field_referenced_twice_pairs():
+    """same list field referenced twice in one template pairs by index"""
+    event = {"app": ["a", "b"]}
+    assert interpolate_event_value("${app}=${app}", event) == ["a=a", "b=b"]
+
+
+@pytest.mark.unit
+def test_interpolate_same_list_field_three_references_pairs():
+    """three references to the same list field still produce N paired results"""
+    event = {"app": ["a", "b", "c"]}
+    assert interpolate_event_value("${app}/${app}/${app}", event) == [
+        "a/a/a",
+        "b/b/b",
+        "c/c/c",
+    ]
+
+
+@pytest.mark.unit
+def test_interpolate_paired_same_field_with_different_field_cartesian():
+    """same-field references pair while different fields stay cartesian"""
+    event = {"app": ["a", "b"], "user": ["u1", "u2"]}
+    assert interpolate_event_value("${app}-${user}-${app}", event) == [
+        "a-u1-a",
+        "a-u2-a",
+        "b-u1-b",
+        "b-u2-b",
+    ]
+
+
+@pytest.mark.unit
+def test_interpolate_dot_and_key_same_path_canonicalize():
+    """${a} and $key{a} reference the same field and pair together"""
+    event = {"a": ["x", "y"]}
+    assert interpolate_event_value("${a}-$key{a}", event) == ["x-x", "y-y"]
+
+
+@pytest.mark.unit
+def test_interpolate_event_values_pairs_same_field_across_templates():
+    """same field referenced in two templates resolves to the same value per pair"""
+    event = {"app": ["a", "b"]}
+    result = interpolate_event_values(["u=${app}", "t=${app}"], event)
+    assert result == [["u=a", "t=a"], ["u=b", "t=b"]]
+
+
+@pytest.mark.unit
+def test_interpolate_event_values_distinct_fields_across_templates_cartesian():
+    """distinct fields across templates expand via cartesian product"""
+    event = {"a": ["a1", "a2"], "b": ["b1", "b2"]}
+    result = interpolate_event_values(["${a}", "${b}"], event)
+    assert result == [
+        ["a1", "b1"],
+        ["a1", "b2"],
+        ["a2", "b1"],
+        ["a2", "b2"],
+    ]
+
+
+@pytest.mark.unit
+def test_interpolate_event_values_empty_list_short_circuits():
+    """an empty list anywhere returns no results across all templates"""
+    event = {"a": [], "b": ["v"]}
+    assert interpolate_event_values(["${a}", "${b}"], event) == []
+
+
+@pytest.mark.unit
+def test_interpolate_event_values_plain_string_shape():
+    """templates with no placeholders return a single combination"""
+    assert interpolate_event_values(["plain"], {}) == [["plain"]]
+    assert interpolate_event_values(["one", "two"], {}) == [["one", "two"]]
+
+
+@pytest.mark.unit
+def test_interpolate_event_values_unresolved_field_per_template():
+    """unresolved placeholders survive in their own template; resolved fields render in others"""
+    event = {"present": "P"}
+    result = interpolate_event_values(["a=${missing}", "b=${present}"], event)
+    assert result == [["a=${missing}", "b=P"]]
