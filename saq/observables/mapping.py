@@ -104,7 +104,7 @@ class BaseObservableMapping(BaseModel):
             return []
 
 
-# Constant defined here to avoid cross-package import from saq.query.event_processing
+# Constant defined here to avoid cross-package import from saq.query.field_lookup
 FIELD_LOOKUP_TYPE_KEY = "key"
 
 
@@ -179,8 +179,8 @@ def apply_mapping_properties(
     """Apply tags, directives, and display settings from a mapping to an observable.
 
     If interpolate_fn and event are provided, tags/directives are interpolated
-    against the event data (supporting ${field} syntax). Otherwise they're applied
-    as literal strings.
+    against the event data (Jinja {{ field }} syntax). Empty rendered values
+    are skipped. Otherwise tags/directives are applied as literal strings.
     """
     if observable is None:
         return
@@ -188,11 +188,13 @@ def apply_mapping_properties(
     if interpolate_fn is not None and event is not None:
         for directive in mapping.directives:
             for directive_value in interpolate_fn(directive, event):
-                observable.add_directive(directive_value)
+                if directive_value:
+                    observable.add_directive(directive_value)
 
         for tag in mapping.tags:
             for tag_value in interpolate_fn(tag, event):
-                observable.add_tag(tag_value)
+                if tag_value:
+                    observable.add_tag(tag_value)
     else:
         for tag in mapping.tags:
             observable.add_tag(tag)

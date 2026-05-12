@@ -27,7 +27,7 @@ def test_interpret_event_value_simple():
 @pytest.mark.unit
 def test_interpret_event_value_with_interpolation():
     """Test value interpolation from event fields."""
-    mapping = ObservableMapping(field="host", type=F_HOSTNAME, value="${host}.${domain}")
+    mapping = ObservableMapping(field="host", type=F_HOSTNAME, value="{{ host }}.{{ domain }}")
     event = {"host": "workstation", "domain": "example.com"}
     result = interpret_event_value(mapping, event)
     assert result == ["workstation.example.com"]
@@ -190,7 +190,7 @@ def test_extract_observables_with_relationships():
             relationships=[
                 RelationshipMapping(
                     type="connected_to",
-                    target=RelationshipMappingTarget(type=F_HOSTNAME, value="${hostname}"),
+                    target=RelationshipMappingTarget(type=F_HOSTNAME, value="{{ hostname }}"),
                 ),
             ],
         ),
@@ -258,7 +258,7 @@ def test_extract_observables_empty_value_skipped():
 def test_process_summary_details_basic():
     """Test basic summary detail processing."""
     configs = [
-        SummaryDetailConfig(content="IP: ${src_ip}"),
+        SummaryDetailConfig(content="IP: {{ src_ip }}"),
     ]
     results = [
         {"src_ip": "10.0.0.1"},
@@ -280,7 +280,7 @@ def test_process_summary_details_basic():
 def test_process_summary_details_with_header():
     """Test summary details with header."""
     configs = [
-        SummaryDetailConfig(content="${value}", header="Header: ${label}"),
+        SummaryDetailConfig(content="{{ value }}", header="Header: {{ label }}"),
     ]
     results = [{"value": "test", "label": "Test Label"}]
 
@@ -298,7 +298,7 @@ def test_process_summary_details_with_header():
 def test_process_summary_details_limit():
     """Test summary detail limit enforcement."""
     configs = [
-        SummaryDetailConfig(content="${value}", limit=2),
+        SummaryDetailConfig(content="{{ value }}", limit=2),
     ]
     results = [{"value": f"item-{i}"} for i in range(5)]
 
@@ -315,7 +315,7 @@ def test_process_summary_details_limit():
 def test_process_summary_details_unresolved_placeholders_skipped():
     """Test that events with unresolved placeholders are skipped."""
     configs = [
-        SummaryDetailConfig(content="${missing_field}"),
+        SummaryDetailConfig(content="{{ missing_field }}"),
     ]
     results = [{"other_field": "value"}]
 
@@ -332,7 +332,7 @@ def test_process_summary_details_unresolved_placeholders_skipped():
 def test_process_summary_details_grouped_basic():
     """Test grouped summary details combine multiple events into one detail."""
     configs = [
-        SummaryDetailConfig(content="[Link](${url})", header="Links", grouped=True),
+        SummaryDetailConfig(content="[Link]({{ url }})", header="Links", grouped=True),
     ]
     results = [
         {"url": "https://example.com/1"},
@@ -358,7 +358,7 @@ def test_process_summary_details_grouped_basic():
 def test_process_summary_details_grouped_limit(caplog):
     """Test grouped summary details respect limit and log a warning."""
     configs = [
-        SummaryDetailConfig(content="${value}", grouped=True, limit=2),
+        SummaryDetailConfig(content="{{ value }}", grouped=True, limit=2),
     ]
     results = [{"value": f"item-{i}"} for i in range(5)]
 
@@ -381,7 +381,7 @@ def test_process_summary_details_grouped_limit(caplog):
 def test_process_summary_details_grouped_no_matching_events():
     """Test grouped summary details produce no detail when all events fail interpolation."""
     configs = [
-        SummaryDetailConfig(content="${missing}", grouped=True),
+        SummaryDetailConfig(content="{{ missing }}", grouped=True),
     ]
     results = [{"other": "value"}, {"other": "value2"}]
 
@@ -398,8 +398,8 @@ def test_process_summary_details_grouped_no_matching_events():
 def test_process_summary_details_mixed_grouped_and_ungrouped():
     """Test both grouped and ungrouped configs in a single call."""
     configs = [
-        SummaryDetailConfig(content="[Link](${url})", header="Links", grouped=True),
-        SummaryDetailConfig(content="IP: ${ip}"),
+        SummaryDetailConfig(content="[Link]({{ url }})", header="Links", grouped=True),
+        SummaryDetailConfig(content="IP: {{ ip }}"),
     ]
     results = [
         {"url": "https://example.com/1", "ip": "10.0.0.1"},
@@ -536,7 +536,7 @@ def test_process_summary_details_jinja_required_fields_missing():
 def test_process_summary_details_dedup_basic():
     """Test basic deduplication of events."""
     configs = [
-        SummaryDetailConfig(content="${src_ip}", dedup_fields=["src_ip"]),
+        SummaryDetailConfig(content="{{ src_ip }}", dedup_fields=["src_ip"]),
     ]
     results = [
         {"src_ip": "10.0.0.1"},
@@ -556,34 +556,11 @@ def test_process_summary_details_dedup_basic():
 
 
 @pytest.mark.unit
-def test_process_summary_details_dedup_dot_syntax():
-    """Test dedup with $dot{} syntax."""
-    configs = [
-        SummaryDetailConfig(content="$dot{host.name}", dedup_fields=["$dot{host.name}"]),
-    ]
-    results = [
-        {"host": {"name": "server1"}},
-        {"host": {"name": "server1"}},
-        {"host": {"name": "server2"}},
-    ]
-
-    details = []
-    def add_detail(content, header, fmt):
-        details.append(content)
-
-    process_summary_details(configs, results, add_detail)
-
-    assert len(details) == 2
-    assert details[0] == "server1"
-    assert details[1] == "server2"
-
-
-@pytest.mark.unit
 def test_process_summary_details_dedup_grouped():
     """Test dedup with grouped mode."""
     configs = [
         SummaryDetailConfig(
-            content="${host}", grouped=True, dedup_fields=["host"],
+            content="{{ host }}", grouped=True, dedup_fields=["host"],
         ),
     ]
     results = [
@@ -608,10 +585,10 @@ def test_process_summary_details_dedup_grouped():
 
 @pytest.mark.unit
 def test_process_summary_details_required_fields_partial_resolution():
-    """Test required_fields with ${field} format allows partial resolution."""
+    """Test required_fields with {{ field }} format allows partial resolution."""
     configs = [
         SummaryDetailConfig(
-            content="IP: ${src_ip}, Host: ${hostname}",
+            content="IP: {{ src_ip }}, Host: {{ hostname }}",
             required_fields=["src_ip"],
         ),
     ]
@@ -628,35 +605,11 @@ def test_process_summary_details_required_fields_partial_resolution():
 
 
 @pytest.mark.unit
-def test_process_summary_details_required_fields_dot_syntax():
-    """Test required_fields with $dot{} syntax."""
-    configs = [
-        SummaryDetailConfig(
-            content="$dot{device.ip}",
-            required_fields=["$dot{device.ip}"],
-        ),
-    ]
-    results = [
-        {"device": {"ip": "10.0.0.1"}},
-        {"other": "value"},
-    ]
-
-    details = []
-    def add_detail(content, header, fmt):
-        details.append(content)
-
-    process_summary_details(configs, results, add_detail)
-
-    assert len(details) == 1
-    assert details[0] == "10.0.0.1"
-
-
-@pytest.mark.unit
 def test_process_summary_details_required_fields_missing_skips():
     """Test that events missing required fields are skipped."""
     configs = [
         SummaryDetailConfig(
-            content="${src_ip}",
+            content="{{ src_ip }}",
             required_fields=["src_ip", "hostname"],
         ),
     ]
@@ -679,7 +632,7 @@ def test_process_summary_details_required_fields_missing_skips():
 def test_process_summary_details_default_behavior_unchanged():
     """Test that default behavior (no required_fields) is unchanged — unresolved skips."""
     configs = [
-        SummaryDetailConfig(content="${src_ip}, ${hostname}"),
+        SummaryDetailConfig(content="{{ src_ip }}, {{ hostname }}"),
     ]
     results = [
         {"src_ip": "10.0.0.1"},  # missing hostname
@@ -844,7 +797,7 @@ def test_process_summary_details_grouped_jinja_empty_result():
 def test_process_summary_details_grouped_non_jinja_unchanged():
     """Test grouped + non-Jinja behavior is unchanged (per-event render + join)."""
     configs = [
-        SummaryDetailConfig(content="${host}", grouped=True),
+        SummaryDetailConfig(content="{{ host }}", grouped=True),
     ]
     results = [
         {"host": "server1"},
