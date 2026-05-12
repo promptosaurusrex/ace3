@@ -81,7 +81,7 @@ class QueryHuntConfig(HuntConfig, BaseQueryConfig):
     max_result_count: Optional[int] = Field(default_factory=lambda: get_config().query_hunter.max_result_count, description="The maximum number of results to return.")
     query_timeout: Optional[str] = Field(default_factory=lambda: get_config().query_hunter.query_timeout, description="The timeout for the query (in HH:MM:SS format).")
     auto_append: str = Field(default="", description="The string to append to the query after the time spec. By default this is an empty string.")
-    dedup_key: Optional[str] = Field(default=None, description="Optional interpolation template for deduplication. Uses ${field} syntax. When set, submissions get a key enabling the DuplicateSubmissionFilter to suppress duplicates.")
+    dedup_key: Optional[str] = Field(default=None, description="Optional Jinja2 template for deduplication. When set, submissions get a key enabling the DuplicateSubmissionFilter to suppress duplicates.")
     correlate: Optional[CorrelateConfig] = Field(default=None, description="Optional correlation configuration for advanced event processing.")
 
     @model_validator(mode='after')

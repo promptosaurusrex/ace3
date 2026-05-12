@@ -148,25 +148,26 @@ def _shutdown_reaper(**_):
         logger.exception("shutdown reaper sweep failed: %s", e)
 
 
-def _has_proxy_error(stdout: str, stderr: str, error_patterns: list[str]) -> bool:
+def _matched_proxy_error_patterns(stdout: str, stderr: str, error_patterns: list[str]) -> list[str]:
+    """Return the subset of error_patterns that appear in stdout/stderr."""
     combined = (stdout or "") + (stderr or "")
-    return any(pattern in combined for pattern in error_patterns)
+    return [pattern for pattern in error_patterns if pattern in combined]
 
 
-def _has_proxy_status_code(output_dir: str, proxy_status_codes: list[int]) -> bool:
-    """Check if the main page response in requests.json has a proxy error status code.
+def _matched_proxy_status_code(output_dir: str, proxy_status_codes: list[int]) -> int | None:
+    """Return the main page response status code if it indicates a proxy error, else None.
 
     The main page response is the first entry with type=="response" in requests.json.
     """
     if not proxy_status_codes:
-        return False
+        return None
     requests_path = os.path.join(output_dir, "requests.json")
     try:
         with open(requests_path, "r") as f:
             requests_data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
         logger.debug("could not read requests.json from %s: %s", output_dir, e)
-        return False
+        return None
 
     for entry in requests_data:
         if entry.get("type") == "response":
@@ -176,10 +177,27 @@ def _has_proxy_status_code(output_dir: str, proxy_status_codes: list[int]) -> bo
                     "main page returned proxy error status %s in %s",
                     status_code, output_dir,
                 )
-                return True
-            return False
+                return status_code
+            return None
 
-    return False
+    return None
+
+
+def _sanitize_proxy_for_display(proxy: str | None) -> str | None:
+    """Strip user:pass@ credentials from a proxy URL for display.
+
+    Mirrors the redaction in saq/modules/phishkit.py::_redact_proxy_credentials.
+    Returns None when no proxy is configured.
+    """
+    if not proxy:
+        return None
+    if "@" not in proxy:
+        return proxy
+    before_at, after_at = proxy.rsplit("@", 1)
+    if "://" in before_at:
+        scheme = before_at.split("://", 1)[0]
+        return f"{scheme}://{after_at}"
+    return after_at
 
 
 def _sync_config(source_path: str | None) -> str | None:
@@ -263,7 +281,8 @@ def _run_scanner(
     cmd = build_cmd(use_proxy=True, out_dir=output_dir, name=container_name)
     process = Popen(cmd, stdout=PIPE, stderr=PIPE, text=True)
 
-    should_retry = False
+    fallback_reason: str | None = None
+    fallback_details: dict = {}
     timed_out = False
     _stdout, _stderr = "", ""
 
@@ -280,7 +299,7 @@ def _run_scanner(
                 _stdout, _stderr = process.communicate()
             timed_out = True
             if proxy and proxy_fallback_to_direct and proxy_fallback.get("retry_on_timeout", False):
-                should_retry = True
+                fallback_reason = "timeout"
                 logger.warning("timeout for job %s, retrying without proxy", job_id)
             else:
                 raise
@@ -296,12 +315,23 @@ def _run_scanner(
                 logging.info(f"stderr> {line}")
 
         if proxy and proxy_fallback_to_direct:
-            if _has_proxy_error(_stdout, _stderr, proxy_fallback.get("error_patterns", [])):
-                should_retry = True
+            matched_patterns = _matched_proxy_error_patterns(
+                _stdout, _stderr, proxy_fallback.get("error_patterns", []),
+            )
+            if matched_patterns:
+                fallback_reason = "error_pattern"
+                fallback_details["matched_error_patterns"] = matched_patterns
                 logger.warning("proxy error detected for job %s, retrying without proxy", job_id)
-            elif _has_proxy_status_code(output_dir, proxy_fallback.get("proxy_status_codes", [])):
-                should_retry = True
-                logger.warning("proxy error status code for job %s, retrying without proxy", job_id)
+            else:
+                matched_code = _matched_proxy_status_code(
+                    output_dir, proxy_fallback.get("proxy_status_codes", []),
+                )
+                if matched_code is not None:
+                    fallback_reason = "status_code"
+                    fallback_details["matched_status_code"] = matched_code
+                    logger.warning("proxy error status code for job %s, retrying without proxy", job_id)
+
+    should_retry = fallback_reason is not None
 
     if should_retry:
         proxy_stdout = _stdout
@@ -355,6 +385,21 @@ def _run_scanner(
 
     with open(os.path.join(output_dir, "exit.code"), "w") as fp:
         fp.write(str(process.returncode))
+
+    proxy_status = {
+        "configured": bool(proxy),
+        "host": _sanitize_proxy_for_display(proxy),
+        "fallback_enabled": bool(proxy_fallback_to_direct),
+        "fallback_triggered": should_retry,
+        "fallback_reason": fallback_reason,
+        "fallback_details": fallback_details,
+        "final_route": (
+            "direct" if should_retry
+            else ("proxy" if proxy else "none")
+        ),
+    }
+    with open(os.path.join(output_dir, "proxy.json"), "w") as fp:
+        json.dump(proxy_status, fp)
 
     return _stdout, _stderr, process.returncode
 

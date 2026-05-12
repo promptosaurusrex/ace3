@@ -32,6 +32,7 @@ FIELD_EXIT_CODE = "exit_code"
 FIELD_STDOUT = "stdout"
 FIELD_STDERR = "stderr"
 FIELD_METRICS = "metrics"
+FIELD_PROXY_STATUS = "proxy_status"
 
 SCAN_TYPE_URL = "url"
 SCAN_TYPE_FILE = "file"
@@ -53,6 +54,7 @@ class PhishkitAnalysis(Analysis):
             FIELD_OUTPUT_FILES: [],  # list of output file paths
             FIELD_ERROR: None,  # error message if scan failed
             FIELD_METRICS: None,  # scan metrics (bytes downloaded, domain breakdown, etc.)
+            FIELD_PROXY_STATUS: None,  # proxy usage / fallback info from the scanner worker
         }
 
     @override
@@ -140,6 +142,14 @@ class PhishkitAnalysis(Analysis):
     def metrics(self, value: dict):
         self.details[FIELD_METRICS] = value
 
+    @property
+    def proxy_status(self) -> Optional[dict]:
+        return self.details.get(FIELD_PROXY_STATUS)
+
+    @proxy_status.setter
+    def proxy_status(self, value: dict):
+        self.details[FIELD_PROXY_STATUS] = value
+
     def generate_summary(self):
         if self.error:
             return f"{self.display_name}: failed: {self.error}"
@@ -149,6 +159,13 @@ class PhishkitAnalysis(Analysis):
             if self.metrics and self.metrics.get("total_bytes_downloaded"):
                 mb = self.metrics["total_bytes_downloaded"] / (1024 * 1024)
                 summary += f" - {mb:.2f} MB downloaded"
+            if self.proxy_status:
+                route = self.proxy_status.get("final_route")
+                if route == "proxy":
+                    summary += " - fetched via proxy"
+                elif route == "direct" and self.proxy_status.get("configured"):
+                    reason = self.proxy_status.get("fallback_reason") or "unknown"
+                    summary += f" - proxy failed ({reason}), fetched direct"
             return summary
         else:
             return f"{self.display_name}: completed"
@@ -326,6 +343,18 @@ class PhishkitAnalyzer(AnalysisModule):
                             logging.error(f"failed to send metrics to fluent-bit for {observable}: {e}")
                 except Exception as e:
                     logging.error(f"failed to read metrics.json for {observable}: {e}")
+            elif os.path.basename(file_path) == "proxy.json":
+                try:
+                    with open(file_path, "r") as fp:
+                        proxy_status = json.load(fp)
+                    # defense in depth — worker already sanitizes host, but redact again
+                    # in case an older worker version slipped credentials through
+                    host = proxy_status.get("host")
+                    if isinstance(host, str):
+                        proxy_status["host"] = self._redact_proxy_credentials(host)
+                    analysis.proxy_status = proxy_status
+                except Exception as e:
+                    logging.error(f"failed to read proxy.json for {observable}: {e}")
             else:
                 relative_path = os.path.join("phishkit", analysis.job_id, os.path.relpath(file_path, analysis.output_dir))
                 file_observable = analysis.add_file_observable(file_path, relative_path)

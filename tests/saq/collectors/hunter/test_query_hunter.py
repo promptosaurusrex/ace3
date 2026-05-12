@@ -4440,3 +4440,65 @@ def test_create_root_analysis_pivot_links_pair_same_field(monkeypatch, tmpdir):
         ("https://example.com/?q=incomplete", "incomplete info"),
         ("https://example.com/?q=not-applicable", "not-applicable info"),
     ]
+
+
+@pytest.mark.unit
+def test_create_root_analysis_skips_unresolved_pivot_links(monkeypatch, tmpdir):
+    """pivot_links with unresolved ${...} in url or text are dropped."""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="pivot_unresolved_test",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        pivot_links=[
+            {"url": "https://example.com/alerts/{{ alert_id }}", "text": "Alert"},
+            {"url": "https://example.com/investigations/{{ investigation_id }}", "text": "Investigation"},
+            {"url": "https://example.com/case", "text": "{{ case_name }}"},
+        ],
+    )
+
+    # only alert_id is present — the other two pivots have unresolved fields
+    root = hunt.create_root_analysis({"alert_id": "abc123"})
+    assert len(root.pivot_links) == 1
+    assert root.pivot_links[0].url == "https://example.com/alerts/abc123"
+    assert root.pivot_links[0].text == "Alert"
+
+    # with all fields populated, every pivot is attached
+    root = hunt.create_root_analysis({
+        "alert_id": "abc123",
+        "investigation_id": "inv456",
+        "case_name": "Important Case",
+    })
+    urls = sorted(p.url for p in root.pivot_links)
+    assert urls == [
+        "https://example.com/alerts/abc123",
+        "https://example.com/case",
+        "https://example.com/investigations/inv456",
+    ]
+
+
+@pytest.mark.unit
+def test_create_root_analysis_skips_unresolved_playbook_url(monkeypatch, tmpdir):
+    """playbook_url with unresolved {{ }} is not written to the alert extensions."""
+    import saq.collectors.hunter.query_hunter
+    from saq.analysis.root import KEY_PLAYBOOK_URL
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="playbook_unresolved_test",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        playbook_url="https://playbooks.example.com/{{ playbook_id }}",
+    )
+
+    # field missing — playbook_url is omitted from extensions
+    root = hunt.create_root_analysis({})
+    assert KEY_PLAYBOOK_URL not in root.extensions
+
+    # field present — playbook_url is set
+    root = hunt.create_root_analysis({"playbook_id": "pb42"})
+    assert root.extensions[KEY_PLAYBOOK_URL] == "https://playbooks.example.com/pb42"

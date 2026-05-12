@@ -135,7 +135,7 @@ class ObservableMapping(BaseObservableMapping):
     )
     value: Optional[str] = Field(
         default=None,
-        description="OPTIONAL value to use for the observable (supports ${field} interpolation)"
+        description="OPTIONAL value to use for the observable (Jinja2 template with {{ field }} syntax)"
     )
     file_name: Optional[str] = Field(
         default=None,
