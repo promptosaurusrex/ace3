@@ -256,16 +256,12 @@ def test_extract_observables_empty_value_skipped():
 
 @pytest.mark.unit
 def test_interpret_event_value_skips_unresolved_interpolation():
-    """interpolated value templates that fail to resolve must be dropped."""
+    """interpolated value templates with any missing field produce no values."""
     mapping = ObservableMapping(field="host", type=F_HOSTNAME, value="{{ host }}.{{ domain }}")
-    # 'domain' is missing — permissive Jinja renders it as empty, and the caller
-    # in _process_mapping_values skips the resulting "workstation." value via
-    # its falsy-after-rstrip check downstream
+    # 'domain' is missing — strict-mode render raises UndefinedError, caught
+    # and converted to []
     result = interpret_event_value(mapping, {"host": "workstation"})
-    # render returns ['workstation.'] — extract_observables_from_event filters
-    # empties at the next layer; here we just confirm the unresolved field
-    # didn't leak its literal template into the value
-    assert result == ["workstation."]
+    assert result == []
 
 
 @pytest.mark.unit
@@ -277,12 +273,7 @@ def test_extract_observables_skips_unresolved_value():
     extracted, _, _ = extract_observables_from_event(
         {"host": "workstation"}, mappings,
     )
-    # 'workstation.' is a partially-resolved fragment — F_HOSTNAME observable
-    # creation may accept or reject it depending on the validator. The important
-    # assertion is that no observable carries the literal template placeholder.
-    for ext in extracted:
-        assert "{{" not in ext.observable.value
-        assert "}}" not in ext.observable.value
+    assert len(extracted) == 0
 
     extracted, _, _ = extract_observables_from_event(
         {"host": "workstation", "domain": "example.com"}, mappings,
@@ -293,7 +284,7 @@ def test_extract_observables_skips_unresolved_value():
 
 @pytest.mark.unit
 def test_extract_observables_skips_unresolved_tags_directives():
-    """observable mapping tags/directives that fail to resolve must not be attached."""
+    """observable mapping tags/directives with any missing field are skipped entirely."""
     mappings = [
         ObservableMapping(
             field="src_ip", type=F_IPV4,
@@ -304,15 +295,12 @@ def test_extract_observables_skips_unresolved_tags_directives():
     extracted, _, _ = extract_observables_from_event({"src_ip": "10.0.0.1"}, mappings)
     assert len(extracted) == 1
     obs = extracted[0].observable
+    # The unresolved tag template is rejected entirely; only the static sibling remains.
     assert "static_tag" in obs.tags
-    # under permissive Jinja, missing 'technique' renders "" so the tag is "mitre:"
-    # neither the rendered fragment nor the literal template should appear on the
-    # observable's tag/directive set as a problematic artifact
-    assert not any("{{" in t for t in obs.tags)
+    assert not any(t.startswith("mitre:") for t in obs.tags)
+    # Same for directives: unresolved one is rejected, sibling kept.
     assert "analyze_ip" in obs.directives
-    # empty rendered directive is filtered by apply_mapping_properties
-    assert "" not in obs.directives
-    assert not any("{{" in d for d in obs.directives)
+    assert all(d == "analyze_ip" for d in obs.directives)
 
 
 @pytest.mark.unit
@@ -329,14 +317,11 @@ def test_extract_observables_file_type_skips_unresolved_file_name():
             file_decoder=DecoderType.BASE64,
         ),
     ]
-    # 'prefix' missing — file_name renders to "-malware.exe" (partial), which
-    # is still emitted; the key invariant is that no literal {{ }} leaks through
+    # 'prefix' missing — no FileContent emitted
     _, file_contents, _ = extract_observables_from_event(
         {"file_data": encoded}, mappings,
     )
-    for fc in file_contents:
-        assert "{{" not in fc.file_name
-        assert "}}" not in fc.file_name
+    assert len(file_contents) == 0
 
     # 'prefix' present — FileContent emitted with interpolated name
     _, file_contents, _ = extract_observables_from_event(
@@ -348,7 +333,7 @@ def test_extract_observables_file_type_skips_unresolved_file_name():
 
 @pytest.mark.unit
 def test_extract_observables_file_type_skips_unresolved_tags_directives():
-    """F_FILE per-file tags/directives that fail to resolve are dropped; siblings remain."""
+    """F_FILE per-file tags/directives with any missing field are rejected; siblings kept."""
     import base64
     content = b"data"
     encoded = base64.b64encode(content).decode()
@@ -368,9 +353,9 @@ def test_extract_observables_file_type_skips_unresolved_tags_directives():
     assert len(file_contents) == 1
     fc = file_contents[0]
     assert "static_tag" in fc.tags
-    assert not any("{{" in t for t in fc.tags)
+    assert not any(t.startswith("origin:") for t in fc.tags)
     assert "analyze_file" in fc.directives
-    assert not any("{{" in d for d in fc.directives)
+    assert all(d == "analyze_file" for d in fc.directives)
 
 
 @pytest.mark.unit

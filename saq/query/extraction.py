@@ -27,6 +27,20 @@ from saq.query.template_rendering import (
 )
 
 
+def _interpolate_strict(template: str, event: dict) -> list[str]:
+    """Strict-mode multi-render that rejects the whole template on any missing field.
+
+    Returns an empty list if any referenced field is absent from the event, so
+    callers can iterate the result and naturally skip entries whose template
+    couldn't fully resolve. This matches the legacy
+    `contains_unresolved_placeholders` guard semantics on top of Jinja.
+    """
+    try:
+        return render_event_template_multi(template, event, strict=True)
+    except UndefinedError:
+        return []
+
+
 class FileContent(BaseModel):
     file_name: str = Field(..., description="The name of the file as defined by the observable mapping.")
     content: bytes = Field(..., description="The content of the file.")
@@ -65,8 +79,9 @@ def interpret_event_value(observable_mapping: ObservableMapping, event: dict, fi
         if not success:
             raise KeyError(field_name)
     else:
-        # otherwise we interpolate the value from the event
-        observed_value = render_event_template_multi(observable_mapping.value, event)
+        # otherwise we interpolate the value from the event; strict mode means
+        # a missing field rejects the whole template entry (no observable created)
+        observed_value = _interpolate_strict(observable_mapping.value, event)
 
     # we always return a list of values, even if there is only one
     if not isinstance(observed_value, list):
@@ -172,19 +187,22 @@ def _process_mapping_values(
             if decoded_observed_value is None:
                 decoded_observed_value = observed_value.encode('utf-8')
 
-            for target_file_name in render_event_template_multi(mapping.file_name, event):
+            # Strict mode: a missing field rejects the entire file_name template
+            # (empty list → no FileContent emitted). For per-file directives/tags,
+            # a missing field rejects just that template entry, not its siblings.
+            for target_file_name in _interpolate_strict(mapping.file_name, event):
                 if not target_file_name:
                     continue
 
                 interpolated_directives = []
                 for directive in mapping.directives:
-                    for directive_value in render_event_template_multi(directive, event):
+                    for directive_value in _interpolate_strict(directive, event):
                         if directive_value:
                             interpolated_directives.append(directive_value)
 
                 interpolated_tags = []
                 for tag in mapping.tags:
-                    for tag_value in render_event_template_multi(tag, event):
+                    for tag_value in _interpolate_strict(tag, event):
                         if tag_value:
                             interpolated_tags.append(tag_value)
 
@@ -217,7 +235,7 @@ def _process_mapping_values(
             observable.time = event_time
 
         apply_mapping_properties(observable, mapping,
-                                 interpolate_fn=render_event_template_multi, event=event)
+                                 interpolate_fn=_interpolate_strict, event=event)
 
         if mapping.relationships:
             relationship_tracking[observable] = mapping.relationships
