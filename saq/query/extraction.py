@@ -69,6 +69,9 @@ def interpret_event_value(observable_mapping: ObservableMapping, event: dict, fi
     else:
         # otherwise we interpolate the value from the event
         observed_value = interpolate_event_value(observable_mapping.value, event)
+        observed_value = [
+            v for v in observed_value if not contains_unresolved_placeholders(v)
+        ]
 
     # we always return a list of values, even if there is only one
     if not isinstance(observed_value, list):
@@ -175,13 +178,21 @@ def _process_mapping_values(
                 decoded_observed_value = observed_value.encode('utf-8')
 
             for target_file_name in interpolate_event_value(mapping.file_name, event):
+                if contains_unresolved_placeholders(target_file_name):
+                    continue
                 interpolated_directives = []
                 for directive in mapping.directives:
-                    interpolated_directives.extend(interpolate_event_value(directive, event))
+                    for directive_value in interpolate_event_value(directive, event):
+                        if contains_unresolved_placeholders(directive_value):
+                            continue
+                        interpolated_directives.append(directive_value)
 
                 interpolated_tags = []
                 for tag in mapping.tags:
-                    interpolated_tags.extend(interpolate_event_value(tag, event))
+                    for tag_value in interpolate_event_value(tag, event):
+                        if contains_unresolved_placeholders(tag_value):
+                            continue
+                        interpolated_tags.append(tag_value)
 
                 file_contents.append(FileContent(
                     file_name=target_file_name,

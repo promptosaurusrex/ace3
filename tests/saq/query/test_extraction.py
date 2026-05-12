@@ -255,6 +255,107 @@ def test_extract_observables_empty_value_skipped():
 
 
 @pytest.mark.unit
+def test_interpret_event_value_skips_unresolved_interpolation():
+    """interpolated value templates that fail to resolve must be dropped."""
+    mapping = ObservableMapping(field="host", type=F_HOSTNAME, value="${host}.${domain}")
+    # 'domain' is missing — the interpolated string would otherwise be 'workstation.${domain}'
+    result = interpret_event_value(mapping, {"host": "workstation"})
+    assert result == []
+
+
+@pytest.mark.unit
+def test_extract_observables_skips_unresolved_value():
+    """observable mappings with unresolved value templates produce no observable."""
+    mappings = [
+        ObservableMapping(field="host", type=F_HOSTNAME, value="${host}.${domain}"),
+    ]
+    extracted, _, _ = extract_observables_from_event(
+        {"host": "workstation"}, mappings,
+    )
+    assert len(extracted) == 0
+
+    extracted, _, _ = extract_observables_from_event(
+        {"host": "workstation", "domain": "example.com"}, mappings,
+    )
+    assert len(extracted) == 1
+    assert extracted[0].observable.value == "workstation.example.com"
+
+
+@pytest.mark.unit
+def test_extract_observables_skips_unresolved_tags_directives():
+    """observable mapping tags/directives that fail to resolve must not be attached."""
+    mappings = [
+        ObservableMapping(
+            field="src_ip", type=F_IPV4,
+            tags=["mitre:${technique}", "static_tag"],
+            directives=["${missing_directive}", "analyze_ip"],
+        ),
+    ]
+    extracted, _, _ = extract_observables_from_event({"src_ip": "10.0.0.1"}, mappings)
+    assert len(extracted) == 1
+    obs = extracted[0].observable
+    assert "static_tag" in obs.tags
+    assert "mitre:${technique}" not in obs.tags
+    assert "analyze_ip" in obs.directives
+    assert "${missing_directive}" not in obs.directives
+
+
+@pytest.mark.unit
+def test_extract_observables_file_type_skips_unresolved_file_name():
+    """F_FILE mappings with unresolved file_name templates produce no FileContent."""
+    import base64
+    content = b"data"
+    encoded = base64.b64encode(content).decode()
+
+    mappings = [
+        ObservableMapping(
+            field="file_data", type=F_FILE,
+            file_name="${prefix}-malware.exe",
+            file_decoder=DecoderType.BASE64,
+        ),
+    ]
+    # 'prefix' missing — no FileContent emitted
+    _, file_contents, _ = extract_observables_from_event(
+        {"file_data": encoded}, mappings,
+    )
+    assert len(file_contents) == 0
+
+    # 'prefix' present — FileContent emitted with interpolated name
+    _, file_contents, _ = extract_observables_from_event(
+        {"file_data": encoded, "prefix": "sample"}, mappings,
+    )
+    assert len(file_contents) == 1
+    assert file_contents[0].file_name == "sample-malware.exe"
+
+
+@pytest.mark.unit
+def test_extract_observables_file_type_skips_unresolved_tags_directives():
+    """F_FILE per-file tags/directives that fail to resolve are dropped; siblings remain."""
+    import base64
+    content = b"data"
+    encoded = base64.b64encode(content).decode()
+
+    mappings = [
+        ObservableMapping(
+            field="file_data", type=F_FILE,
+            file_name="dump.bin",
+            file_decoder=DecoderType.BASE64,
+            tags=["origin:${source}", "static_tag"],
+            directives=["${missing_directive}", "analyze_file"],
+        ),
+    ]
+    _, file_contents, _ = extract_observables_from_event(
+        {"file_data": encoded}, mappings,
+    )
+    assert len(file_contents) == 1
+    fc = file_contents[0]
+    assert "static_tag" in fc.tags
+    assert "origin:${source}" not in fc.tags
+    assert "analyze_file" in fc.directives
+    assert "${missing_directive}" not in fc.directives
+
+
+@pytest.mark.unit
 def test_process_summary_details_basic():
     """Test basic summary detail processing."""
     configs = [
