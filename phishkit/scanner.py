@@ -740,9 +740,13 @@ class Scanner:
 
     def bypass_recaptcha(self, sb: SB):
         searches = ["Please complete the security check to access the website."]
+        page_source = sb.cdp.get_page_source()
+        if page_source is None:
+            print("could not get page source for reCAPTCHA detection -- skipping")
+            return
         recaptcha_detected = False
         for search in searches:
-            if search in sb.cdp.get_page_source():
+            if search in page_source:
                 recaptcha_detected = True
                 print("detected reCAPTCHA -- attempting to bypass")
                 solver = RecaptchaSolver(driver=sb.driver)
@@ -760,6 +764,10 @@ class Scanner:
             print("no recaptcha detected")
 
     def bypass_warnings(self, sb: SB) -> bool:
+        page_source = sb.cdp.get_page_source()
+        if page_source is None:
+            print("could not get page source for warning bypass detection -- skipping")
+            return False
         for bypass in self.BYPASSES:
             bypass_type = bypass.get("type")
             searches = bypass.get("searches")
@@ -771,7 +779,7 @@ class Scanner:
                 continue
 
             for search in searches:
-                if search in sb.cdp.get_page_source():
+                if search in page_source:
                     print(f"detected bypass type {bypass_type} with search {search}")
 
                     # does this bypass have a handler?
