@@ -841,6 +841,49 @@ def test_process_query_results_captures_original_events(monkeypatch):
 
 
 @pytest.mark.unit
+def test_correlated_hunt_auto_tags_alert(monkeypatch):
+    """ACE must auto-tag every alert from a correlated hunt with 'correlated'.
+    Hunts without a `correlate:` block must not carry that tag.
+    Auto-tag must not duplicate when the hunt YAML already lists it."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    base_kwargs = dict(
+        manager=MockManager(),
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+
+    hunt = default_hunt(name="no_correlate_tag", **base_kwargs)
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert submissions
+    for s in submissions:
+        assert "correlated" not in s.root.tags
+
+    correlate = CorrelateConfig.model_validate({"logic": [{"action": "alert"}]})
+    hunt = default_hunt(name="with_correlate_tag", correlate=correlate, **base_kwargs)
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert submissions
+    for s in submissions:
+        assert "correlated" in s.root.tags
+
+    hunt = default_hunt(
+        name="with_correlate_predeclared",
+        correlate=correlate,
+        tags=["correlated", "other_tag"],
+        **base_kwargs,
+    )
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert submissions
+    for s in submissions:
+        assert s.root.tags.count("correlated") == 1
+        assert "other_tag" in s.root.tags
+
+
+@pytest.mark.unit
 def test_correlation_trace_scoped_per_alert_no_grouping(monkeypatch):
     """Without group_by, two query results become two separate alerts. Each alert's
     correlation_trace should contain only the EventTrace for the event that produced

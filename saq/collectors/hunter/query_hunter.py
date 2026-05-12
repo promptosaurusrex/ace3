@@ -435,6 +435,9 @@ class QueryHunt(Hunt):
                 if not contains_unresolved_placeholders(tag_value):
                     root.add_tag(tag_value)
 
+        if self.config.correlate is not None:
+            root.add_tag('correlated')
+
         for pivot_link in self.pivot_links:
             for pivot_link_url_value in interpolate_event_value(pivot_link["url"], event):
                 for pivot_link_text_value in interpolate_event_value(pivot_link["text"], event):
