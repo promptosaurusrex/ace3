@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.46] - 2026-05-12
+
+- [Adds 'correlated' tag to correlated hunt alerts](https://github.com/ACE-Collective/ace3/pull/212)
+- [Fixes some cartesian product bugs](https://github.com/ACE-Collective/ace3/pull/213)
+- [Handle both types of timeouts for Phishkit](https://github.com/ACE-Collective/ace3/pull/214)
+- [Fixes some minor Phishkit issues](https://github.com/ACE-Collective/ace3/pull/215)
+
 ## [3.0.45] - 2026-05-11
 
 - [Adds generic support for source_options](https://github.com/ACE-Collective/ace3/pull/207)
