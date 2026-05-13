@@ -6,14 +6,16 @@ import pytest
 
 from saq.environment import get_global_runtime_settings
 from saq.integration.integration_loader import (
-    validate_integration_dir,
-    _recurse_integration_dirs,
-    get_valid_integration_dirs,
     load_integrations,
     load_integration_component_src,
     load_integration_component_bin,
     load_integration_component_etc,
     load_integration_from_directory
+)
+from saq.integration.integration_util import (
+    validate_integration_dir,
+    _recurse_integration_dirs,
+    get_valid_integration_dirs,
 )
 
 
@@ -103,7 +105,7 @@ class TestRecurseIntegrationDirs:
 @pytest.mark.unit
 class TestGetValidIntegrationDirs:
     
-    @patch('saq.integration.integration_loader.get_integration_base_dir')
+    @patch('saq.integration.integration_util.get_integration_base_dir')
     def test_get_valid_integration_dirs(self, mock_get_base_dir, tmpdir):
         """Test getting valid integration directories."""
         mock_get_base_dir.return_value = str(tmpdir)
