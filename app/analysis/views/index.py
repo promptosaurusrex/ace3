@@ -24,6 +24,8 @@ from saq.database.util.observable_detection import get_all_observable_detections
 from aceapi_v2.observables.service import get_interesting_observables_by_hashes
 from saq.disposition import get_dispositions
 from saq.error.reporting import report_exception
+from saq.remediation.external.database import get_external_checks_for_alert
+from saq.remediation.external.events import summarize_alert_checks
 from saq.remediation.timeline import gather_remediation_events
 from saq.util.ui import create_histogram_string, get_tag_score
 from saq.util.url import find_all_url_domains
@@ -413,12 +415,21 @@ def index():
         fallback_event_time=alert.root_analysis.event_time,
     )
 
+    # Summarize in-flight / terminal external remediation probe activity for
+    # this alert. The template renders a small footer under the timeline card
+    # so analysts can see "we're still polling Defender" even when no events
+    # have been confirmed yet. See saq/remediation/external/.
+    external_check_footer = summarize_alert_checks(
+        get_external_checks_for_alert(alert.uuid)
+    )
+
     import saq.constants
     return render_template(
         'analysis/index.html',
         alert=alert,
         target_types=target_types,
         remediation_timeline_events=remediation_timeline_events,
+        external_check_footer=external_check_footer,
         alert_tags=alert_tags,
         observable=observable,
         observable_presenter=create_observable_presenter(observable) if observable else None,

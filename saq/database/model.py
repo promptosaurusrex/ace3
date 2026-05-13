@@ -29,7 +29,7 @@ from sqlalchemy import (
     desc,
     text,
 )
-from sqlalchemy.dialects.mysql import LONGBLOB
+from sqlalchemy.dialects.mysql import LONGBLOB, MEDIUMTEXT
 from sqlalchemy.orm import (
     Mapped,
     aliased,
@@ -2084,6 +2084,132 @@ class FileCollectionHistory(Base):
     message: Mapped[str] = mapped_column(
         Text,
         nullable=False)
+
+    status: Mapped[str] = mapped_column(
+        Enum('NEW', 'IN_PROGRESS', 'COMPLETED'),
+        nullable=False,
+        default='NEW')
+
+
+class ExternalRemediationCheck(Base):
+    """Tracks recurring background polls against an external system to discover
+    whether *that system* has remediated a target observable (e.g. an email
+    delivery). Unlike ``Remediation``, ACE did not initiate the action — we are
+    only observing it. See ``saq/remediation/external/`` for the daemon."""
+
+    __tablename__ = 'external_remediation_check'
+    __table_args__ = (
+        Index('idx_erc_probe_name', 'probe_name'),
+        Index('idx_erc_observable_lookup', 'probe_name', 'observable_type', 'alert_uuid',
+              mysql_length={'probe_name': 64, 'observable_type': 64}),
+        Index('idx_erc_collector_loop', 'status', 'probe_name', desc('insert_date'),
+              mysql_length={'probe_name': 64}),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    # registered name of the ExternalRemediationProbe subclass that owns this row
+    probe_name: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    # observable that the probe consumes (e.g. "email_delivery")
+    observable_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    observable_value: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # link to the originating alert (not a strict FK to keep cross-shard moves cheap)
+    alert_uuid: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+
+    status: Mapped[str] = mapped_column(
+        Enum('NEW', 'IN_PROGRESS', 'COMPLETED'),
+        nullable=False,
+        index=True,
+        default='NEW',
+        server_default=text("'NEW'"))
+
+    # NULL while still polling. Set when the row transitions to COMPLETED.
+    result: Mapped[Optional[str]] = mapped_column(
+        Enum('CONFIRMED', 'NOT_FOUND', 'EXPIRED', 'ERROR', 'CANCELLED'),
+        nullable=True)
+
+    result_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    insert_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP, nullable=False, index=True,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+    update_time: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP, nullable=True, index=True, server_default=None)
+
+    retry_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text('0'))
+
+    # Per-row caps. The probe class supplies the values; we persist them on the
+    # row so an in-flight check survives a probe-config change.
+    max_retries: Mapped[int] = mapped_column(Integer, nullable=False)
+    deadline: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    lock: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    lock_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # Serialized ``list[RemediationEvent]`` on CONFIRMED; the timeline aggregator
+    # deserializes and renders these directly. MEDIUMTEXT (16 MB) is overkill
+    # for normal payloads but cheap insurance against a probe returning a long
+    # vendor history.
+    events_json: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True)
+
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    @property
+    def json(self):
+        return {
+            'id': self.id,
+            'probe_name': self.probe_name,
+            'observable_type': self.observable_type,
+            'observable_value': self.observable_value,
+            'alert_uuid': self.alert_uuid,
+            'status': self.status,
+            'result': self.result,
+            'result_message': self.result_message,
+            'insert_date': self.insert_date,
+            'update_time': self.update_time,
+            'retry_count': self.retry_count,
+            'max_retries': self.max_retries,
+            'deadline': self.deadline,
+            'last_error': self.last_error,
+        }
+
+    def __str__(self):
+        return (f"ExternalRemediationCheck: {self.probe_name} - {self.observable_type} - "
+                f"{self.status} - {self.observable_value} - {self.result}")
+
+
+class ExternalRemediationCheckHistory(Base):
+    """One row per probe attempt — terminal or otherwise. Mirrors
+    ``FileCollectionHistory`` / ``RemediationHistory`` for debugging."""
+
+    __tablename__ = 'external_remediation_check_history'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    check_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('external_remediation_check.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False,
+        index=True)
+
+    check: Mapped["ExternalRemediationCheck"] = relationship(
+        'ExternalRemediationCheck', backref='history')
+
+    insert_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP, nullable=False, index=True,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+    # PENDING captures "the probe returned no events yet" attempts; the
+    # terminal-result enum members match ExternalRemediationCheck.result.
+    result: Mapped[Optional[str]] = mapped_column(
+        Enum('CONFIRMED', 'NOT_FOUND', 'EXPIRED', 'ERROR', 'CANCELLED', 'PENDING'),
+        nullable=True)
+
+    message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     status: Mapped[str] = mapped_column(
         Enum('NEW', 'IN_PROGRESS', 'COMPLETED'),
