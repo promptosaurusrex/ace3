@@ -2,18 +2,107 @@
 
 import asyncio
 import logging
+import os
+import subprocess
 import uuid as uuidlib
 from datetime import datetime
+
+from fastapi import HTTPException
 
 from saq.constants import ANALYSIS_MODE_CORRELATION, VALID_DIRECTIVES
 from saq.database.pool import get_db
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import add_workload
+from saq.environment import get_base_dir, get_temp_dir
 from saq.gui.alert import GUIAlert
+from saq.util.uuid import is_uuid
 
 from aceapi_v2.alerts.schemas import BulkAddObservableResult
 
 logger = logging.getLogger(__name__)
+
+
+ALERT_ZIP_PASSWORD = "infected"
+
+
+def _resolve_alert_storage_path(alert_uuid: str) -> str:
+    """Look up an alert by UUID and return the absolute path to its storage directory.
+
+    Raises HTTPException with appropriate status for invalid UUID, missing alert,
+    archived alert, or storage directory missing on disk.
+    """
+    if not is_uuid(alert_uuid):
+        raise HTTPException(status_code=400, detail="invalid alert UUID")
+
+    alert = get_db().query(GUIAlert).filter(GUIAlert.uuid == alert_uuid).one_or_none()
+    if alert is None:
+        raise HTTPException(status_code=404, detail="alert not found")
+
+    if alert.archived:
+        raise HTTPException(
+            status_code=410,
+            detail="alert has been archived; storage has been cleaned up",
+        )
+
+    abs_path = os.path.join(get_base_dir(), alert.storage_dir)
+    if not os.path.isdir(abs_path):
+        raise HTTPException(
+            status_code=410,
+            detail="alert storage directory no longer exists on disk",
+        )
+
+    return abs_path
+
+
+def create_encrypted_alert_zip(alert_uuid: str) -> str:
+    """Build an encrypted (password='infected') zip of the alert's storage
+    directory under the configured temp dir. Returns the absolute path to
+    the resulting zip file. Caller is responsible for cleaning it up.
+    """
+    storage_dir = _resolve_alert_storage_path(alert_uuid)
+
+    dest = os.path.join(get_temp_dir(), f"{alert_uuid}.zip")
+    # If a stale file is hanging around, remove it so zip doesn't try to update it.
+    if os.path.exists(dest):
+        try:
+            os.remove(dest)
+        except OSError:
+            pass
+
+    # Match the existing pattern in app/analysis/views/export.py: ZipCrypto
+    # via the `zip` binary so the format is identical to the per-file
+    # downloads analysts already get.
+    proc = subprocess.run(
+        ["zip", "-e", "-P", ALERT_ZIP_PASSWORD, "-r", dest, "."],
+        cwd=storage_dir,
+        check=False,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        logger.error(
+            "zip failed for alert %s (rc=%s): %s",
+            alert_uuid,
+            proc.returncode,
+            proc.stderr.decode(errors="replace"),
+        )
+        try:
+            os.remove(dest)
+        except OSError:
+            pass
+        raise HTTPException(status_code=500, detail="failed to create alert zip")
+
+    return dest
+
+
+def resolve_alert_log_path(alert_uuid: str) -> str:
+    """Return the absolute path to the alert's saq.log file."""
+    storage_dir = _resolve_alert_storage_path(alert_uuid)
+    log_path = os.path.join(storage_dir, "saq.log")
+    if not os.path.isfile(log_path):
+        raise HTTPException(
+            status_code=404, detail="saq.log not present for this alert"
+        )
+    return log_path
 
 
 def _add_observable_to_alert(

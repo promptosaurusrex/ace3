@@ -1,5 +1,7 @@
 """Tests for aceapi_v2 alerts router — bulk add observable endpoint."""
 
+import os
+import zipfile
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,6 +19,27 @@ def _make_mock_alert(uuid: str):
     alert.root_analysis.add_observable_by_spec = MagicMock(return_value=MagicMock())
     alert.root_analysis.analysis_mode = None
     return alert
+
+
+VALID_UUID = "11111111-2222-3333-4444-555555555555"
+
+
+def _make_storage_alert(uuid: str, storage_dir: str, archived: bool = False):
+    """Create a mock alert with a storage_dir attribute pointing at a real path."""
+    alert = MagicMock()
+    alert.uuid = uuid
+    alert.storage_dir = storage_dir  # absolute path; os.path.join will discard get_base_dir()
+    alert.archived = archived
+    return alert
+
+
+def _wire_get_db(mock_get_db, alert):
+    """Wire the chained .query().filter().one_or_none() to return `alert`."""
+    mock_query = MagicMock()
+    mock_filter = MagicMock()
+    mock_get_db.return_value.query.return_value = mock_query
+    mock_query.filter.return_value = mock_filter
+    mock_filter.one_or_none.return_value = alert
 
 
 class TestBulkAddObservable:
@@ -350,3 +373,160 @@ class TestBulkAddObservable:
 
             # Should not be a 400 for time format
             assert response.status_code == 200
+
+
+class TestDownloadAlert:
+    """Test the GET /alerts/{alert_uuid}/download endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_requires_auth(self, unauth_client: AsyncClient):
+        response = await unauth_client.get(f"/alerts/{VALID_UUID}/download")
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_invalid_uuid(self, client: AsyncClient):
+        response = await client.get("/alerts/not-a-uuid/download")
+        assert response.status_code == 400
+        assert "invalid alert UUID" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @patch("aceapi_v2.alerts.service.get_db")
+    async def test_alert_not_found(self, mock_get_db, client: AsyncClient):
+        _wire_get_db(mock_get_db, None)
+        response = await client.get(f"/alerts/{VALID_UUID}/download")
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @patch("aceapi_v2.alerts.service.get_db")
+    async def test_archived_alert(self, mock_get_db, client: AsyncClient, tmp_path):
+        alert = _make_storage_alert(VALID_UUID, str(tmp_path), archived=True)
+        _wire_get_db(mock_get_db, alert)
+        response = await client.get(f"/alerts/{VALID_UUID}/download")
+        assert response.status_code == 410
+
+    @pytest.mark.asyncio
+    @patch("aceapi_v2.alerts.service.get_db")
+    async def test_missing_storage_dir(self, mock_get_db, client: AsyncClient, tmp_path):
+        alert = _make_storage_alert(VALID_UUID, str(tmp_path / "does-not-exist"))
+        _wire_get_db(mock_get_db, alert)
+        response = await client.get(f"/alerts/{VALID_UUID}/download")
+        assert response.status_code == 410
+
+    @pytest.mark.asyncio
+    @patch("aceapi_v2.alerts.service.get_db")
+    async def test_download_happy_path(self, mock_get_db, client: AsyncClient, tmp_path):
+        storage_dir = tmp_path / "alert"
+        storage_dir.mkdir()
+        (storage_dir / "saq.log").write_text("log line one\nlog line two\n")
+        (storage_dir / "data.json").write_text('{"hello": "world"}')
+
+        alert = _make_storage_alert(VALID_UUID, str(storage_dir))
+        _wire_get_db(mock_get_db, alert)
+
+        response = await client.get(f"/alerts/{VALID_UUID}/download")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/zip"
+        assert f"{VALID_UUID}.zip" in response.headers["content-disposition"]
+
+        # Verify the zip is real and encrypted with 'infected'.
+        zip_bytes = response.content
+        zip_path = tmp_path / "downloaded.zip"
+        zip_path.write_bytes(zip_bytes)
+
+        with zipfile.ZipFile(zip_path) as zf:
+            names = zf.namelist()
+            assert any(n.endswith("saq.log") for n in names)
+            assert any(n.endswith("data.json") for n in names)
+
+        # The `unzip` binary can decrypt ZipCrypto; Python's stdlib zipfile can too
+        # when given the right password.
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(extract_dir, pwd=b"infected")
+        # Recursively check the file is somewhere in the extracted tree.
+        found_log = False
+        for root, _dirs, files in os.walk(extract_dir):
+            if "saq.log" in files:
+                with open(os.path.join(root, "saq.log")) as f:
+                    assert f.read() == "log line one\nlog line two\n"
+                found_log = True
+        assert found_log, "saq.log not found in extracted zip"
+
+
+class TestViewAlertLogs:
+    """Test the GET /alerts/{alert_uuid}/logs endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_requires_auth(self, unauth_client: AsyncClient):
+        response = await unauth_client.get(f"/alerts/{VALID_UUID}/logs")
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_invalid_uuid(self, client: AsyncClient):
+        response = await client.get("/alerts/not-a-uuid/logs")
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    @patch("aceapi_v2.alerts.service.get_db")
+    async def test_alert_not_found(self, mock_get_db, client: AsyncClient):
+        _wire_get_db(mock_get_db, None)
+        response = await client.get(f"/alerts/{VALID_UUID}/logs")
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @patch("aceapi_v2.alerts.service.get_db")
+    async def test_archived_alert(self, mock_get_db, client: AsyncClient, tmp_path):
+        alert = _make_storage_alert(VALID_UUID, str(tmp_path), archived=True)
+        _wire_get_db(mock_get_db, alert)
+        response = await client.get(f"/alerts/{VALID_UUID}/logs")
+        assert response.status_code == 410
+
+    @pytest.mark.asyncio
+    @patch("aceapi_v2.alerts.service.get_db")
+    async def test_log_missing(self, mock_get_db, client: AsyncClient, tmp_path):
+        # storage_dir exists, but saq.log is not in it
+        storage_dir = tmp_path / "alert"
+        storage_dir.mkdir()
+        alert = _make_storage_alert(VALID_UUID, str(storage_dir))
+        _wire_get_db(mock_get_db, alert)
+        response = await client.get(f"/alerts/{VALID_UUID}/logs")
+        assert response.status_code == 404
+        assert "saq.log not present" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @patch("aceapi_v2.alerts.service.get_db")
+    async def test_view_logs_inline(self, mock_get_db, client: AsyncClient, tmp_path):
+        storage_dir = tmp_path / "alert"
+        storage_dir.mkdir()
+        log_content = "2026-05-13 12:00:00 INFO module - hello\n"
+        (storage_dir / "saq.log").write_text(log_content)
+
+        alert = _make_storage_alert(VALID_UUID, str(storage_dir))
+        _wire_get_db(mock_get_db, alert)
+
+        response = await client.get(f"/alerts/{VALID_UUID}/logs")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/plain")
+        # Inline disposition: either no disposition header or one containing 'inline'
+        disposition = response.headers.get("content-disposition", "")
+        assert "attachment" not in disposition
+        assert response.text == log_content
+
+    @pytest.mark.asyncio
+    @patch("aceapi_v2.alerts.service.get_db")
+    async def test_view_logs_download(self, mock_get_db, client: AsyncClient, tmp_path):
+        storage_dir = tmp_path / "alert"
+        storage_dir.mkdir()
+        log_content = "downloadable log content\n"
+        (storage_dir / "saq.log").write_text(log_content)
+
+        alert = _make_storage_alert(VALID_UUID, str(storage_dir))
+        _wire_get_db(mock_get_db, alert)
+
+        response = await client.get(f"/alerts/{VALID_UUID}/logs?download=true")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/plain")
+        assert "attachment" in response.headers["content-disposition"]
+        assert f"{VALID_UUID}-saq.log" in response.headers["content-disposition"]
+        assert response.text == log_content
