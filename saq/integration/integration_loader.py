@@ -7,49 +7,10 @@ from saq.configuration.config import get_config
 from saq.environment import get_global_runtime_settings
 from saq.error import report_exception
 from saq.integration.integration_manager import is_integration_enabled
-from saq.integration.integration_util import get_integration_base_dir, get_integration_name_from_path
-
-def validate_integration_dir(dir_path: str) -> bool:
-    """Validates an integration directory.
-    
-    Args:
-        dir_path: The path to the integration directory.
-
-    Returns:
-        True if the integration directory is valid, False otherwise.
-    """
-    if not os.path.exists(dir_path):
-        logging.debug(f"integration directory {dir_path} does not exist")
-        return False
-
-    if not os.path.isdir(dir_path):
-        logging.debug(f"integration directory {dir_path} is not a directory")
-        return False
-
-    if not os.path.exists(os.path.join(dir_path, "integration.md")):
-        logging.debug(f"integration directory {dir_path} does not contain an integration.md file")
-        return False
-    
-    return True
-
-def _recurse_integration_dirs(target_path: str) -> list[str]:
-    """Recursively finds all integration directories in the given directory."""
-    valid_dirs: list[str] = []
-    if not os.path.isdir(target_path):
-        return []
-
-    for target_name in os.listdir(target_path):
-        new_target_path = os.path.join(target_path, target_name)
-        if validate_integration_dir(new_target_path):
-            valid_dirs.append(new_target_path)
-        elif os.path.isdir(new_target_path):
-            valid_dirs.extend(_recurse_integration_dirs(new_target_path))
-
-    return valid_dirs
-
-def get_valid_integration_dirs() -> list[str]:
-    """Returns a list of all valid integration directories."""
-    return _recurse_integration_dirs(get_integration_base_dir())
+from saq.integration.integration_util import (
+    get_integration_name_from_path,
+    get_valid_integration_dirs,
+)
 
 def load_integrations() -> bool:
     """Loads all integrations. Returns True if all defined and enabled integrations were loaded successfully."""

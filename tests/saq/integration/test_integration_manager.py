@@ -101,6 +101,7 @@ class TestIntegrationManagerIntegration:
         
         # Create a test integration
         test_integration = integrations_dir.mkdir("test_integration")
+        test_integration.join("integration.md").write("# test integration")
         test_integration_tests = test_integration.mkdir("tests")
         test_integration_tests.join("test_example.py").write("# test file")
         
@@ -154,7 +155,9 @@ class TestIntegrationManagerIntegration:
         # Create integration without tests directory
         integration_without_tests = os.path.join(temp_integration_structure["integrations_dir"], "no_tests_integration")
         os.makedirs(integration_without_tests)
-        
+        with open(os.path.join(integration_without_tests, "integration.md"), "w") as f:
+            f.write("# integration")
+
         result = install_integration("no_tests_integration")
         assert result is False
     
