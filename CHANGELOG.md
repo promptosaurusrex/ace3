@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.47] - 2026-05-13
+
+- [Makes it more clear how Phishkit retrieves data](https://github.com/ACE-Collective/ace3/pull/217)
+- [Skips unresolved interpolated values](https://github.com/ACE-Collective/ace3/pull/218)
+- [Replaces legacy interpolation with jinja](https://github.com/ACE-Collective/ace3/pull/219)
+- [Fixes missing signature_id observables](https://github.com/ACE-Collective/ace3/pull/220)
+
 ## [3.0.46] - 2026-05-12
 
 - [Adds 'correlated' tag to correlated hunt alerts](https://github.com/ACE-Collective/ace3/pull/212)
