@@ -1528,7 +1528,7 @@ def test_process_query_results_file_observable_with_interpolation(monkeypatch, t
             ObservableMapping(
                 fields=["file_content", "filename"],
                 type=F_FILE,
-                file_name="${filename}"
+                file_name="{{ filename }}"
             )
         ]
     )
@@ -1913,7 +1913,7 @@ def test_process_query_results_file_observable_with_interpolated_tags(monkeypatc
                 fields=["file_content", "source_system"],
                 type=F_FILE,
                 file_name="test_file.txt",
-                tags=["source:${source_system}", "static_tag"]
+                tags=["source:{{ source_system }}", "static_tag"]
             )
         ]
     )
@@ -1947,7 +1947,7 @@ def test_process_query_results_skips_unresolved_interpolated_tags(monkeypatch, t
         name="test_unresolved_tags",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
-        tags=["mitre:${mitre_technique}", "static_tag"],
+        tags=["mitre:{{ mitre_technique }}", "static_tag"],
         observable_mapping=[
             ObservableMapping(fields=["src"], type="ipv4")
         ]
@@ -1961,7 +1961,7 @@ def test_process_query_results_skips_unresolved_interpolated_tags(monkeypatch, t
 
     # the unresolved tag should be skipped, static tag should remain
     assert "static_tag" in submission.root.tags
-    assert "mitre:${mitre_technique}" not in submission.root.tags
+    assert not any(tag.startswith("mitre:") for tag in submission.root.tags)
 
     # when the field IS present, the interpolated tag should be included
     submissions = hunt.process_query_results([{"src": "1.2.3.4", "mitre_technique": "T1204.002"}])
@@ -2542,7 +2542,7 @@ def test_process_query_results_with_relationship_mapping(monkeypatch):
                         type=R_EXECUTED_ON,
                         target=RelationshipMappingTarget(
                             type=F_HOSTNAME,
-                            value="${hostname}"
+                            value="{{ hostname }}"
                         )
                     )
                 ]
@@ -2597,7 +2597,7 @@ def test_process_query_results_with_relationship_missing_target(monkeypatch):
                         type=R_EXECUTED_ON,
                         target=RelationshipMappingTarget(
                             type=F_HOSTNAME,
-                            value="${hostname}"  # hostname field exists but no hostname observable mapping
+                            value="{{ hostname }}"  # hostname field exists but no hostname observable mapping
                         )
                     )
                 ]
@@ -2657,14 +2657,14 @@ def test_process_query_results_with_multiple_relationships(monkeypatch):
                         type=R_EXECUTED_ON,
                         target=RelationshipMappingTarget(
                             type=F_HOSTNAME,
-                            value="${hostname}"
+                            value="{{ hostname }}"
                         )
                     ),
                     RelationshipMapping(
                         type=R_RELATED_TO,
                         target=RelationshipMappingTarget(
                             type=F_IPV4,
-                            value="${src_ip}"
+                            value="{{ src_ip }}"
                         )
                     ),
                 ]
@@ -2726,7 +2726,7 @@ def test_process_query_results_with_relationship_and_grouping(monkeypatch):
                         type=R_EXECUTED_ON,
                         target=RelationshipMappingTarget(
                             type=F_HOSTNAME,
-                            value="${hostname}"
+                            value="{{ hostname }}"
                         )
                     )
                 ]
@@ -2770,12 +2770,12 @@ def test_relationship_mapping_model_validation():
         type=R_EXECUTED_ON,
         target=RelationshipMappingTarget(
             type=F_HOSTNAME,
-            value="${hostname}"
+            value="{{ hostname }}"
         )
     )
     assert mapping.type == R_EXECUTED_ON
     assert mapping.target.type == F_HOSTNAME
-    assert mapping.target.value == "${hostname}"
+    assert mapping.target.value == "{{ hostname }}"
 
     # test that type is required for RelationshipMapping
     with pytest.raises(ValidationError):
@@ -3098,7 +3098,7 @@ def test_fields_mode_any_with_value_raises_error():
             fields=["src_ip", "dst_ip"],
             type="ipv4",
             fields_mode=FieldsMode.ANY,
-            value="${src_ip}:${dst_ip}"
+            value="{{ src_ip }}:{{ dst_ip }}"
         )
 
 
@@ -3184,7 +3184,7 @@ def test_fields_mode_all_explicit(monkeypatch):
                 fields=["src_ip", "dst_ip"],
                 type="ipv4",
                 fields_mode=FieldsMode.ALL,
-                value="${src_ip}"
+                value="{{ src_ip }}"
             )
         ]
     )
@@ -3230,7 +3230,7 @@ def test_process_query_results_with_relationship_missing_field(monkeypatch, capl
                         type=R_EXECUTED_ON,
                         target=RelationshipMappingTarget(
                             type=F_IPV4,
-                            value="${src_ip}"  # src_ip is NOT in the event
+                            value="{{ src_ip }}"  # src_ip is NOT in the event
                         )
                     )
                 ]
@@ -3259,7 +3259,7 @@ def test_process_query_results_with_relationship_missing_field(monkeypatch, capl
     assert len(cmdline_observable.relationships) == 0
 
     # warning should be logged
-    assert any("skipping relationship" in record.message and "${src_ip}" in record.message for record in caplog.records)
+    assert any("skipping relationship" in record.message and "{{ src_ip }}" in record.message for record in caplog.records)
 
 
 @pytest.mark.unit
@@ -3283,7 +3283,7 @@ def test_process_query_results_with_relationship_missing_dot_field(monkeypatch, 
                         type=R_EXECUTED_ON,
                         target=RelationshipMappingTarget(
                             type=F_HOSTNAME,
-                            value="$dot{device.hostname}"  # device.hostname is NOT in the event
+                            value="{{ device.hostname }}"  # device.hostname is NOT in the event
                         )
                     )
                 ]
@@ -3308,7 +3308,7 @@ def test_process_query_results_with_relationship_missing_dot_field(monkeypatch, 
     assert len(cmdline_observable.relationships) == 0
 
     # warning should be logged
-    assert any("skipping relationship" in record.message and "$dot{device.hostname}" in record.message for record in caplog.records)
+    assert any("skipping relationship" in record.message and "{{ device.hostname }}" in record.message for record in caplog.records)
 
 
 @pytest.mark.unit
@@ -3332,7 +3332,7 @@ def test_process_query_results_with_relationship_partial_field_resolution(monkey
                         type=R_EXECUTED_ON,
                         target=RelationshipMappingTarget(
                             type=F_HOSTNAME,
-                            value="${user}@${hostname}"  # hostname is missing
+                            value="{{ user }}@{{ hostname }}"  # hostname is missing
                         )
                     )
                 ]
@@ -3357,8 +3357,8 @@ def test_process_query_results_with_relationship_partial_field_resolution(monkey
     # relationship should NOT be created (partial resolution)
     assert len(cmdline_observable.relationships) == 0
 
-    # warning should be logged mentioning the partial resolution
-    assert any("skipping relationship" in record.message and "admin@${hostname}" in record.message for record in caplog.records)
+    # warning should be logged mentioning the raw template with the missing field
+    assert any("skipping relationship" in record.message and "{{ user }}@{{ hostname }}" in record.message for record in caplog.records)
 
 
 @pytest.mark.unit
@@ -3378,9 +3378,9 @@ def test_dedup_key_config_field():
         full_coverage=True,
         use_index_time=True,
         query="test",
-        dedup_key="${correlationId}",
+        dedup_key="{{ correlationId }}",
     )
-    assert config.dedup_key == "${correlationId}"
+    assert config.dedup_key == "{{ correlationId }}"
 
 
 @pytest.mark.unit
@@ -3418,7 +3418,7 @@ def test_dedup_key_ungrouped(monkeypatch):
         observable_mapping=[
             ObservableMapping(fields=["src"], type="ipv4")
         ],
-        dedup_key="${correlationId}",
+        dedup_key="{{ correlationId }}",
     )
 
     submissions = hunt.process_query_results([
@@ -3442,7 +3442,7 @@ def test_dedup_key_ungrouped_composite(monkeypatch):
         observable_mapping=[
             ObservableMapping(fields=["src"], type="ipv4")
         ],
-        dedup_key="${user}-${src_ip}",
+        dedup_key="{{ user }}-{{ src_ip }}",
     )
 
     submissions = hunt.process_query_results([
@@ -3466,7 +3466,7 @@ def test_dedup_key_grouped(monkeypatch):
         observable_mapping=[
             ObservableMapping(fields=["src"], type="ipv4")
         ],
-        dedup_key="${id}",
+        dedup_key="{{ id }}",
     )
 
     submissions = hunt.process_query_results([
@@ -3519,7 +3519,7 @@ def test_dedup_key_includes_hunt_uuid_prefix(monkeypatch):
         observable_mapping=[
             ObservableMapping(fields=["src"], type="ipv4")
         ],
-        dedup_key="${id}",
+        dedup_key="{{ id }}",
     )
 
     submissions = hunt.process_query_results([
@@ -3545,7 +3545,7 @@ def test_dedup_key_missing_field_returns_none(monkeypatch):
         observable_mapping=[
             ObservableMapping(fields=["src"], type="ipv4")
         ],
-        dedup_key="${nonexistent_field}",
+        dedup_key="{{ nonexistent_field }}",
     )
 
     submissions = hunt.process_query_results([
@@ -3594,11 +3594,11 @@ def test_hunt_config_with_summary_details():
         manager=MockManager(),
         name="test_sd_config",
         summary_details=[
-            SummaryDetailConfig(content="test ${field}"),
+            SummaryDetailConfig(content="test {{ field }}"),
         ],
     )
     assert len(hunt.config.summary_details) == 1
-    assert hunt.config.summary_details[0].content == "test ${field}"
+    assert hunt.config.summary_details[0].content == "test {{ field }}"
 
 
 @pytest.mark.unit
@@ -3629,7 +3629,7 @@ def test_summary_details_ungrouped_basic(monkeypatch):
         name="test_sd_basic",
         group_by=None,
         summary_details=[
-            SummaryDetailConfig(content="IP: ${src_ip}", header="Source IPs", format=SUMMARY_DETAIL_FORMAT_PRE),
+            SummaryDetailConfig(content="IP: {{ src_ip }}", header="Source IPs", format=SUMMARY_DETAIL_FORMAT_PRE),
         ],
     )
     submissions = hunt.process_query_results([{"src_ip": "1.2.3.4"}])
@@ -3652,7 +3652,7 @@ def test_summary_details_ungrouped_multiple_events(monkeypatch):
         name="test_sd_multi",
         group_by=None,
         summary_details=[
-            SummaryDetailConfig(content="${host}"),
+            SummaryDetailConfig(content="{{ host }}"),
         ],
     )
     submissions = hunt.process_query_results([
@@ -3675,7 +3675,7 @@ def test_summary_details_ungrouped_missing_field_skipped(monkeypatch):
         name="test_sd_missing",
         group_by=None,
         summary_details=[
-            SummaryDetailConfig(content="${missing_field}"),
+            SummaryDetailConfig(content="{{ missing_field }}"),
         ],
     )
     submissions = hunt.process_query_results([{"other": "value"}])
@@ -3694,7 +3694,7 @@ def test_summary_details_ungrouped_limit(monkeypatch, caplog):
         name="test_sd_limit",
         group_by="ALL",
         summary_details=[
-            SummaryDetailConfig(content="${val}", limit=2),
+            SummaryDetailConfig(content="{{ val }}", limit=2),
         ],
     )
     events = [{"val": f"v{i}"} for i in range(5)]
@@ -3719,7 +3719,7 @@ def test_summary_details_ungrouped_no_header(monkeypatch):
         name="test_sd_no_header",
         group_by=None,
         summary_details=[
-            SummaryDetailConfig(content="${val}"),
+            SummaryDetailConfig(content="{{ val }}"),
         ],
     )
     submissions = hunt.process_query_results([{"val": "test"}])
@@ -3739,8 +3739,8 @@ def test_summary_details_ungrouped_multiple_definitions(monkeypatch):
         name="test_sd_multi_def",
         group_by=None,
         summary_details=[
-            SummaryDetailConfig(content="${src}", header="Source"),
-            SummaryDetailConfig(content="${dst}", header="Dest"),
+            SummaryDetailConfig(content="{{ src }}", header="Source"),
+            SummaryDetailConfig(content="{{ dst }}", header="Dest"),
         ],
     )
     submissions = hunt.process_query_results([{"src": "1.2.3.4", "dst": "5.6.7.8"}])
@@ -3764,7 +3764,7 @@ def test_summary_details_grouped_with_group_by(monkeypatch):
         name="test_sd_grouped",
         group_by="group_field",
         summary_details=[
-            SummaryDetailConfig(content="${host}", header="Hosts", grouped=True),
+            SummaryDetailConfig(content="{{ host }}", header="Hosts", grouped=True),
         ],
     )
     submissions = hunt.process_query_results([
@@ -3795,7 +3795,7 @@ def test_summary_details_grouped_missing_field_skipped(monkeypatch):
         name="test_sd_grouped_missing",
         group_by="ALL",
         summary_details=[
-            SummaryDetailConfig(content="${host}", grouped=True),
+            SummaryDetailConfig(content="{{ host }}", grouped=True),
         ],
     )
     submissions = hunt.process_query_results([
@@ -3820,7 +3820,7 @@ def test_summary_details_grouped_limit(monkeypatch, caplog):
         name="test_sd_grouped_limit",
         group_by="ALL",
         summary_details=[
-            SummaryDetailConfig(content="${val}", grouped=True, limit=2),
+            SummaryDetailConfig(content="{{ val }}", grouped=True, limit=2),
         ],
     )
     events = [{"val": f"line{i}"} for i in range(5)]
@@ -3844,7 +3844,7 @@ def test_summary_details_grouped_no_matching_events(monkeypatch):
         name="test_sd_grouped_none",
         group_by="ALL",
         summary_details=[
-            SummaryDetailConfig(content="${missing}", grouped=True),
+            SummaryDetailConfig(content="{{ missing }}", grouped=True),
         ],
     )
     submissions = hunt.process_query_results([
@@ -3866,8 +3866,8 @@ def test_summary_details_mixed_grouped_and_ungrouped(monkeypatch):
         name="test_sd_mixed",
         group_by="ALL",
         summary_details=[
-            SummaryDetailConfig(content="${host}", header="Individual Hosts"),
-            SummaryDetailConfig(content="${host}", header="All Hosts", grouped=True),
+            SummaryDetailConfig(content="{{ host }}", header="Individual Hosts"),
+            SummaryDetailConfig(content="{{ host }}", header="All Hosts", grouped=True),
         ],
     )
     submissions = hunt.process_query_results([
@@ -3909,14 +3909,14 @@ def test_load_hunt_yaml_with_summary_details(rules_dir, manager_kwargs):
                 "instance_types": ["unittest"],
                 "summary_details": [
                     {
-                        "content": "Host: ${hostname}",
+                        "content": "Host: {{ hostname }}",
                         "header": "Hosts",
                         "format": "pre",
                         "limit": 50,
                         "grouped": True,
                     },
                     {
-                        "content": "${message}",
+                        "content": "{{ message }}",
                     },
                 ],
             },
@@ -3930,14 +3930,14 @@ def test_load_hunt_yaml_with_summary_details(rules_dir, manager_kwargs):
     assert len(hunt.config.summary_details) == 2
 
     sd0 = hunt.config.summary_details[0]
-    assert sd0.content == "Host: ${hostname}"
+    assert sd0.content == "Host: {{ hostname }}"
     assert sd0.header == "Hosts"
     assert sd0.format == SUMMARY_DETAIL_FORMAT_PRE
     assert sd0.limit == 50
     assert sd0.grouped is True
 
     sd1 = hunt.config.summary_details[1]
-    assert sd1.content == "${message}"
+    assert sd1.content == "{{ message }}"
     assert sd1.header is None
     assert sd1.format == SUMMARY_DETAIL_FORMAT_MD
     assert sd1.limit == 100
@@ -4002,7 +4002,7 @@ def test_summary_details_dedup_with_group_by(monkeypatch):
         name="test_sd_dedup",
         group_by="group_field",
         summary_details=[
-            SummaryDetailConfig(content="${host}", dedup_fields=["host"]),
+            SummaryDetailConfig(content="{{ host }}", dedup_fields=["host"]),
         ],
     )
     submissions = hunt.process_query_results([
@@ -4029,7 +4029,7 @@ def test_summary_details_dedup_grouped(monkeypatch):
         name="test_sd_dedup_grouped",
         group_by="ALL",
         summary_details=[
-            SummaryDetailConfig(content="${host}", grouped=True, dedup_fields=["host"]),
+            SummaryDetailConfig(content="{{ host }}", grouped=True, dedup_fields=["host"]),
         ],
     )
     submissions = hunt.process_query_results([
@@ -4058,7 +4058,7 @@ def test_summary_details_required_fields(monkeypatch):
         group_by=None,
         summary_details=[
             SummaryDetailConfig(
-                content="${src_ip}",
+                content="{{ src_ip }}",
                 required_fields=["src_ip"],
             ),
         ],
@@ -4428,8 +4428,8 @@ def test_create_root_analysis_pivot_links_pair_same_field(monkeypatch, tmpdir):
         name="pivot_pair_test",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         pivot_links=[{
-            "url": "https://example.com/?q=${app}",
-            "text": "${app} info",
+            "url": "https://example.com/?q={{ app }}",
+            "text": "{{ app }} info",
         }],
     )
     root = hunt.create_root_analysis({"app": ["incomplete", "not-applicable"]})
@@ -4454,9 +4454,9 @@ def test_create_root_analysis_skips_unresolved_pivot_links(monkeypatch, tmpdir):
         name="pivot_unresolved_test",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         pivot_links=[
-            {"url": "https://example.com/alerts/${alert_id}", "text": "Alert"},
-            {"url": "https://example.com/investigations/${investigation_id}", "text": "Investigation"},
-            {"url": "https://example.com/case", "text": "${case_name}"},
+            {"url": "https://example.com/alerts/{{ alert_id }}", "text": "Alert"},
+            {"url": "https://example.com/investigations/{{ investigation_id }}", "text": "Investigation"},
+            {"url": "https://example.com/case", "text": "{{ case_name }}"},
         ],
     )
 
@@ -4482,7 +4482,7 @@ def test_create_root_analysis_skips_unresolved_pivot_links(monkeypatch, tmpdir):
 
 @pytest.mark.unit
 def test_create_root_analysis_skips_unresolved_playbook_url(monkeypatch, tmpdir):
-    """playbook_url with unresolved ${...} is not written to the alert extensions."""
+    """playbook_url with unresolved {{ }} is not written to the alert extensions."""
     import saq.collectors.hunter.query_hunter
     from saq.analysis.root import KEY_PLAYBOOK_URL
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
@@ -4492,7 +4492,7 @@ def test_create_root_analysis_skips_unresolved_playbook_url(monkeypatch, tmpdir)
         manager=MockManager(),
         name="playbook_unresolved_test",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
-        playbook_url="https://playbooks.example.com/${playbook_id}",
+        playbook_url="https://playbooks.example.com/{{ playbook_id }}",
     )
 
     # field missing — playbook_url is omitted from extensions

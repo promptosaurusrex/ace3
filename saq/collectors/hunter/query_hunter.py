@@ -30,10 +30,11 @@ from saq.observables.mapping import (
     RelationshipMapping,
 )
 from saq.query.config import BaseQueryConfig, SummaryDetailConfig, load_query_from_file
-from saq.query.event_processing import (
-    contains_unresolved_placeholders,
-    interpolate_event_value,
-    interpolate_event_values,
+from saq.query.template_rendering import (
+    UndefinedError,
+    render_event_template,
+    render_event_template_multi,
+    render_event_templates_multi,
 )
 from saq.query.extraction import (
     compute_dedup_key,
@@ -80,7 +81,7 @@ class QueryHuntConfig(HuntConfig, BaseQueryConfig):
     max_result_count: Optional[int] = Field(default_factory=lambda: get_config().query_hunter.max_result_count, description="The maximum number of results to return.")
     query_timeout: Optional[str] = Field(default_factory=lambda: get_config().query_hunter.query_timeout, description="The timeout for the query (in HH:MM:SS format).")
     auto_append: str = Field(default="", description="The string to append to the query after the time spec. By default this is an empty string.")
-    dedup_key: Optional[str] = Field(default=None, description="Optional interpolation template for deduplication. Uses ${field} syntax. When set, submissions get a key enabling the DuplicateSubmissionFilter to suppress duplicates.")
+    dedup_key: Optional[str] = Field(default=None, description="Optional Jinja2 template for deduplication. When set, submissions get a key enabling the DuplicateSubmissionFilter to suppress duplicates.")
     correlate: Optional[CorrelateConfig] = Field(default=None, description="Optional correlation configuration for advanced event processing.")
 
     @model_validator(mode='after')
@@ -392,12 +393,12 @@ class QueryHunt(Hunt):
         root_uuid = str(uuidlib.uuid4())
         extensions = {}
         if self.playbook_url:
-            for url_value in interpolate_event_value(self.playbook_url, event):
-                if contains_unresolved_placeholders(url_value):
-                    continue
-                extensions.update({
-                    KEY_PLAYBOOK_URL: url_value,
-                })
+            try:
+                url_value = render_event_template(self.playbook_url, event, strict=True)
+            except UndefinedError:
+                url_value = None
+            if url_value:
+                extensions[KEY_PLAYBOOK_URL] = url_value
 
         if self.icon_configuration:
             extensions[KEY_ICON_CONFIGURATION] = self.icon_configuration.model_dump()
@@ -405,12 +406,6 @@ class QueryHunt(Hunt):
         if self.alert_template:
             extensions[KEY_ALERT_TEMPLATE] = self.alert_template
 
-        #instructions_list = interpolate_event_value(self.instructions, event)
-        #if not instructions_list:
-            #instructions = None
-        #else:
-            ## otherwise just use the first instruction
-            #instructions = instructions_list[0]
 
         root = RootAnalysis(
             uuid=root_uuid,
@@ -434,21 +429,26 @@ class QueryHunt(Hunt):
         root.initialize_storage()
 
         for tag in self.tags:
-            for tag_value in interpolate_event_value(tag, event):
-                if not contains_unresolved_placeholders(tag_value):
+            try:
+                tag_values = render_event_template_multi(tag, event, strict=True)
+            except UndefinedError:
+                continue
+            for tag_value in tag_values:
+                if tag_value:
                     root.add_tag(tag_value)
 
         if self.config.correlate is not None:
             root.add_tag('correlated')
 
         for pivot_link in self.pivot_links:
-            for url_value, text_value in interpolate_event_values(
-                [pivot_link["url"], pivot_link["text"]], event
-            ):
-                if (
-                    contains_unresolved_placeholders(url_value)
-                    or contains_unresolved_placeholders(text_value)
-                ):
+            try:
+                rows = render_event_templates_multi(
+                    [pivot_link["url"], pivot_link["text"]], event, strict=True,
+                )
+            except UndefinedError:
+                continue
+            for url_value, text_value in rows:
+                if not url_value or not text_value:
                     continue
                 root.add_pivot_link(url_value, pivot_link.get("icon", None), text_value)
 
@@ -778,11 +778,11 @@ class QueryHunt(Hunt):
         def _compute_dedup_key(event: dict) -> Optional[str]:
             if not self.dedup_key:
                 return None
-            values = interpolate_event_value(self.dedup_key, event)
-            if not values:
+            try:
+                value = render_event_template(self.dedup_key, event, strict=True)
+            except UndefinedError:
                 return None
-            value = values[0]
-            if contains_unresolved_placeholders(value):
+            if not value:
                 return None
             return f"{self.uuid}:{value}"
 
@@ -931,13 +931,19 @@ class QueryHunt(Hunt):
                 for observable in submission.root.observables:
                     if observable in relationship_tracking:
                         for relationship_mapping in relationship_tracking[observable]:
-                            for potential_target_value in interpolate_event_value(relationship_mapping.target.value, event):
-                                if contains_unresolved_placeholders(potential_target_value):
-                                    logging.warning(
-                                        f"skipping relationship in hunt {self.name}: target value "
-                                        f"'{relationship_mapping.target.value}' resolved to '{potential_target_value}' "
-                                        f"which contains unresolved field references (field missing from event)"
-                                    )
+                            try:
+                                target_values = render_event_template_multi(
+                                    relationship_mapping.target.value, event, strict=True,
+                                )
+                            except UndefinedError:
+                                logging.warning(
+                                    f"skipping relationship in hunt {self.name}: target value "
+                                    f"'{relationship_mapping.target.value}' references field "
+                                    f"missing from event"
+                                )
+                                continue
+                            for potential_target_value in target_values:
+                                if not potential_target_value:
                                     continue
                                 target_observable = submission.root.get_observable_by_spec(relationship_mapping.target.type, potential_target_value)
                                 if target_observable is not None:

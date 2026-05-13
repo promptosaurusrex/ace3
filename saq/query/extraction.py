@@ -19,14 +19,26 @@ from saq.observables.mapping import (
 )
 from saq.query.config import SummaryDetailConfig
 from saq.query.decoder import decode_value
-from saq.query.event_processing import (
-    contains_unresolved_placeholders,
-    extract_event_value,
-    interpolate_event_value,
-    parse_field_reference,
-    strip_unresolved_placeholders,
-)
+from saq.query.field_lookup import FIELD_LOOKUP_TYPE_KEY, extract_event_value
 from saq.query.summary_detail_rendering import render_jinja_template
+from saq.query.template_rendering import (
+    render_event_template,
+    render_event_template_multi,
+)
+
+
+def _interpolate_strict(template: str, event: dict) -> list[str]:
+    """Strict-mode multi-render that rejects the whole template on any missing field.
+
+    Returns an empty list if any referenced field is absent from the event, so
+    callers can iterate the result and naturally skip entries whose template
+    couldn't fully resolve. This matches the legacy
+    `contains_unresolved_placeholders` guard semantics on top of Jinja.
+    """
+    try:
+        return render_event_template_multi(template, event, strict=True)
+    except UndefinedError:
+        return []
 
 
 class FileContent(BaseModel):
@@ -67,11 +79,9 @@ def interpret_event_value(observable_mapping: ObservableMapping, event: dict, fi
         if not success:
             raise KeyError(field_name)
     else:
-        # otherwise we interpolate the value from the event
-        observed_value = interpolate_event_value(observable_mapping.value, event)
-        observed_value = [
-            v for v in observed_value if not contains_unresolved_placeholders(v)
-        ]
+        # otherwise we interpolate the value from the event; strict mode means
+        # a missing field rejects the whole template entry (no observable created)
+        observed_value = _interpolate_strict(observable_mapping.value, event)
 
     # we always return a list of values, even if there is only one
     if not isinstance(observed_value, list):
@@ -177,22 +187,24 @@ def _process_mapping_values(
             if decoded_observed_value is None:
                 decoded_observed_value = observed_value.encode('utf-8')
 
-            for target_file_name in interpolate_event_value(mapping.file_name, event):
-                if contains_unresolved_placeholders(target_file_name):
+            # Strict mode: a missing field rejects the entire file_name template
+            # (empty list → no FileContent emitted). For per-file directives/tags,
+            # a missing field rejects just that template entry, not its siblings.
+            for target_file_name in _interpolate_strict(mapping.file_name, event):
+                if not target_file_name:
                     continue
+
                 interpolated_directives = []
                 for directive in mapping.directives:
-                    for directive_value in interpolate_event_value(directive, event):
-                        if contains_unresolved_placeholders(directive_value):
-                            continue
-                        interpolated_directives.append(directive_value)
+                    for directive_value in _interpolate_strict(directive, event):
+                        if directive_value:
+                            interpolated_directives.append(directive_value)
 
                 interpolated_tags = []
                 for tag in mapping.tags:
-                    for tag_value in interpolate_event_value(tag, event):
-                        if contains_unresolved_placeholders(tag_value):
-                            continue
-                        interpolated_tags.append(tag_value)
+                    for tag_value in _interpolate_strict(tag, event):
+                        if tag_value:
+                            interpolated_tags.append(tag_value)
 
                 file_contents.append(FileContent(
                     file_name=target_file_name,
@@ -223,7 +235,7 @@ def _process_mapping_values(
             observable.time = event_time
 
         apply_mapping_properties(observable, mapping,
-                                 interpolate_fn=interpolate_event_value, event=event)
+                                 interpolate_fn=_interpolate_strict, event=event)
 
         if mapping.relationships:
             relationship_tracking[observable] = mapping.relationships
@@ -238,8 +250,7 @@ def _process_mapping_values(
 def event_has_required_fields(event: dict, required_fields: list[str]) -> bool:
     """Check if the event has all required fields present."""
     for field_spec in required_fields:
-        lookup_type, field_path = parse_field_reference(field_spec)
-        success, _ = extract_event_value(event, lookup_type, field_path)
+        success, _ = extract_event_value(event, FIELD_LOOKUP_TYPE_KEY, field_spec)
         if not success:
             return False
     return True
@@ -249,8 +260,7 @@ def compute_dedup_key(event: dict, dedup_fields: list[str]) -> tuple:
     """Build a dedup key tuple from the event values for each dedup field."""
     parts = []
     for field_spec in dedup_fields:
-        lookup_type, field_path = parse_field_reference(field_spec)
-        success, value = extract_event_value(event, lookup_type, field_path)
+        success, value = extract_event_value(event, FIELD_LOOKUP_TYPE_KEY, field_spec)
         if success:
             # convert lists/dicts to a hashable representation
             if isinstance(value, list):
@@ -266,23 +276,12 @@ def compute_dedup_key(event: dict, dedup_fields: list[str]) -> tuple:
 def render_sd_content(sd_config: SummaryDetailConfig, event: dict) -> Optional[str]:
     """Render summary detail content for a single event. Returns None to skip."""
     strict = sd_config.required_fields is None
-    if sd_config.format == SUMMARY_DETAIL_FORMAT_JINJA:
-        try:
+    try:
+        if sd_config.format == SUMMARY_DETAIL_FORMAT_JINJA:
             return render_jinja_template(sd_config.content, event, strict=strict)
-        except UndefinedError:
-            return None
-    else:
-        content_values = interpolate_event_value(sd_config.content, event)
-        if not content_values:
-            return None
-        content = content_values[0]
-        if sd_config.required_fields is not None:
-            # partial resolution: strip unresolved placeholders instead of skipping
-            content = strip_unresolved_placeholders(content)
-        else:
-            if contains_unresolved_placeholders(content):
-                return None
-        return content
+        return render_event_template(sd_config.content, event, strict=strict)
+    except UndefinedError:
+        return None
 
 
 def render_sd_header(sd_config: SummaryDetailConfig, event: dict) -> tuple[bool, Optional[str]]:
@@ -294,25 +293,16 @@ def render_sd_header(sd_config: SummaryDetailConfig, event: dict) -> tuple[bool,
         return (True, None)
 
     strict = sd_config.required_fields is None
-    if sd_config.format == SUMMARY_DETAIL_FORMAT_JINJA:
-        try:
+    try:
+        if sd_config.format == SUMMARY_DETAIL_FORMAT_JINJA:
             rendered = render_jinja_template(sd_config.header, event, strict=strict)
-        except UndefinedError:
-            return (False, None)
-        if rendered is None:
-            return (False, None)
-        return (True, rendered)
-    else:
-        header_values = interpolate_event_value(sd_config.header, event)
-        if not header_values:
-            return (False, None)
-        header = header_values[0]
-        if sd_config.required_fields is not None:
-            header = strip_unresolved_placeholders(header)
         else:
-            if contains_unresolved_placeholders(header):
-                return (False, None)
-        return (True, header)
+            rendered = render_event_template(sd_config.header, event, strict=strict)
+    except UndefinedError:
+        return (False, None)
+    if rendered is None:
+        return (False, None)
+    return (True, rendered)
 
 
 def process_summary_details(
