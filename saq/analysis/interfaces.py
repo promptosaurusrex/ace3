@@ -127,6 +127,10 @@ class RootAnalysisInterface(Protocol):
         """Add a summary detail to the analysis."""
         ...
 
+    def add_pivot_link(self, *args, **kwargs):
+        """Add a pivot link to the analysis."""
+        ...
+
 
     def get_action_counter(self, value: str) -> int:
         """Get the action counter value."""

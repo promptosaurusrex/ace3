@@ -13,7 +13,24 @@ from saq.modules.splunk import (
     SplunkAPIAnalyzerConfig,
 )
 from saq.observables.mapping import FieldsMode, ObservableMapping
+from saq.query.config import PivotLinkConfig
 from tests.saq.mock_datetime import MOCK_NOW
+
+
+def _pivot_link_config(**pivot_links_kwargs):
+    """Build a minimal SplunkAPIAnalyzerConfig carrying the given pivot_links."""
+    return SplunkAPIAnalyzerConfig(
+        name="test_splunk",
+        python_module="saq.modules.splunk",
+        python_class="SplunkAPIAnalyzer",
+        enabled=True,
+        question="Test question?",
+        summary="Test summary",
+        api_name="test_api",
+        query="index=test",
+        observable_mapping=[],
+        **pivot_links_kwargs,
+    )
 
 
 class MockJobsDict:
@@ -734,3 +751,268 @@ def test_splunk_api_analyzer_fill_additional_timespecs_event_time(test_context):
         assert 'earliest = 11/11/2017:07:36:01' in analyzer.target_query
         assert 'latest = 11/11/2017:07:36:01' in analyzer.target_query
         assert '_index_' not in analyzer.target_query
+
+
+@pytest.mark.unit
+def test_pivot_link_config_invalid_target():
+    """An invalid target falls back to 'analysis' rather than raising."""
+    pl = PivotLinkConfig(url="https://example.com", text="link", target="bogus")
+    assert pl.target == "analysis"
+
+    # valid targets are preserved
+    assert PivotLinkConfig(url="u", text="t", target="root").target == "root"
+    # default is analysis
+    assert PivotLinkConfig(url="u", text="t").target == "analysis"
+
+
+@pytest.mark.unit
+def test_process_pivot_links_basic(test_context):
+    """A single pivot_link with scalar fields produces one link on the analysis node."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk_client.return_value = MockSplunk()
+
+        config = _pivot_link_config(pivot_links=[{
+            "url": "https://splunk.example.com/search?q={{ src_ip }}",
+            "text": "Pivot on {{ src_ip }}",
+            "icon": "search",
+        }])
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+        analysis.query_results = [{"src_ip": "10.0.0.1"}]
+
+        analyzer.process_pivot_links(analysis)
+
+        assert len(analysis.pivot_links) == 1
+        assert analysis.pivot_links[0].url == "https://splunk.example.com/search?q=10.0.0.1"
+        assert analysis.pivot_links[0].text == "Pivot on 10.0.0.1"
+        assert analysis.pivot_links[0].icon == "search"
+        # nothing attached to the root alert
+        assert len(analyzer.get_root().pivot_links) == 0
+
+
+@pytest.mark.unit
+def test_process_pivot_links_target_root(test_context):
+    """A pivot_link with target='root' attaches to the root alert, not the analysis node."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk_client.return_value = MockSplunk()
+
+        config = _pivot_link_config(pivot_links=[{
+            "url": "https://splunk.example.com/search?q={{ src_ip }}",
+            "text": "Pivot on {{ src_ip }}",
+            "target": "root",
+        }])
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+        analysis.query_results = [{"src_ip": "10.0.0.1"}]
+
+        analyzer.process_pivot_links(analysis)
+
+        assert len(analysis.pivot_links) == 0
+        root_links = analyzer.get_root().pivot_links
+        assert len(root_links) == 1
+        assert root_links[0].url == "https://splunk.example.com/search?q=10.0.0.1"
+        assert root_links[0].text == "Pivot on 10.0.0.1"
+        assert root_links[0].icon is None
+
+
+@pytest.mark.unit
+def test_process_pivot_links_multi_valued_field_pairs(test_context):
+    """url and text referencing the same multi-valued field stay paired per value."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk_client.return_value = MockSplunk()
+
+        config = _pivot_link_config(pivot_links=[{
+            "url": "https://example.com/?q={{ app }}",
+            "text": "{{ app }} info",
+        }])
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+        analysis.query_results = [{"app": ["incomplete", "not-applicable"]}]
+
+        analyzer.process_pivot_links(analysis)
+
+        assert len(analysis.pivot_links) == 2
+        pairs = sorted((p.url, p.text) for p in analysis.pivot_links)
+        assert pairs == [
+            ("https://example.com/?q=incomplete", "incomplete info"),
+            ("https://example.com/?q=not-applicable", "not-applicable info"),
+        ]
+
+
+@pytest.mark.unit
+def test_process_pivot_links_skips_undefined(test_context):
+    """A pivot_link referencing a field absent from the event is skipped, not raised."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk_client.return_value = MockSplunk()
+
+        config = _pivot_link_config(pivot_links=[
+            {"url": "https://example.com/{{ present }}", "text": "Present"},
+            {"url": "https://example.com/{{ missing }}", "text": "Missing"},
+        ])
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+        analysis.query_results = [{"present": "abc123"}]
+
+        analyzer.process_pivot_links(analysis)
+
+        assert len(analysis.pivot_links) == 1
+        assert analysis.pivot_links[0].url == "https://example.com/abc123"
+        assert analysis.pivot_links[0].text == "Present"
+
+
+@pytest.mark.unit
+def test_process_pivot_links_skips_empty_values(test_context):
+    """A rendered link with an empty url or text is skipped."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk_client.return_value = MockSplunk()
+
+        config = _pivot_link_config(pivot_links=[
+            {"url": "https://example.com/{{ host }}", "text": "{{ label }}"},
+        ])
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+        # label renders empty -> link skipped
+        analysis.query_results = [{"host": "server1", "label": ""}]
+
+        analyzer.process_pivot_links(analysis)
+
+        assert len(analysis.pivot_links) == 0
+
+
+@pytest.mark.unit
+def test_process_pivot_links_dedup(test_context):
+    """Identical rendered links are deduplicated; links differing in any part are kept."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk_client.return_value = MockSplunk()
+
+        # static link (no template vars) rendered against multiple events
+        config = _pivot_link_config(pivot_links=[
+            {"url": "https://example.com/static", "text": "Static"},
+            {"url": "https://example.com/{{ host }}", "text": "Host link"},
+        ])
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+        analysis.query_results = [
+            {"host": "server1"},
+            {"host": "server1"},  # duplicate of the above
+            {"host": "server2"},
+        ]
+
+        analyzer.process_pivot_links(analysis)
+
+        urls = sorted(p.url for p in analysis.pivot_links)
+        assert urls == [
+            "https://example.com/server1",
+            "https://example.com/server2",
+            "https://example.com/static",
+        ]
+
+
+@pytest.mark.unit
+def test_process_pivot_links_dedup_against_existing(test_context):
+    """A link already on the target (e.g. from a prior module run) is not re-added."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk_client.return_value = MockSplunk()
+
+        config = _pivot_link_config(pivot_links=[{
+            "url": "https://example.com/{{ host }}",
+            "text": "{{ host }}",
+            "target": "root",
+        }])
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+
+        # simulate a prior run having already added this link to the root alert
+        analyzer.get_root().add_pivot_link("https://example.com/server1", None, "server1")
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+        analysis.query_results = [{"host": "server1"}, {"host": "server2"}]
+
+        analyzer.process_pivot_links(analysis)
+
+        urls = sorted(p.url for p in analyzer.get_root().pivot_links)
+        assert urls == ["https://example.com/server1", "https://example.com/server2"]
+
+
+@pytest.mark.unit
+def test_process_pivot_links_root_and_analysis_independent_dedup(test_context):
+    """The same rendered tuple targeting both root and analysis lands on each."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk_client.return_value = MockSplunk()
+
+        config = _pivot_link_config(pivot_links=[
+            {"url": "https://example.com/x", "text": "Link", "target": "analysis"},
+            {"url": "https://example.com/x", "text": "Link", "target": "root"},
+        ])
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+        analysis.query_results = [{}]
+
+        analyzer.process_pivot_links(analysis)
+
+        assert len(analysis.pivot_links) == 1
+        assert len(analyzer.get_root().pivot_links) == 1
+
+
+@pytest.mark.unit
+def test_process_pivot_links_empty_config(test_context):
+    """With no pivot_links configured, process_pivot_links is a no-op."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk_client.return_value = MockSplunk()
+
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=_pivot_link_config())
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+        analysis.query_results = [{"src_ip": "10.0.0.1"}]
+
+        analyzer.process_pivot_links(analysis)
+
+        assert len(analysis.pivot_links) == 0
+        assert len(analyzer.get_root().pivot_links) == 0
+
+
+@pytest.mark.unit
+def test_process_pivot_links_query_results_dict(test_context):
+    """query_results as a single dict is normalized to a one-event list."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk_client.return_value = MockSplunk()
+
+        config = _pivot_link_config(pivot_links=[{
+            "url": "https://example.com/{{ host }}",
+            "text": "{{ host }}",
+        }])
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+        analysis.query_results = {"host": "server1"}
+
+        analyzer.process_pivot_links(analysis)
+
+        assert len(analysis.pivot_links) == 1
+        assert analysis.pivot_links[0].url == "https://example.com/server1"

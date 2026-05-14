@@ -116,6 +116,13 @@ class RootAnalysisAdapter:
     def add_summary_detail(self, *args, **kwargs):
         return self._root.add_summary_detail(*args, **kwargs)
 
+    def add_pivot_link(self, *args, **kwargs):
+        return self._root.add_pivot_link(*args, **kwargs)
+
+    @property
+    def pivot_links(self) -> List:
+        return self._root.pivot_links
+
     @property
     def observables(self) -> List:
         return self._root.observables
