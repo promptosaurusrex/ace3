@@ -64,16 +64,16 @@
 #                                                                  # directive they were gated on)
 #       set_display_type: "Phishing URL"      # Override observable display_type
 #       set_display_value: "decoded payload"  # Override observable display_value
-#       ignore: true  # remove observable from matching parent analyses (and from DB if no parents remain)
+#       ignore: true  # remove observable from matching parent analyses (and from DB if no
+#                     # parents remain). In the `pre` phase this ALSO installs the
+#                     # `exclude_all` directive so the engine skips all further analysis on
+#                     # the observable instead of analyzing it and discarding the work later.
 #
 # All condition fields are optional. Multiple conditions within a rule use AND logic.
 # Multiple rules are evaluated independently.
 #
 # Phase guidance:
 # Prefer `pre` unless one of these hard constraints applies:
-#   - Action is `ignore: true` → must be `post`. The parent-removal logic and
-#     `observable.ignored` flag are only set in the post block; in pre, `apply()`
-#     just records the intent and nothing actually removes the observable.
 #   - Action is `reset_analysis: [...]` → must be `post`. The action clears the
 #     "no-analysis" sentinel a target module records after it evaluates and bails;
 #     in pre the target hasn't evaluated yet, so there is no sentinel to clear.
@@ -89,5 +89,9 @@
 # `execute_analysis` is re-invoked as the analysis tree grows. Failure modes are
 # asymmetric: a misclassified-pre rule may silently miss matches, a
 # misclassified-post rule just fires later than necessary.
+# `ignore: true` works in BOTH phases and `pre` is preferred for it: in `pre` the
+# observable is removed AND excluded from all further analysis (`exclude_all`),
+# rather than being fully analyzed and only removed once the engine drains. Use
+# `post` only when the rule's conditions can't be satisfied until late.
 
 rules: []

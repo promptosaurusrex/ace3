@@ -10,7 +10,7 @@ import yaml
 from pydantic import Field
 
 from saq.analysis.analysis import Analysis
-from saq.constants import DIRECTIVE_YARA_META_PREFIX, F_SIGNATURE_ID, AnalysisExecutionResult
+from saq.constants import DIRECTIVE_EXCLUDE_ALL, DIRECTIVE_YARA_META_PREFIX, F_SIGNATURE_ID, AnalysisExecutionResult
 from saq.environment import get_base_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -615,12 +615,30 @@ class ObservableModifierAnalyzer(AnalysisModule):
                 })
                 logging.info(f"observable modifier pre-phase rule '{rule.name}' matched {observable}")
 
+                if applied.get("ignore"):
+                    # In the pre phase, also install DIRECTIVE_EXCLUDE_ALL so the
+                    # engine skips all remaining analysis on this observable
+                    # instead of analyzing it and discarding the work at the end.
+                    # add_directive is idempotent and fires EVENT_DIRECTIVE_ADDED,
+                    # which re-queues the observable so _process_observable_exclusions
+                    # picks up the directive. Not done in the post phase: by then the
+                    # observable is already analyzed and the directive would only
+                    # cause needless re-queue churn.
+                    observable.add_directive(DIRECTIVE_EXCLUDE_ALL)
+                    self._apply_ignore(rule, observable, root)
+
         if matched_rules:
             # Persist pre-phase matches in the analysis itself rather than
             # in-memory module state, so the post-phase pass survives a
             # worker hand-off (root saved to disk and resumed by a different
             # worker process whose module instance has no in-memory carryover).
-            self._persist_matches(observable, matched_rules, emitted_uuids=set())
+            #
+            # completed=False is critical: Analysis objects are born completed,
+            # and AnalysisModule.accepts() refuses to re-run a module whose
+            # analysis is already completed. Leaving it True here would block
+            # execute_final_analysis from ever running for this observable, so
+            # no post-phase rule would be evaluated.
+            self._persist_matches(observable, matched_rules, emitted_uuids=set(), completed=False)
 
         # Return INCOMPLETE so execute_final_analysis runs later
         # for post-phase rules.
@@ -671,43 +689,58 @@ class ObservableModifierAnalyzer(AnalysisModule):
 
         # Handle ignore action: surgically remove observable from matching parent analyses
         for rule in ignore_rules:
-            parent_scoped_conditions = [tc for tc in rule.conditions.tree_conditions if tc.scope == "parent"]
-            if parent_scoped_conditions:
-                # Find all non-root analyses that have this observable as a child.
-                # We check _observables directly to avoid RootAnalysis.has_observable()
-                # which searches the global registry rather than its own children.
-                all_parent_analyses = [
-                    a for a in root.all_analysis
-                    if observable in a._observables
-                ]
-                for tc in parent_scoped_conditions:
-                    for parent_analysis in list(all_parent_analyses):
-                        if tc.analysis_type and parent_analysis.module_path == tc.analysis_type:
-                            parent_analysis._observables.remove(observable)
-                            all_parent_analyses.remove(parent_analysis)
-                            logging.info(
-                                f"observable modifier rule '{rule.name}' removed "
-                                f"{observable} from {parent_analysis}"
-                            )
-                # If no non-root parents remain, mark as globally ignored for DB indexing
-                if not all_parent_analyses:
-                    observable.ignored = True
-                    logging.info(f"observable {observable} has no remaining parents, marking as ignored")
-            else:
-                # No parent-scoped tree conditions -- global ignore
-                observable.ignored = True
-                logging.info(f"observable modifier rule '{rule.name}' globally ignored {observable}")
+            self._apply_ignore(rule, observable, root)
 
         if matched_rules:
-            self._persist_matches(observable, matched_rules, emitted_uuids)
+            # completed=True: the post phase is the module's final pass for
+            # this observable, so the analysis is genuinely done.
+            self._persist_matches(observable, matched_rules, emitted_uuids, completed=True)
 
         return AnalysisExecutionResult.COMPLETED
+
+    def _apply_ignore(self, rule: "Rule", observable: Observable, root: RootAnalysis) -> None:
+        """Apply a matched rule's ``ignore`` action: surgically remove the
+        observable from matching parent analyses and/or mark it ignored.
+
+        Callable from both phases. Idempotent: the pre phase's execute_analysis
+        is re-invoked as the tree grows, so the parent-removal tolerates an
+        already-removed observable and ``observable.ignored = True`` is a plain
+        (idempotent) assignment.
+        """
+        parent_scoped_conditions = [tc for tc in rule.conditions.tree_conditions if tc.scope == "parent"]
+        if parent_scoped_conditions:
+            # Find all non-root analyses that have this observable as a child.
+            # We check _observables directly to avoid RootAnalysis.has_observable()
+            # which searches the global registry rather than its own children.
+            all_parent_analyses = [
+                a for a in root.all_analysis
+                if observable in a._observables
+            ]
+            for tc in parent_scoped_conditions:
+                for parent_analysis in list(all_parent_analyses):
+                    if tc.analysis_type and parent_analysis.module_path == tc.analysis_type:
+                        if observable in parent_analysis._observables:
+                            parent_analysis._observables.remove(observable)
+                        all_parent_analyses.remove(parent_analysis)
+                        logging.info(
+                            f"observable modifier rule '{rule.name}' removed "
+                            f"{observable} from {parent_analysis}"
+                        )
+            # If no non-root parents remain, mark as globally ignored for DB indexing
+            if not all_parent_analyses:
+                observable.ignored = True
+                logging.info(f"observable {observable} has no remaining parents, marking as ignored")
+        else:
+            # No parent-scoped tree conditions -- global ignore
+            observable.ignored = True
+            logging.info(f"observable modifier rule '{rule.name}' globally ignored {observable}")
 
     def _persist_matches(
         self,
         observable: Observable,
         matched_rules: list[dict],
         emitted_uuids: set[str],
+        completed: bool,
     ) -> None:
         """Write matched_rules into the observable's ObservableModifierAnalysis
         and emit a signature_id observable for each not-yet-emitted rule uuid.
@@ -719,8 +752,13 @@ class ObservableModifierAnalyzer(AnalysisModule):
         ``emitted_uuids`` is the set of rule uuids that have already been
         emitted as signature_id observables; it is mutated in place to include
         any newly emitted uuids.
+
+        ``completed`` sets the analysis's completed flag. Pre-phase passes
+        False so AnalysisModule.accepts() still lets execute_final_analysis run
+        the post-phase rules; post-phase passes True.
         """
         analysis = self.create_analysis(observable)
+        analysis.completed = completed
         analysis.details["matched_rules"] = matched_rules
         analysis.summary = analysis.generate_summary()
 

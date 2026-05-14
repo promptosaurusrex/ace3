@@ -9,6 +9,7 @@ from saq.analysis.interfaces import RootAnalysisInterface
 from saq.analysis.module_path import MODULE_PATH
 from saq.analysis.observable import Observable
 from saq.constants import (
+    DIRECTIVE_EXCLUDE_ALL,
     DIRECTIVE_IGNORE_AUTOMATION_LIMITS,
     F_FILE,
 )
@@ -451,6 +452,13 @@ class AnalysisModule(FileWatcherMixin):
                 return False
 
         if isinstance(obj, Observable):
+            # has this observable been marked to skip all analysis? this mirrors
+            # the check in the engine's _process_observable_exclusions so a
+            # directive added mid-work-item (e.g. by the observable modifier)
+            # immediately gates the remaining modules in the same pass.
+            if obj.has_directive(DIRECTIVE_EXCLUDE_ALL):
+                return False
+
             # does this analysis module exclude this observable from analysis?
             if self.is_excluded(obj):
                 # logging.debug("observable {} is excluded from analysis by {}".format(obj, self))

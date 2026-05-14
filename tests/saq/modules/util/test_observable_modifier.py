@@ -10,6 +10,7 @@ from saq.analysis.analysis import Analysis
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import (
     ANALYSIS_MODULE_OBSERVABLE_MODIFIER,
+    DIRECTIVE_EXCLUDE_ALL,
     DIRECTIVE_OCR,
     DIRECTIVE_YARA_META_PREFIX,
     F_EMAIL_ADDRESS,
@@ -2375,6 +2376,112 @@ def test_pre_phase_exclude_analysis_applied_before_final():
     assert "saq.modules.file_analysis.ocr:OCRAnalyzer" in observable.excluded_analysis
 
 
+@pytest.mark.unit
+def test_pre_phase_match_does_not_block_final_analysis_acceptance():
+    """A pre-phase rule match must not mark the ObservableModifierAnalysis as
+    completed -- otherwise AnalysisModule.accepts() refuses to run the module
+    again and execute_final_analysis (the post phase) never evaluates.
+
+    Regression test: pre-phase _persist_matches created the analysis with the
+    default completed=True, which silently disabled every post-phase rule for
+    any observable that also matched a pre-phase rule.
+    """
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "pre rule",
+        "phase": "pre",
+        "conditions": {"observable_types": ["url"]},
+        "actions": {"add_directives": ["pre_dir"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.INCOMPLETE
+
+    # the pre-phase created the analysis, but it must NOT be marked completed
+    analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
+    assert analysis is not None
+    assert analysis.completed is False
+
+    # ...so the engine's acceptance check still lets the post phase run
+    assert adapter.accepts(observable) is True
+
+
+@pytest.mark.unit
+def test_post_phase_rule_fires_after_pre_phase_match_via_accepts():
+    """End-to-end through accepts(): an observable matched by a pre-phase rule
+    must still have post-phase rules evaluated. This mirrors the engine path
+    (_check_module_acceptance -> accepts() -> analyze(final_analysis=True))."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    pre_uuid = "b1b2c3d4-0000-4000-8000-000000000001"
+    post_uuid = "b1b2c3d4-0000-4000-8000-000000000002"
+    rules = [
+        {
+            "name": "pre rule",
+            "uuid": pre_uuid,
+            "phase": "pre",
+            "conditions": {"observable_types": ["url"]},
+            "actions": {"add_directives": ["pre_dir"]},
+        },
+        {
+            "name": "post rule",
+            "uuid": post_uuid,
+            "phase": "post",
+            "conditions": {"observable_types": ["url"]},
+            "actions": {"add_tags": ["post_tag"]},
+        },
+    ]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    # pre phase
+    assert adapter.execute_analysis(observable) == AnalysisExecutionResult.INCOMPLETE
+    assert observable.has_directive("pre_dir")
+
+    # the engine would gate the final pass on accepts() -- it must pass
+    assert adapter.accepts(observable) is True
+
+    # post phase
+    assert adapter.analyze(observable, final_analysis=True) == AnalysisExecutionResult.COMPLETED
+    assert observable.has_tag("post_tag")
+
+    analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
+    assert analysis is not None
+    assert analysis.completed is True
+    rule_names = sorted(r["name"] for r in analysis.details["matched_rules"])
+    assert rule_names == ["post rule", "pre rule"]
+
+
+@pytest.mark.unit
+def test_post_phase_only_match_marks_analysis_completed():
+    """When only a post-phase rule matches (no pre-phase analysis created), the
+    analysis produced by execute_final_analysis must be completed=True so the
+    module is not re-dispatched in subsequent final-analysis-mode cycles."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "post rule",
+        "phase": "post",
+        "conditions": {"observable_types": ["url"]},
+        "actions": {"add_tags": ["post_tag"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(observable)
+    adapter.analyze(observable, final_analysis=True)
+
+    analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
+    assert analysis is not None
+    assert analysis.completed is True
+
+
 # ============================================================
 # is_excluded clean format test
 # ============================================================
@@ -3596,6 +3703,211 @@ def test_ignore_global_without_parent_scope():
 
     # No parent-scoped tree conditions, so should be globally ignored
     assert target.ignored is True
+
+
+# ============================================================
+# ignore action in the pre phase
+# ============================================================
+
+
+@pytest.mark.unit
+def test_ignore_pre_adds_exclude_all_directive():
+    """A pre-phase ignore rule should install the exclude_all directive (so the
+    engine skips all further analysis) and mark the observable ignored -- during
+    execute_analysis, without waiting for the final pass."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    target = root.add_observable_by_spec(F_EMAIL_ADDRESS, "team@example.com")
+    rules = [{
+        "name": "ignore team emails (pre)",
+        "phase": "pre",
+        "conditions": {
+            "observable_types": ["email_address"],
+            "value_pattern": r"team@example\.com",
+        },
+        "actions": {
+            "ignore": True,
+        },
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(target)
+    assert result == AnalysisExecutionResult.INCOMPLETE
+
+    # the pre phase actioned the ignore inline -- no final pass needed
+    assert target.has_directive(DIRECTIVE_EXCLUDE_ALL)
+    assert target.ignored is True
+
+
+@pytest.mark.unit
+def test_ignore_pre_removes_observable_from_matching_parent():
+    """A pre-phase ignore rule with parent scope should remove the observable
+    from the matching parent analysis during execute_analysis."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    parent_observable = root.add_observable_by_spec(F_FQDN, "email.vendor.com")
+
+    class EmailAnalysisStubPre(Analysis):
+        pass
+
+    email_analysis = EmailAnalysisStubPre()
+    email_analysis.details = {}
+    email_analysis.details_modified = True
+    parent_observable.add_analysis(email_analysis)
+
+    target = email_analysis.add_observable_by_spec(F_EMAIL_ADDRESS, "team@example.com")
+    assert target in email_analysis.observables
+
+    module_path = f"{EmailAnalysisStubPre.__module__}:{EmailAnalysisStubPre.__name__}"
+    rules = [{
+        "name": "ignore team emails (pre)",
+        "phase": "pre",
+        "conditions": {
+            "observable_types": ["email_address"],
+            "value_pattern": r"team@example\.com",
+            "tree_conditions": [{
+                "analysis_type": module_path,
+                "scope": "parent",
+            }],
+        },
+        "actions": {
+            "ignore": True,
+        },
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    # only the pre pass -- no final_analysis
+    result = adapter.execute_analysis(target)
+    assert result == AnalysisExecutionResult.INCOMPLETE
+
+    assert target not in email_analysis.observables
+    # no remaining parents -> globally ignored
+    assert target.ignored is True
+    assert target.has_directive(DIRECTIVE_EXCLUDE_ALL)
+
+
+@pytest.mark.unit
+def test_ignore_pre_preserves_observable_in_other_parents():
+    """A pre-phase ignore rule should only remove from the matching parent,
+    preserving other parent references (and not globally ignoring)."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    parent_observable = root.add_observable_by_spec(F_FQDN, "email.vendor.com")
+
+    class EmailAnalysisStubPre2(Analysis):
+        pass
+
+    class IOCExtractionStubPre(Analysis):
+        pass
+
+    email_analysis = EmailAnalysisStubPre2()
+    email_analysis.details = {}
+    email_analysis.details_modified = True
+    parent_observable.add_analysis(email_analysis)
+
+    target = email_analysis.add_observable_by_spec(F_EMAIL_ADDRESS, "team@example.com")
+
+    ioc_parent = root.add_observable_by_spec(F_FQDN, "body.example.com")
+    ioc_analysis = IOCExtractionStubPre()
+    ioc_analysis.details = {}
+    ioc_analysis.details_modified = True
+    ioc_parent.add_analysis(ioc_analysis)
+    ioc_analysis.add_observable_to_tree(target)
+
+    assert target in email_analysis.observables
+    assert target in ioc_analysis.observables
+
+    email_module_path = f"{EmailAnalysisStubPre2.__module__}:{EmailAnalysisStubPre2.__name__}"
+    rules = [{
+        "name": "ignore team emails (pre)",
+        "phase": "pre",
+        "conditions": {
+            "observable_types": ["email_address"],
+            "value_pattern": r"team@example\.com",
+            "tree_conditions": [{
+                "analysis_type": email_module_path,
+                "scope": "parent",
+            }],
+        },
+        "actions": {
+            "ignore": True,
+        },
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(target)
+    assert result == AnalysisExecutionResult.INCOMPLETE
+
+    assert target not in email_analysis.observables
+    assert target in ioc_analysis.observables
+    # still has a parent -> not globally ignored
+    assert target.ignored is False
+    # but still excluded from further analysis
+    assert target.has_directive(DIRECTIVE_EXCLUDE_ALL)
+
+
+@pytest.mark.unit
+def test_ignore_pre_idempotent_across_repeated_execute_analysis():
+    """The pre phase's execute_analysis is re-invoked as the tree grows; a
+    pre-phase ignore rule must be safe to apply repeatedly."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    target = root.add_observable_by_spec(F_EMAIL_ADDRESS, "team@example.com")
+    rules = [{
+        "name": "ignore team emails (pre)",
+        "uuid": "c1c2c3c4-0000-4000-8000-000000000001",
+        "phase": "pre",
+        "conditions": {
+            "observable_types": ["email_address"],
+            "value_pattern": r"team@example\.com",
+        },
+        "actions": {
+            "ignore": True,
+        },
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    # re-invoke several times -- must not raise and must converge
+    for _ in range(3):
+        assert adapter.execute_analysis(target) == AnalysisExecutionResult.INCOMPLETE
+
+    assert target.ignored is True
+    # add_directive dedups -- exactly one exclude_all directive
+    assert target.directives.count(DIRECTIVE_EXCLUDE_ALL) == 1
+
+    analysis = target.get_and_load_analysis(ObservableModifierAnalysis)
+    assert analysis is not None
+    # matched_rules is rebuilt fresh each pass -- not accumulated
+    assert len(analysis.details["matched_rules"]) == 1
+
+
+@pytest.mark.unit
+def test_accepts_returns_false_with_exclude_all_directive():
+    """AnalysisModule.accepts() must refuse an observable carrying the
+    exclude_all directive (consistent with the engine's exclusion check), so a
+    directive installed mid-work-item gates the remaining modules immediately."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    rules = [{
+        "name": "noop",
+        "conditions": {"observable_types": ["email_address"]},
+        "actions": {"add_tags": ["noop"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    # control: a fresh observable is accepted
+    control = root.add_observable_by_spec(F_EMAIL_ADDRESS, "control@example.com")
+    assert adapter.accepts(control) is True
+
+    # with exclude_all, the same module refuses it
+    excluded = root.add_observable_by_spec(F_EMAIL_ADDRESS, "excluded@example.com")
+    excluded.add_directive(DIRECTIVE_EXCLUDE_ALL)
+    assert adapter.accepts(excluded) is False
 
 
 # ============================================================
