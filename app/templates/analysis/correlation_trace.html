@@ -127,6 +127,9 @@
                         <span class="badge text-bg-secondary" title="result rows"><i class="bi bi-database"></i> 0</span>
                     {% endif %}
                 {% endif %}
+                {% if trans.merge_dropped %}
+                    <span class="badge text-bg-warning" title="incoming events dropped during merge for a missing or unparseable timestamp"><i class="bi bi-funnel-fill"></i> {{ trans.merge_dropped }} dropped</span>
+                {% endif %}
                 {% if trans.rendered_command %}
                     <a role="button" class="btn btn-outline-secondary btn-xs ct-cmd-toggle" data-bs-toggle="collapse" data-bs-target="#ct_cmd_{{ uid }}" aria-expanded="false">
                         <i class="bi bi-code-slash"></i> command
@@ -220,6 +223,8 @@
         <span class="badge text-bg-warning ct-pl-outcome" title="correlation timeout reached before this event was processed"><i class="bi bi-hourglass-split"></i> timeout</span>
     {% elif outcome == "error" %}
         <span class="badge text-bg-danger ct-pl-outcome" title="a step raised an error while processing this event"><i class="bi bi-exclamation-triangle-fill"></i> error</span>
+    {% elif outcome == "stream_reset" %}
+        <span class="badge text-bg-info ct-pl-outcome" title="this event triggered a stream transform that replaced the event stream and reset processing"><i class="bi bi-broadcast"></i> stream reset</span>
     {% else %}
         <span class="badge text-bg-light text-dark ct-pl-outcome">{{ outcome }}</span>
     {% endif %}
@@ -267,6 +272,9 @@
         {% else %}
             <span class="badge text-bg-secondary"><i class="bi bi-database"></i> 0 rows</span>
         {% endif %}
+    {% endif %}
+    {% if trans.merge_dropped %}
+        <span class="badge text-bg-warning" title="incoming events dropped during merge for a missing or unparseable timestamp"><i class="bi bi-funnel-fill"></i> {{ trans.merge_dropped }} dropped</span>
     {% endif %}
     {% if trans.property_name and trans.property_value %}
         <code class="ct-val ct-pl-value" title="{{ trans.property_value }}">{{ trans.property_value | truncate(80, true) }}</code>
@@ -424,7 +432,7 @@
     {% set stream_events = ct.get('stream_events', []) or [] %}
 
     {# Outcome counters #}
-    {% set counts = namespace(alert=0, filter=0, stop=0, discard=0, timeout=0, error=0, other=0) %}
+    {% set counts = namespace(alert=0, filter=0, stop=0, discard=0, timeout=0, error=0, stream_reset=0, other=0) %}
     {% for et in event_traces %}
         {% if et.outcome == 'alert' %}{% set counts.alert = counts.alert + 1 %}
         {% elif et.outcome == 'filter' %}{% set counts.filter = counts.filter + 1 %}
@@ -432,6 +440,7 @@
         {% elif et.outcome == 'discard' %}{% set counts.discard = counts.discard + 1 %}
         {% elif et.outcome == 'timeout' %}{% set counts.timeout = counts.timeout + 1 %}
         {% elif et.outcome == 'error' %}{% set counts.error = counts.error + 1 %}
+        {% elif et.outcome == 'stream_reset' %}{% set counts.stream_reset = counts.stream_reset + 1 %}
         {% else %}{% set counts.other = counts.other + 1 %}
         {% endif %}
     {% endfor %}
@@ -439,6 +448,9 @@
     {# Compute display subset: alerts and errors first, then fill up to 100 with the earliest remaining events. #}
     {% set _cap = 100 %}
     {% set _total = event_traces | length %}
+    {# Distinct grouped events for the grouping banner: a stream_reset trace is the
+       pre-reset event preserved only to show the transform — not a separate grouped event. #}
+    {% set _grouped_event_count = event_traces | rejectattr('outcome', 'equalto', 'stream_reset') | list | length %}
     {% set _priority_events = event_traces | selectattr('outcome', 'in', ['alert', 'error']) | list %}
     {% set _other_events = event_traces | rejectattr('outcome', 'in', ['alert', 'error']) | list %}
     {% if _total <= _cap %}
@@ -540,14 +552,14 @@
                         <div class="alert alert-info py-2 mb-3 ct-grouping-banner">
                             <i class="bi bi-collection-fill"></i>
                             This alert was produced by grouping
-                            <strong>{{ _total }} event{{ "" if _total == 1 else "s" }}</strong>
+                            <strong>{{ _grouped_event_count }} event{{ "" if _grouped_event_count == 1 else "s" }}</strong>
                             by <code>{{ hm.group_by }} = {{ hm.group_value }}</code>.
                             <span class="text-body-secondary small ms-1">All events listed below share this group key.</span>
                         </div>
                     {% elif hm.group_by == "ALL" %}
                         <div class="alert alert-info py-2 mb-3 ct-grouping-banner">
                             <i class="bi bi-collection-fill"></i>
-                            This alert groups <strong>all {{ _total }} event{{ "" if _total == 1 else "s" }}</strong>
+                            This alert groups <strong>all {{ _grouped_event_count }} event{{ "" if _grouped_event_count == 1 else "s" }}</strong>
                             from this hunt run together (<code>group_by: ALL</code>).
                         </div>
                     {% endif %}
@@ -578,6 +590,9 @@
                         {% endif %}
                         {% if counts.error > 0 %}
                             <button type="button" class="btn btn-sm btn-outline-danger ct-outcome-chip" data-outcome-filter="error" title="Click to show only the {{ counts.error }} event{{ '' if counts.error == 1 else 's' }} where a step raised an error"><i class="bi bi-exclamation-triangle-fill"></i> {{ counts.error }} error</button>
+                        {% endif %}
+                        {% if counts.stream_reset > 0 %}
+                            <button type="button" class="btn btn-sm btn-outline-info ct-outcome-chip" data-outcome-filter="stream_reset" title="Click to show only the {{ counts.stream_reset }} event{{ '' if counts.stream_reset == 1 else 's' }} that triggered a stream transform reset"><i class="bi bi-broadcast"></i> {{ counts.stream_reset }} stream reset</button>
                         {% endif %}
                         {% if counts.other > 0 %}
                             <span class="badge text-bg-light text-dark">{{ counts.other }} other</span>
@@ -635,6 +650,18 @@
                                             {% endfor %}
                                         {% else %}
                                             <div class="text-muted small fst-italic">no steps recorded</div>
+                                        {% endif %}
+                                        {#-- Raw event content. The trace renders processing steps, not the
+                                             event itself — but events that pass through a stream transform have
+                                             no steps, so without this their fields would be invisible. --#}
+                                        {% if _event_full is mapping %}
+                                            {% set _ev_uid = "evt_" ~ et.event_index ~ "_" ~ loop.index %}
+                                            <div class="ct-event-fields mt-1">
+                                                <a role="button" class="btn btn-link btn-xs ct-fullvalue-toggle text-decoration-none px-0" data-bs-toggle="collapse" data-bs-target="#ct_full_{{ _ev_uid }}" aria-expanded="false" title="Show all fields from this event">
+                                                    <i class="bi bi-arrows-angle-expand"></i> event fields
+                                                </a>
+                                                {{ render_full_value_pane(_ev_uid, _event_full) }}
+                                            </div>
                                         {% endif %}
                                     </div>
                                 </li>
@@ -797,6 +824,7 @@
 .ct-event-list[data-active-filter="discard"] .ct-event-item:not([data-outcome="discard"]) { display: none; }
 .ct-event-list[data-active-filter="timeout"] .ct-event-item:not([data-outcome="timeout"]) { display: none; }
 .ct-event-list[data-active-filter="error"] .ct-event-item:not([data-outcome="error"]) { display: none; }
+.ct-event-list[data-active-filter="stream_reset"] .ct-event-item:not([data-outcome="stream_reset"]) { display: none; }
 
 /* Full-value inline JSON tree pane (rendered lazily on first expand) */
 .ct-fullvalue-pane { background: #f6f8fa; border: 1px solid #dee2e6; border-radius: 0.25rem; padding: 0.5rem 0.75rem; max-height: 30rem; overflow: auto; font-size: 0.85rem; width: 100%; }

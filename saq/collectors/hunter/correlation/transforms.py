@@ -11,20 +11,23 @@ def apply_transform(
     command_output: str,
     event: dict,
     events: list[dict],
-) -> tuple[Optional[dict], Optional[list[dict]]]:
+) -> tuple[Optional[dict], Optional[list[dict]], Optional[int]]:
     """Apply a transform to an event or event stream.
 
     Returns:
-        (updated_event, updated_stream) - one or both may be None depending on type.
-        For event transforms: returns (updated_event, None)
-        For stream transforms: returns (None, new_stream)
+        (updated_event, updated_stream, merge_dropped) - the first two are mutually
+        exclusive depending on type.
+        For event transforms: returns (updated_event, None, None)
+        For stream transforms: returns (None, new_stream, merge_dropped)
+        merge_dropped is the count of incoming events discarded by a merge for a
+        missing/unparseable timestamp; it is None for event and mutate transforms.
     """
     if transform.type == "event":
         updated_event = _apply_event_transform(transform, command_output, event)
-        return updated_event, None
+        return updated_event, None, None
     else:
-        new_stream = _apply_stream_transform(transform, command_output, events)
-        return None, new_stream
+        new_stream, merge_dropped = _apply_stream_transform(transform, command_output, events)
+        return None, new_stream, merge_dropped
 
 
 def _apply_event_transform(
@@ -68,10 +71,13 @@ def _apply_stream_transform(
     transform: TransformConfig,
     command_output: str,
     events: list[dict],
-) -> list[dict]:
-    """Apply a stream transform (merge or mutate)."""
+) -> tuple[list[dict], Optional[int]]:
+    """Apply a stream transform (merge or mutate).
+
+    Returns (new_stream, merge_dropped). merge_dropped is None for mutate.
+    """
     if transform.method == "mutate":
-        return _apply_mutate(command_output)
+        return _apply_mutate(command_output), None
     elif transform.method == "merge":
         return _apply_merge(command_output, events, transform.merge_time_spec)
     else:
@@ -92,8 +98,12 @@ def _apply_merge(
     command_output: str,
     existing_events: list[dict],
     merge_time_spec: MergeTimeSpecConfig,
-) -> list[dict]:
-    """Merge new events into existing events by timestamp."""
+) -> tuple[list[dict], int]:
+    """Merge new events into existing events by timestamp.
+
+    Returns (merged_stream, dropped) where dropped is the count of incoming
+    events discarded because their timestamp field was missing or unparseable.
+    """
     new_events = []
     dropped = 0
 
@@ -142,4 +152,4 @@ def _apply_merge(
     result = [e for ts, e in existing_with_times if ts is None]
     result += [e for _, _, e in all_events]
 
-    return result
+    return result, dropped

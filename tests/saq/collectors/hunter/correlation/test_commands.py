@@ -331,7 +331,7 @@ class TestResolveTimeRange:
             ),
         )
         event = {"custom": "2024-06-01T00:00:00+00:00", "_time": "2099-01-01T00:00:00+00:00"}
-        start, end = _resolve_time_range(cmd, event, "event", local_time(), "splunk")
+        start, end = _resolve_time_range(cmd, event, "event", local_time(), local_time(), "splunk")
         # reference time should come from `custom`, not `_time`
         assert start == datetime.datetime(2024, 5, 31, 23, 0, tzinfo=datetime.timezone.utc)
         assert end == datetime.datetime(2024, 6, 1, 1, 0, tzinfo=datetime.timezone.utc)
@@ -340,7 +340,7 @@ class TestResolveTimeRange:
         register_query_source("splunk", MockQuerySource())
         cmd = self._make_query_command(time_range=TimeRangeConfig(before="30m", after="30m"))
         event = {"_time": "2024-06-01T12:00:00+00:00"}
-        start, end = _resolve_time_range(cmd, event, "event", local_time(), "splunk")
+        start, end = _resolve_time_range(cmd, event, "event", local_time(), local_time(), "splunk")
         assert start == datetime.datetime(2024, 6, 1, 11, 30, tzinfo=datetime.timezone.utc)
         assert end == datetime.datetime(2024, 6, 1, 12, 30, tzinfo=datetime.timezone.utc)
 
@@ -351,7 +351,7 @@ class TestResolveTimeRange:
         )
         # use the default field `_time` but override the format to epoch
         event = {"_time": "1717200000"}
-        start, end = _resolve_time_range(cmd, event, "event", local_time(), "splunk")
+        start, end = _resolve_time_range(cmd, event, "event", local_time(), local_time(), "splunk")
         ref = datetime.datetime.fromtimestamp(1717200000, tz=datetime.timezone.utc)
         assert end == ref
         assert start == ref - datetime.timedelta(hours=1)
@@ -363,7 +363,7 @@ class TestResolveTimeRange:
         )
         # default format from splunk source is iso8601
         event = {"when": "2024-06-01T00:00:00+00:00"}
-        start, end = _resolve_time_range(cmd, event, "event", local_time(), "splunk")
+        start, end = _resolve_time_range(cmd, event, "event", local_time(), local_time(), "splunk")
         ref = datetime.datetime(2024, 6, 1, 0, 0, tzinfo=datetime.timezone.utc)
         assert start == ref
         assert end == ref + datetime.timedelta(hours=1)
@@ -373,32 +373,39 @@ class TestResolveTimeRange:
         cmd = self._make_query_command(time_range=TimeRangeConfig(before="30m", after="30m"))
         event = {"host": "web1"}  # no _time
         with pytest.raises(KeyError, match="_time"):
-            _resolve_time_range(cmd, event, "event", local_time(), "splunk")
+            _resolve_time_range(cmd, event, "event", local_time(), local_time(), "splunk")
 
-    def test_no_current_source_falls_back_to_hunt_time(self):
-        # no source registered, no current_source supplied -> use hunt_time as reference
-        cmd = self._make_query_command(time_range=TimeRangeConfig(before="1h", after="1h"))
-        hunt_time = datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc)
+    def test_no_current_source_falls_back_to_hunt_window(self):
+        # no source registered, no current_source supplied -> no resolvable field ->
+        # anchor to the hunt's query window: before -> start, after -> end
+        cmd = self._make_query_command(time_range=TimeRangeConfig(before="1h", after="2h"))
+        hunt_start = datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc)
+        hunt_end = datetime.datetime(2024, 6, 1, 18, 0, tzinfo=datetime.timezone.utc)
         event = {"host": "web1"}
-        start, end = _resolve_time_range(cmd, event, "event", hunt_time, None)
-        assert start == hunt_time - datetime.timedelta(hours=1)
-        assert end == hunt_time + datetime.timedelta(hours=1)
+        start, end = _resolve_time_range(cmd, event, "event", hunt_start, hunt_end, None)
+        assert start == hunt_start - datetime.timedelta(hours=1)
+        assert end == hunt_end + datetime.timedelta(hours=2)
 
-    def test_unknown_current_source_falls_back_to_hunt_time(self):
-        # current_source given but not registered -> no defaults, no field in YAML -> use hunt_time
-        cmd = self._make_query_command(time_range=TimeRangeConfig(before="1h", after="1h"))
-        hunt_time = datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc)
+    def test_unknown_current_source_falls_back_to_hunt_window(self):
+        # current_source given but not registered -> no defaults, no field in YAML ->
+        # anchor to the hunt's query window
+        cmd = self._make_query_command(time_range=TimeRangeConfig(before="1h", after="2h"))
+        hunt_start = datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc)
+        hunt_end = datetime.datetime(2024, 6, 1, 18, 0, tzinfo=datetime.timezone.utc)
         event = {"host": "web1"}
-        start, end = _resolve_time_range(cmd, event, "event", hunt_time, "not_registered")
-        assert start == hunt_time - datetime.timedelta(hours=1)
-        assert end == hunt_time + datetime.timedelta(hours=1)
+        start, end = _resolve_time_range(cmd, event, "event", hunt_start, hunt_end, "not_registered")
+        assert start == hunt_start - datetime.timedelta(hours=1)
+        assert end == hunt_end + datetime.timedelta(hours=2)
 
-    def test_stream_transform_ignores_field_uses_hunt_time(self):
-        # stream transforms are anchored to hunt_time regardless of field/source
+    def test_stream_transform_anchors_to_hunt_window(self):
+        # stream transforms ignore per-event time fields and anchor a relative
+        # time_range to the hunt's query window: before -> window start, after -> window end
         register_query_source("splunk", MockQuerySource())
-        cmd = self._make_query_command(time_range=TimeRangeConfig(before="1h", after="1h"))
-        hunt_time = datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc)
+        cmd = self._make_query_command(time_range=TimeRangeConfig(before="3h", after="1h"))
+        hunt_start = datetime.datetime(2024, 6, 1, 0, 0, tzinfo=datetime.timezone.utc)
+        hunt_end = datetime.datetime(2024, 6, 2, 0, 0, tzinfo=datetime.timezone.utc)
+        # the event has a time field, but a stream transform must NOT anchor to it
         event = {"_time": "2099-01-01T00:00:00+00:00"}
-        start, end = _resolve_time_range(cmd, event, "stream", hunt_time, "splunk")
-        assert start == hunt_time - datetime.timedelta(hours=1)
-        assert end == hunt_time + datetime.timedelta(hours=1)
+        start, end = _resolve_time_range(cmd, event, "stream", hunt_start, hunt_end, "splunk")
+        assert start == hunt_start - datetime.timedelta(hours=3)
+        assert end == hunt_end + datetime.timedelta(hours=1)

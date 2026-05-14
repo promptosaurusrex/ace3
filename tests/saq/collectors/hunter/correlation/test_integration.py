@@ -237,6 +237,53 @@ class TestCorrelationIntegration:
         assert result.events[0] == {"new": 1}
         assert result.events[1] == {"new": 2}
 
+    def test_stream_merge_transform(self, tmpdir):
+        """Stream merge interleaves query results into the stream by timestamp and
+        keeps the triggering transform's trace visible through the stream reset."""
+        splunk = MockQuerySource(results=[{"ts": "1500", "src": "merged"}])
+        register_query_source("splunk", splunk)
+
+        config_data = {
+            "logic": [
+                {
+                    "transform": {
+                        "type": "stream",
+                        "method": "merge",
+                        "merge_time_spec": {
+                            "l_field": "ts", "l_format": "epoch",
+                            "r_field": "ts", "r_format": "epoch",
+                        },
+                        "command": {
+                            "type": "query",
+                            "source": "splunk",
+                            "query": "search all",
+                            "time_range": {"before": "1h"},
+                        },
+                    },
+                },
+            ],
+        }
+        config = CorrelateConfig.model_validate(config_data)
+        engine = CorrelationEngine(
+            config, [], datetime.datetime.now(datetime.timezone.utc),
+        )
+
+        events = [{"ts": "1000", "src": "original1"}, {"ts": "2000", "src": "original2"}]
+        result = engine.execute(events)
+
+        # merged stream interleaved by timestamp: original1 (1000), merged (1500), original2 (2000)
+        assert [e["src"] for e in result.events] == ["original1", "merged", "original2"]
+
+        # the stream reset is recorded and the transform that drove it stays in the trace
+        assert any(se.event_type == "stream_reset" for se in result.trace.stream_events)
+        triggering = result.trace.event_traces[0]
+        assert triggering.outcome == "stream_reset"
+        transform_step = triggering.steps[0].step
+        assert transform_step.trace_type == "transform"
+        assert transform_step.method == "merge"
+        assert transform_step.result_count == 1
+        assert transform_step.merge_dropped == 0
+
     def test_jinja_expression_with_events_access(self):
         """Test that _events is accessible in jinja expressions."""
         config_data = {
@@ -396,7 +443,7 @@ class TestCorrelationIntegration:
 
         assert len(splunk.calls) == 1
         ref = datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc)
-        # window anchored to the event's _time (NOT the hunt_time of 2099) proves defaults applied
+        # window anchored to the event's _time (NOT the hunt window of 2099) proves defaults applied
         assert splunk.calls[0]["start_time"] == ref - datetime.timedelta(hours=1)
         assert splunk.calls[0]["end_time"] == ref + datetime.timedelta(hours=1)
         assert result.events[0]["context"] == [{"matched": True}]

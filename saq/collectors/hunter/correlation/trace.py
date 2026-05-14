@@ -60,6 +60,7 @@ class TransformTrace(BaseModel):
     property_name: Optional[str] = Field(default=None, description="For property transforms: the property name set")
     property_value: Optional[str] = Field(default=None, description="For property transforms: truncated repr of value set")
     result_count: Optional[int] = Field(default=None, description="Number of result rows from command output")
+    merge_dropped: Optional[int] = Field(default=None, description="For merge transforms: count of incoming events dropped for a missing/unparseable timestamp")
     error: Optional[str] = Field(default=None, description="Error message if command failed")
 
 
@@ -82,7 +83,7 @@ class EventTrace(BaseModel):
     """Complete trace for one event's path through correlation logic."""
     event_index: int = Field(..., description="Index of the event in the stream")
     steps: list[StepTrace] = Field(default_factory=list, description="Traces of each step executed for this event")
-    outcome: str = Field(default="alert", description="Final outcome: alert, filter, stop, discard, timeout, error")
+    outcome: str = Field(default="alert", description="Final outcome: alert, filter, stop, discard, timeout, error, stream_reset")
     summary: Optional[str] = Field(default=None, description="Short human-readable summary of this event for display in collapsed UI rows")
     events_position: Optional[int] = Field(default=None, description="When set on a per-alert trace, the index into the alert's details['events'] list where the full event dict lives — lets the UI surface the untruncated structured value of any property the trace shows")
 

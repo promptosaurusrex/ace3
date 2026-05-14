@@ -360,7 +360,7 @@ class TestSourceAwareTimeDefaults:
         ])
         hunt_time = datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc)
         engine = CorrelationEngine(config, [], hunt_time, hunt_source_type="splunk")
-        # initial event has _time so the stream-mutate query (anchored to hunt_time) runs fine
+        # initial event has _time so the stream-mutate query (anchored to the hunt window) runs fine
         engine.execute([{"_time": "2024-05-31T00:00:00+00:00"}])
 
         # second query (after the stream mutate) should be anchored to ts=1717200000
@@ -368,6 +368,93 @@ class TestSourceAwareTimeDefaults:
         ref = datetime.datetime.fromtimestamp(1717200000, tz=datetime.timezone.utc)
         assert splunk.calls[0]["start_time"] == ref - datetime.timedelta(minutes=30)
         assert splunk.calls[0]["end_time"] == ref + datetime.timedelta(minutes=30)
+
+    def test_stream_transform_query_anchored_to_hunt_window(self, _clean_registry, tmpdir):
+        """A stream transform's relative time_range is anchored to the hunt's query
+        window — `before` extends before hunt_start_time, `after` after hunt_end_time —
+        not to the wall-clock execution time or any single event timestamp."""
+        splunk = _RecordingSource(results=[])
+        register_query_source("splunk", splunk)
+
+        config = _make_config([
+            {
+                "transform": {
+                    "type": "stream",
+                    "method": "mutate",
+                    "command": {
+                        "type": "query",
+                        "source": "splunk",
+                        "query": "search index=main",
+                        "time_range": {"before": "3h", "after": "1h"},
+                    },
+                },
+            },
+        ])
+        hunt_start = datetime.datetime(2026, 5, 4, 0, 0, tzinfo=datetime.timezone.utc)
+        hunt_end = datetime.datetime(2026, 5, 5, 0, 0, tzinfo=datetime.timezone.utc)
+        engine = CorrelationEngine(config, [], hunt_start, hunt_end, hunt_source_type="splunk")
+        # the event carries a _time far outside the hunt window; it must be ignored
+        engine.execute([{"_time": "2099-01-01T00:00:00+00:00"}])
+
+        assert len(splunk.calls) == 1
+        assert splunk.calls[0]["start_time"] == hunt_start - datetime.timedelta(hours=3)
+        assert splunk.calls[0]["end_time"] == hunt_end + datetime.timedelta(hours=1)
+
+    def test_stream_merge_preserves_triggering_trace(self, _clean_registry, tmpdir):
+        """A stream transform resets the stream, but the trace of the event that
+        triggered it must survive — it holds the only record of the transform's
+        rendered command, result count, and merge-dropped count.
+        Regression: the _StreamReset handler used to wipe trace.event_traces
+        entirely, leaving the stream transform invisible in the UI."""
+        splunk = _RecordingSource(results=[
+            {"ts": "1717200000", "data": "new1"},  # parseable epoch timestamp
+            {"data": "no_timestamp"},              # dropped by merge — missing ts
+        ])
+        register_query_source("splunk", splunk)
+
+        config = _make_config([
+            {
+                "transform": {
+                    "type": "stream",
+                    "method": "merge",
+                    "merge_time_spec": {
+                        "l_field": "ts", "l_format": "epoch",
+                        "r_field": "ts", "r_format": "epoch",
+                    },
+                    "command": {
+                        "type": "query",
+                        "source": "splunk",
+                        "query": "search host={{ _event.host }}",
+                        "time_range": {"before": "1h"},
+                    },
+                },
+            },
+        ])
+        hunt_time = datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc)
+        engine = CorrelationEngine(config, [], hunt_time, hunt_source_type="splunk")
+        events = [{"ts": "1717100000", "host": "web1", "id": 1}]
+        result = engine.execute(events)
+
+        # the merge produced a new 2-event stream (1 existing + 1 new with a timestamp)
+        assert len(result.events) == 2
+
+        # a stream_reset stream-event was recorded
+        assert any(se.event_type == "stream_reset" for se in result.trace.stream_events)
+
+        # the triggering event trace survived the reset and is first
+        triggering = result.trace.event_traces[0]
+        assert triggering.outcome == "stream_reset"
+        assert len(triggering.steps) == 1
+        transform_step = triggering.steps[0].step
+        assert transform_step.trace_type == "transform"
+        assert transform_step.transform_type == "stream"
+        assert transform_step.method == "merge"
+        # the rendered query is preserved (per-event template was rendered)
+        assert transform_step.rendered_command == "search host=web1"
+        # result_count reflects the rows the command returned
+        assert transform_step.result_count == 2
+        # merge_dropped surfaces the row dropped for a missing timestamp
+        assert transform_step.merge_dropped == 1
 
     def test_resolve_command_source_handles_defined_query(self, _clean_registry):
         splunk = _RecordingSource()

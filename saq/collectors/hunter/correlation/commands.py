@@ -21,12 +21,13 @@ def execute_command(
     events: list[dict],
     transform_type: str,
     predefined_commands: list[PredefinedCommandConfig],
-    hunt_time: datetime.datetime,
+    hunt_start_time: datetime.datetime,
     temp_dir: str,
     stream_query_cache: Optional[dict] = None,
     secrets: dict | None = None,
     config: dict | None = None,
     current_source: Optional[str] = None,
+    hunt_end_time: Optional[datetime.datetime] = None,
 ) -> str:
     """Execute a command and return its output as a string.
 
@@ -36,7 +37,9 @@ def execute_command(
         events: The full event stream.
         transform_type: Either 'event' or 'stream'.
         predefined_commands: List of predefined commands.
-        hunt_time: The time the hunt was executed.
+        hunt_start_time: Start of the hunt's query window. Stream transforms (and
+            event transforms with no resolvable per-event time field) anchor a
+            relative `before` to this.
         temp_dir: Temporary directory for command execution.
         stream_query_cache: Cache for stream query results (memoization within a correlation run).
         secrets: Decrypted secrets dict for jinja context.
@@ -44,14 +47,18 @@ def execute_command(
         current_source: Name of the source that produced the current event stream;
             used to supply default `relative_time_field`/`relative_time_format` when
             the YAML omits them.
+        hunt_end_time: End of the hunt's query window; a relative `after` is anchored
+            to this. Defaults to hunt_start_time (a zero-width window).
 
     Returns:
         Command output as a string.
     """
+    if hunt_end_time is None:
+        hunt_end_time = hunt_start_time
     if command.type == "defined":
-        return _execute_defined(command, event, events, transform_type, predefined_commands, hunt_time, temp_dir, stream_query_cache, secrets, config, current_source)
+        return _execute_defined(command, event, events, transform_type, predefined_commands, hunt_start_time, hunt_end_time, temp_dir, stream_query_cache, secrets, config, current_source)
     elif command.type == "query":
-        return _execute_query(command, event, events, transform_type, hunt_time, stream_query_cache, secrets, config, current_source)
+        return _execute_query(command, event, events, transform_type, hunt_start_time, hunt_end_time, stream_query_cache, secrets, config, current_source)
     elif command.type == "executable":
         return _execute_executable(command, event, events, transform_type, temp_dir, secrets, config)
     else:
@@ -64,7 +71,8 @@ def _execute_defined(
     events: list[dict],
     transform_type: str,
     predefined_commands: list[PredefinedCommandConfig],
-    hunt_time: datetime.datetime,
+    hunt_start_time: datetime.datetime,
+    hunt_end_time: datetime.datetime,
     temp_dir: str,
     stream_query_cache: Optional[dict],
     secrets: dict | None = None,
@@ -82,7 +90,7 @@ def _execute_defined(
         raise ValueError(f"predefined command not found: {command.name!r}")
 
     resolved = predef.to_command_config(command.arguments)
-    return execute_command(resolved, event, events, transform_type, predefined_commands, hunt_time, temp_dir, stream_query_cache, secrets, config, current_source)
+    return execute_command(resolved, event, events, transform_type, predefined_commands, hunt_start_time, temp_dir, stream_query_cache, secrets, config, current_source, hunt_end_time=hunt_end_time)
 
 
 def _execute_query(
@@ -90,7 +98,8 @@ def _execute_query(
     event: dict,
     events: list[dict],
     transform_type: str,
-    hunt_time: datetime.datetime,
+    hunt_start_time: datetime.datetime,
+    hunt_end_time: datetime.datetime,
     stream_query_cache: Optional[dict],
     secrets: dict | None = None,
     config: dict | None = None,
@@ -111,7 +120,7 @@ def _execute_query(
             return cached
 
     # Build time range
-    start_time, end_time = _resolve_time_range(command, event, transform_type, hunt_time, current_source)
+    start_time, end_time = _resolve_time_range(command, event, transform_type, hunt_start_time, hunt_end_time, current_source)
 
     # Render query with jinja
     context = build_jinja_context(event, events, secrets, config)
@@ -142,7 +151,8 @@ def _resolve_time_range(
     command: CommandConfig,
     event: dict,
     transform_type: str,
-    hunt_time: datetime.datetime,
+    hunt_start_time: datetime.datetime,
+    hunt_end_time: datetime.datetime,
     current_source: Optional[str] = None,
 ) -> tuple[datetime.datetime, datetime.datetime]:
     """Resolve the time range for a query command.
@@ -151,14 +161,18 @@ def _resolve_time_range(
       - explicit value on `command.time_range` -> default from `current_source`
       - QuerySource (if registered) -> None.
 
-    For event transforms, when a field is resolved (explicit or default) the
-    event must contain that key; otherwise a KeyError is raised so the failure
-    surfaces as a step error and the affected event short-circuits to alert.
+    An `event` transform with a resolvable time field anchors the window to that
+    event's own timestamp: `before`/`after` extend around a single reference
+    point. The event must contain the resolved key; otherwise a KeyError is
+    raised so the failure surfaces as a step error and the affected event
+    short-circuits to alert.
 
-    For stream transforms, or when no field can be resolved, the reference time
-    falls back to `hunt_time`.
+    A `stream` transform — and an `event` transform with no resolvable time
+    field — anchors to the hunt's query window instead: `before` extends before
+    `hunt_start_time` and `after` extends after `hunt_end_time`.
     """
-    reference_time = hunt_time
+    before = parse_timespec(command.time_range.before) if command.time_range and command.time_range.before else datetime.timedelta(0)
+    after = parse_timespec(command.time_range.after) if command.time_range and command.time_range.after else datetime.timedelta(0)
 
     field, fmt = _resolve_time_field_and_format(command, current_source)
 
@@ -169,14 +183,9 @@ def _resolve_time_range(
                 f"(source={current_source})"
             )
         reference_time = _parse_time_value(event[field], fmt)
+        return reference_time - before, reference_time + after
 
-    before = parse_timespec(command.time_range.before) if command.time_range and command.time_range.before else datetime.timedelta(0)
-    after = parse_timespec(command.time_range.after) if command.time_range and command.time_range.after else datetime.timedelta(0)
-
-    start_time = reference_time - before
-    end_time = reference_time + after
-
-    return start_time, end_time
+    return hunt_start_time - before, hunt_end_time + after
 
 
 def _resolve_time_field_and_format(

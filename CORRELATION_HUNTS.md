@@ -183,11 +183,11 @@ command:
 
 Systems register with the hunter in ACE for the `source` field.
 
-In the case of an `event transformation`, the relative `time_range` is relative to the time of the current `event`, which is identified using the `relative_time_field` and `relative_time_format` options.
+In the case of an `event transformation`, the relative `time_range` is relative to the time of the current `event`, which is identified using the `relative_time_field` and `relative_time_format` options. `before` and `after` extend the window around that single event time.
 
-In the case of a `stream transformation`, a relative `time_range` is relative to the time used to execute the hunt. 
+In the case of a `stream transformation`, a relative `time_range` is anchored to the hunt's own query window: `before` extends before the window's start time and `after` extends after its end time. (A stream transform runs once for the whole stream, so there is no single per-event time to anchor to — `relative_time_field`/`relative_time_format` are ignored for stream transforms.)
 
-In either case, if time range is not available, then a relative `time_range` is relative to the current system time.
+In either case, if no time range can be determined — an `event transformation` whose `relative_time_field` cannot be resolved, or a hunt run with no query window — the relative `time_range` falls back to being anchored to the hunt's query window (which is the current system time when the hunt is not run over an explicit window).
 
 #### executable
 

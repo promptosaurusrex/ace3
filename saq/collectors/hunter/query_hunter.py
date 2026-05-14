@@ -347,6 +347,11 @@ class QueryHunt(Hunt):
 
             query_result = self.execute_query(offset_start_time, offset_end_time, *args, **kwargs)
 
+            # record the actual query window so correlation (process_query_results)
+            # can anchor a stream transform's relative time_range to it
+            self._correlation_hunt_start_time = offset_start_time
+            self._correlation_hunt_end_time = offset_end_time
+
             return self.process_query_results(query_result, **kwargs)
 
         finally:
@@ -739,7 +744,8 @@ class QueryHunt(Hunt):
             engine = CorrelationEngine(
                 correlate_config=self.config.correlate,
                 predefined_commands=getattr(self.config, "_predefined_commands", []),
-                hunt_time=local_time(),
+                hunt_start_time=getattr(self, "_correlation_hunt_start_time", local_time()),
+                hunt_end_time=getattr(self, "_correlation_hunt_end_time", local_time()),
                 max_result_count=self.max_result_count,
                 hunt_source_type=self.type,
             )
