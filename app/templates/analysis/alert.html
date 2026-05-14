@@ -20,6 +20,10 @@
         <td class="col-md-2">Storage</td>
         <td class="col-md-10">{{alert.storage_dir}}
             <button class="btn btn-outline-dark btn-xs" type="button" id="copy_action_storage_dir" title="Copy to Clipboard"><span class="bi bi-copy"></span></button>
+            {% if not alert.archived %}
+            <a href="/api/v2/alerts/{{alert.uuid}}/download" class="btn btn-outline-dark btn-xs" title="Download alert as encrypted zip (password: infected)"><span class="bi bi-file-earmark-zip"></span></a>
+            <a href="/api/v2/alerts/{{alert.uuid}}/logs" target="_blank" rel="noopener" class="btn btn-outline-dark btn-xs" title="View raw analysis log (saq.log)"><span class="bi bi-file-earmark-text"></span></a>
+            {% endif %}
             <script type="text/javascript">
                 $('#copy_action_storage_dir').on('click', function() {
                     // avoid escaping issues going from python to javascript by using base64
