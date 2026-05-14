@@ -129,8 +129,14 @@ class TestGetCachedDelta:
             assert get_cached_delta(obs, module, blob_store) is None
         misses = [r for r in caplog.records if "analysis cache miss" in r.getMessage()]
         assert misses
-        assert "reason=not_found" in misses[0].getMessage()
-        assert f"module_name={module.config.name}" in misses[0].getMessage()
+        msg = misses[0].getMessage()
+        assert "reason=not_found" in msg
+        assert f"module_name={module.config.name}" in msg
+        assert "observable_value=https://example.com/" in msg
+        # SimpleNamespace stub has no analysis_tree_manager — the defensive
+        # getattr chain must fall back gracefully rather than raise.
+        assert "root_uuid=<unknown>" in msg
+        assert misses[0].observable_value == "https://example.com/"
 
     @pytest.mark.integration
     def test_hit_round_trips(self, blob_store):

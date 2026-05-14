@@ -125,6 +125,10 @@ class ModuleExecutionSnapshot:
     root_detection_ids: frozenset
     root_detections_by_id: dict
 
+    # uuid of the root analysis this snapshot was captured against —
+    # denormalized onto the resulting delta for log/cache provenance.
+    root_uuid: str = ""
+
     # Wide-diff: states of all other observables (empty for narrow snapshots)
     other_observables: dict[str, _ObservableState] = field(default_factory=dict)
 
@@ -148,6 +152,7 @@ class ModuleExecutionSnapshot:
             root_tags=frozenset(root.tags),
             root_detection_ids=frozenset(root_det_ids),
             root_detections_by_id=root_dets_by_id,
+            root_uuid=root.uuid,
         )
 
     @classmethod
@@ -183,6 +188,7 @@ class ModuleExecutionSnapshot:
             root_tags=frozenset(root.tags),
             root_detection_ids=frozenset(root_det_ids),
             root_detections_by_id=root_dets_by_id,
+            root_uuid=root.uuid,
             other_observables=other_observables,
             analysis_children=analysis_children,
         )
@@ -285,6 +291,7 @@ class ModuleExecutionSnapshot:
             observable_type=observable._type,
             observable_value=observable.value,
             created_at=now.isoformat(),
+            root_uuid=after.root_uuid or before.root_uuid,
             analysis=analysis_dict,
             target_observable_diff=target_diff,
             new_observables=new_observables,

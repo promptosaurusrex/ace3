@@ -1055,21 +1055,27 @@ class AnalysisExecutor:
         attribution_delta = delta.with_cache_hit_metadata(
             executed_at=datetime.now(UTC),
             execution_time_ms=lookup_ms + replay_ms,
+            root_uuid=root.uuid,
         )
         root.record_module_execution(attribution_delta)
 
         cache_key_prefix = (delta.cache_key or "")[:12] or "n/a"
         logging.info(
             "analysis cache hit module_name=%s observable_type=%s "
-            "cache_key_prefix=%s lookup_ms=%d replay_ms=%d",
+            "observable_value=%s root_uuid=%s cache_key_prefix=%s "
+            "lookup_ms=%d replay_ms=%d",
             module.config.name,
             observable.type,
+            observable.value,
+            root.uuid,
             cache_key_prefix,
             lookup_ms,
             replay_ms,
             extra={
                 "module_name": module.config.name,
                 "observable_type": observable.type,
+                "observable_value": observable.value,
+                "root_uuid": root.uuid,
                 "cache_key_prefix": cache_key_prefix,
                 "lookup_ms": lookup_ms,
                 "replay_ms": replay_ms,

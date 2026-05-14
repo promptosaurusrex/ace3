@@ -198,6 +198,7 @@ class TestModuleExecutionDelta:
 
         delta = self._make_delta(
             module_instance="instance1",
+            root_uuid="root-uuid-1",
             analysis={"module_path": "saq.modules.test:TestAnalysis", "completed": True},
             target_observable_diff=target_diff,
             new_observables=[new_obs],
@@ -218,6 +219,7 @@ class TestModuleExecutionDelta:
         assert restored.observable_value == delta.observable_value
         assert restored.created_at == delta.created_at
         assert restored.execution_time_ms == 42
+        assert restored.root_uuid == "root-uuid-1"
         assert restored.analysis == delta.analysis
         assert restored.target_observable_diff.added_tags == ["suspicious"]
         assert len(restored.new_observables) == 1
@@ -242,6 +244,7 @@ class TestModuleExecutionDelta:
         assert "other_observable_diffs" not in d
         assert "module_instance" not in d
         assert "analysis_children_diffs" not in d
+        assert "root_uuid" not in d
 
     @pytest.mark.unit
     def test_has_removals_from_analysis_children(self):

@@ -116,11 +116,16 @@ class TestPutCachedDelta:
             assert "op=insert" in msg
             assert f"module_name={module.config.name}" in msg
             assert "observable_type=url" in msg
+            assert "observable_value=https://example.com/" in msg
+            assert "root_uuid=" in msg
             assert "uncompressed_bytes=" in msg
             assert "compressed_bytes=" in msg
             assert "has_blob_refs=False" in msg
             assert "ttl_seconds=3600" in msg
             assert "write_ms=" in msg
+            # Extras land as top-level fields for Splunk auto-KV.
+            assert telemetry[0].observable_value == "https://example.com/"
+            assert hasattr(telemetry[0], "root_uuid")
 
             # Verify the payload round-trips through zstd → JSON → from_dict.
             with get_db_connection() as db:

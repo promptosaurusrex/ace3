@@ -94,6 +94,8 @@ class TestApplyCachedDelta:
         recorded = root.module_executions[0]
         assert recorded.from_cache_hit is True
         assert recorded.observable_uuid == obs.uuid
+        # root_uuid is rewritten to the current alert being analyzed.
+        assert recorded.root_uuid == root.uuid
         # Mutation fields preserved from original capture.
         assert recorded.target_observable_diff.added_tags == ["replayed"]
         # Attribution execution_time_ms reflects total hit cost
@@ -117,12 +119,16 @@ class TestApplyCachedDelta:
         msg = hit_logs[0].getMessage()
         assert f"module_name={module.config.name}" in msg
         assert f"observable_type={F_FQDN}" in msg
+        assert "observable_value=example.com" in msg
+        assert f"root_uuid={root.uuid}" in msg
         assert "cache_key_prefix=" in msg
         assert "lookup_ms=7" in msg
         assert "replay_ms=" in msg
-        # Both timings surface as top-level fields for Splunk.
+        # Both timings + identifiers surface as top-level fields for Splunk.
         assert hit_logs[0].lookup_ms == 7
         assert hasattr(hit_logs[0], "replay_ms")
+        assert hit_logs[0].observable_value == "example.com"
+        assert hit_logs[0].root_uuid == root.uuid
 
     @pytest.mark.unit
     def test_attribution_delta_recorded_even_when_diff_is_empty(self, tmp_path):
@@ -198,6 +204,7 @@ class TestModuleExecutionDeltaCacheHitMetadata:
             observable_value="v",
             created_at=datetime.now(timezone.utc).isoformat(),
             execution_time_ms=1234,
+            root_uuid="source-alert-uuid",
             target_observable_diff=ObservableDiff(added_tags=["t1"]),
             new_observables=[],
             root_diff=RootDiff(),
@@ -206,14 +213,19 @@ class TestModuleExecutionDeltaCacheHitMetadata:
         copy = delta.with_cache_hit_metadata(
             executed_at=executed_at,
             execution_time_ms=5,
+            root_uuid="current-alert-uuid",
         )
         # Original is untouched.
         assert delta.from_cache_hit is False
         assert delta.execution_time_ms == 1234
+        assert delta.root_uuid == "source-alert-uuid"
         # Copy reflects the cache-hit replay.
         assert copy.from_cache_hit is True
         assert copy.execution_time_ms == 5
         assert copy.created_at == executed_at.isoformat()
+        # root_uuid is rewritten to the current alert, not the source alert
+        # the cached delta originated from.
+        assert copy.root_uuid == "current-alert-uuid"
         # Mutations preserved.
         assert copy.target_observable_diff.added_tags == ["t1"]
 

@@ -279,6 +279,13 @@ class ModuleExecutionDelta:
     created_at: str  # ISO format
     execution_time_ms: int = 0
 
+    # Root analysis this delta was recorded against. Denormalized (like the
+    # observable_* fields) so a delta is self-describing in logs and in the
+    # cache row — and so a cached delta carries the provenance of the alert
+    # that first produced it. On a cache-hit replay, with_cache_hit_metadata()
+    # rewrites this to the *current* root being analyzed.
+    root_uuid: str = ""
+
     # The analysis object produced by this module (serialized), or None
     analysis: Optional[dict] = None
 
@@ -339,19 +346,23 @@ class ModuleExecutionDelta:
         return any(spec.type == F_FILE for spec in self.new_observables)
 
     def with_cache_hit_metadata(
-        self, executed_at: datetime, execution_time_ms: int,
+        self, executed_at: datetime, execution_time_ms: int, root_uuid: str,
     ) -> "ModuleExecutionDelta":
         """Return a copy of this delta marked as a cache replay.
 
         Preserves all mutation fields (so root.json shows the same
-        attribution as the original live run) but updates the timestamps
-        and sets ``from_cache_hit=True``. Used by the executor's cache-hit
-        branch to record replay attribution distinct from live runs.
+        attribution as the original live run) but updates the timestamps,
+        rewrites ``root_uuid`` to the *current* root being analyzed (the
+        cached delta carries the source alert's uuid, which would be
+        misleading once recorded against a different alert), and sets
+        ``from_cache_hit=True``. Used by the executor's cache-hit branch
+        to record replay attribution distinct from live runs.
         """
         return replace(
             self,
             created_at=executed_at.isoformat(),
             execution_time_ms=execution_time_ms,
+            root_uuid=root_uuid,
             from_cache_hit=True,
         )
 
@@ -367,6 +378,8 @@ class ModuleExecutionDelta:
         }
         if self.module_instance is not None:
             result["module_instance"] = self.module_instance
+        if self.root_uuid:
+            result["root_uuid"] = self.root_uuid
         if self.analysis is not None:
             result["analysis"] = self.analysis
         if not self.target_observable_diff.is_empty:
@@ -417,6 +430,7 @@ class ModuleExecutionDelta:
             observable_value=data["observable_value"],
             created_at=data["created_at"],
             execution_time_ms=data.get("execution_time_ms", 0),
+            root_uuid=data.get("root_uuid", ""),
             analysis=data.get("analysis"),
             target_observable_diff=target_diff,
             new_observables=new_obs,
