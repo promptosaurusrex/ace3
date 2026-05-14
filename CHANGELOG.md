@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.49] - 2026-05-14
+
+- [Adds buttons to download alert and view logs](https://github.com/ACE-Collective/ace3/pull/222)
+- [Analysis caching Phase 3 (initial cache replays)](https://github.com/ACE-Collective/ace3/pull/211)
+- [Observable modifier fixes](https://github.com/ACE-Collective/ace3/pull/226)
+
 ## [3.0.48] - 2026-05-13
 
 - [fixed some issues with nested integrations](https://github.com/ACE-Collective/ace3/pull/223)
