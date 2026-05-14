@@ -755,19 +755,19 @@ def test_splunk_api_analyzer_fill_additional_timespecs_event_time(test_context):
 
 @pytest.mark.unit
 def test_pivot_link_config_invalid_target():
-    """An invalid target falls back to 'analysis' rather than raising."""
+    """An invalid target falls back to 'root' rather than raising."""
     pl = PivotLinkConfig(url="https://example.com", text="link", target="bogus")
-    assert pl.target == "analysis"
+    assert pl.target == "root"
 
     # valid targets are preserved
-    assert PivotLinkConfig(url="u", text="t", target="root").target == "root"
-    # default is analysis
-    assert PivotLinkConfig(url="u", text="t").target == "analysis"
+    assert PivotLinkConfig(url="u", text="t", target="analysis").target == "analysis"
+    # default is root
+    assert PivotLinkConfig(url="u", text="t").target == "root"
 
 
 @pytest.mark.unit
 def test_process_pivot_links_basic(test_context):
-    """A single pivot_link with scalar fields produces one link on the analysis node."""
+    """A single pivot_link with scalar fields produces one link on the root alert (the default target)."""
     with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
         mock_splunk_client.return_value = MockSplunk()
 
@@ -785,24 +785,25 @@ def test_process_pivot_links_basic(test_context):
 
         analyzer.process_pivot_links(analysis)
 
-        assert len(analysis.pivot_links) == 1
-        assert analysis.pivot_links[0].url == "https://splunk.example.com/search?q=10.0.0.1"
-        assert analysis.pivot_links[0].text == "Pivot on 10.0.0.1"
-        assert analysis.pivot_links[0].icon == "search"
-        # nothing attached to the root alert
-        assert len(analyzer.get_root().pivot_links) == 0
+        root_links = analyzer.get_root().pivot_links
+        assert len(root_links) == 1
+        assert root_links[0].url == "https://splunk.example.com/search?q=10.0.0.1"
+        assert root_links[0].text == "Pivot on 10.0.0.1"
+        assert root_links[0].icon == "search"
+        # nothing attached to the analysis node
+        assert len(analysis.pivot_links) == 0
 
 
 @pytest.mark.unit
-def test_process_pivot_links_target_root(test_context):
-    """A pivot_link with target='root' attaches to the root alert, not the analysis node."""
+def test_process_pivot_links_target_analysis(test_context):
+    """A pivot_link with target='analysis' attaches to the analysis node, not the root alert."""
     with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
         mock_splunk_client.return_value = MockSplunk()
 
         config = _pivot_link_config(pivot_links=[{
             "url": "https://splunk.example.com/search?q={{ src_ip }}",
             "text": "Pivot on {{ src_ip }}",
-            "target": "root",
+            "target": "analysis",
         }])
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
@@ -813,12 +814,11 @@ def test_process_pivot_links_target_root(test_context):
 
         analyzer.process_pivot_links(analysis)
 
-        assert len(analysis.pivot_links) == 0
-        root_links = analyzer.get_root().pivot_links
-        assert len(root_links) == 1
-        assert root_links[0].url == "https://splunk.example.com/search?q=10.0.0.1"
-        assert root_links[0].text == "Pivot on 10.0.0.1"
-        assert root_links[0].icon is None
+        assert len(analyzer.get_root().pivot_links) == 0
+        assert len(analysis.pivot_links) == 1
+        assert analysis.pivot_links[0].url == "https://splunk.example.com/search?q=10.0.0.1"
+        assert analysis.pivot_links[0].text == "Pivot on 10.0.0.1"
+        assert analysis.pivot_links[0].icon is None
 
 
 @pytest.mark.unit
@@ -840,8 +840,9 @@ def test_process_pivot_links_multi_valued_field_pairs(test_context):
 
         analyzer.process_pivot_links(analysis)
 
-        assert len(analysis.pivot_links) == 2
-        pairs = sorted((p.url, p.text) for p in analysis.pivot_links)
+        root_links = analyzer.get_root().pivot_links
+        assert len(root_links) == 2
+        pairs = sorted((p.url, p.text) for p in root_links)
         assert pairs == [
             ("https://example.com/?q=incomplete", "incomplete info"),
             ("https://example.com/?q=not-applicable", "not-applicable info"),
@@ -867,9 +868,10 @@ def test_process_pivot_links_skips_undefined(test_context):
 
         analyzer.process_pivot_links(analysis)
 
-        assert len(analysis.pivot_links) == 1
-        assert analysis.pivot_links[0].url == "https://example.com/abc123"
-        assert analysis.pivot_links[0].text == "Present"
+        root_links = analyzer.get_root().pivot_links
+        assert len(root_links) == 1
+        assert root_links[0].url == "https://example.com/abc123"
+        assert root_links[0].text == "Present"
 
 
 @pytest.mark.unit
@@ -891,6 +893,7 @@ def test_process_pivot_links_skips_empty_values(test_context):
 
         analyzer.process_pivot_links(analysis)
 
+        assert len(analyzer.get_root().pivot_links) == 0
         assert len(analysis.pivot_links) == 0
 
 
@@ -918,7 +921,7 @@ def test_process_pivot_links_dedup(test_context):
 
         analyzer.process_pivot_links(analysis)
 
-        urls = sorted(p.url for p in analysis.pivot_links)
+        urls = sorted(p.url for p in analyzer.get_root().pivot_links)
         assert urls == [
             "https://example.com/server1",
             "https://example.com/server2",
@@ -1014,5 +1017,6 @@ def test_process_pivot_links_query_results_dict(test_context):
 
         analyzer.process_pivot_links(analysis)
 
-        assert len(analysis.pivot_links) == 1
-        assert analysis.pivot_links[0].url == "https://example.com/server1"
+        root_links = analyzer.get_root().pivot_links
+        assert len(root_links) == 1
+        assert root_links[0].url == "https://example.com/server1"

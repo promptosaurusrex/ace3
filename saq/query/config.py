@@ -62,8 +62,8 @@ class PivotLinkConfig(BaseModel):
     text: str = Field(..., description="Jinja template for the pivot link display text, rendered against each event.")
     icon: Optional[str] = Field(default=None, description="Optional icon name for the pivot link.")
     target: str = Field(
-        default=PIVOT_LINK_TARGET_ANALYSIS,
-        description="Where to attach the rendered link: 'analysis' (the analysis node) or 'root' (the root alert).",
+        default=PIVOT_LINK_TARGET_ROOT,
+        description="Where to attach the rendered link: 'root' (the root alert) or 'analysis' (the analysis node).",
     )
 
     @field_validator("target")
@@ -72,9 +72,9 @@ class PivotLinkConfig(BaseModel):
         if value not in VALID_PIVOT_LINK_TARGETS:
             logging.error(
                 "invalid pivot_link target %s - must be one of %s - defaulting to %s",
-                value, VALID_PIVOT_LINK_TARGETS, PIVOT_LINK_TARGET_ANALYSIS,
+                value, VALID_PIVOT_LINK_TARGETS, PIVOT_LINK_TARGET_ROOT,
             )
-            return PIVOT_LINK_TARGET_ANALYSIS
+            return PIVOT_LINK_TARGET_ROOT
         return value
 
 
