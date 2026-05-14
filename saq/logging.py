@@ -7,6 +7,56 @@ import sys
 from typing import Optional
 import yaml
 
+from fluent.handler import FluentRecordFormatter
+
+
+class ExtraAwareFluentFormatter(FluentRecordFormatter):
+    """``FluentRecordFormatter`` that surfaces ``extra={}`` keys as
+    top-level fields in the structured output, in addition to the
+    renames produced by the configured ``fmt`` dict.
+
+    Why: the upstream formatter's dict mode emits only the keys listed
+    in its ``fmt`` mapping. Anything passed via ``extra={}`` lives on
+    the ``LogRecord`` but never reaches the wire, so Splunk's JSON-mode
+    auto-KV extraction can't break the values out as searchable fields
+    and operators have to ``rex`` them back out of the ``message`` text.
+
+    This subclass runs the parent's formatting first (preserving the
+    ``severity`` / ``logSource`` renames defined in the YAML config),
+    then walks ``record.__dict__`` and copies any attribute that
+        - isn't a standard ``LogRecord`` attribute (skips the noisy
+          built-ins like ``args``, ``msecs``, ``pathname``),
+        - isn't already present in the formatted output (avoids
+          clobbering the configured renames).
+
+    Net effect: ``logging.info("event", extra={"k": v})`` produces a
+    Splunk record with ``k`` as a top-level field while the human-
+    readable ``message`` text continues to work for free-text search.
+    """
+
+    # Standard LogRecord attributes set by the logging framework. Walking
+    # record.__dict__ would otherwise dump all of these into every event,
+    # which is a lot of noise (and includes the legacy ``module`` name —
+    # which can confuse Splunk by colliding with module-execution fields).
+    # ``hostname`` is added by the parent formatter itself.
+    _STANDARD_LOGRECORD_ATTRS = frozenset({
+        "args", "asctime", "created", "exc_info", "exc_text", "filename",
+        "funcName", "hostname", "levelname", "levelno", "lineno",
+        "message", "module", "msecs", "msg", "name", "pathname",
+        "process", "processName", "relativeCreated", "stack_info",
+        "taskName", "thread", "threadName",
+    })
+
+    def format(self, record):
+        data = super().format(record)
+        for key, value in record.__dict__.items():
+            if key in self._STANDARD_LOGRECORD_ATTRS:
+                continue
+            if key in data:
+                continue
+            data[key] = value
+        return data
+
 
 class CustomFileHandler(logging.StreamHandler):
     def __init__(self, log_dir: Optional[str]=".", filename_format: Optional[str]="%Y-%m-%d-%H.log"):

@@ -5,7 +5,10 @@ formatters:
   base:
     format: '[%(asctime)s] [%(filename)s:%(lineno)d] [%(threadName)s] [%(process)d] [%(levelname)s] - %(message)s'
   fluent_fmt:
-    '()': fluent.handler.FluentRecordFormatter
+    # ExtraAwareFluentFormatter adds top-level fields for any extra={}
+    # keys passed to logging calls. Splunk's JSON-mode auto-KV picks
+    # them up natively — no per-query rex needed.
+    '()': saq.logging.ExtraAwareFluentFormatter
     format:
       asctime: '%(asctime)s'
       filename: '%(filename)s'
