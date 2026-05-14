@@ -88,7 +88,7 @@ class TestApplyCachedDelta:
         module = _make_module()
         delta = _make_delta_for(obs)
 
-        executor._apply_cached_delta(root, obs, module, delta)
+        executor._apply_cached_delta(root, obs, module, delta, lookup_ms=4)
 
         assert len(root.module_executions) == 1
         recorded = root.module_executions[0]
@@ -96,6 +96,9 @@ class TestApplyCachedDelta:
         assert recorded.observable_uuid == obs.uuid
         # Mutation fields preserved from original capture.
         assert recorded.target_observable_diff.added_tags == ["replayed"]
+        # Attribution execution_time_ms reflects total hit cost
+        # (lookup + replay), not replay alone.
+        assert recorded.execution_time_ms >= 4
 
     @pytest.mark.unit
     def test_emits_cache_hit_telemetry_log(self, tmp_path, caplog):
@@ -107,7 +110,7 @@ class TestApplyCachedDelta:
         delta = _make_delta_for(obs)
 
         with caplog.at_level(logging.INFO):
-            executor._apply_cached_delta(root, obs, module, delta)
+            executor._apply_cached_delta(root, obs, module, delta, lookup_ms=7)
 
         hit_logs = [r for r in caplog.records if "analysis cache hit" in r.getMessage()]
         assert hit_logs
@@ -115,7 +118,11 @@ class TestApplyCachedDelta:
         assert f"module_name={module.config.name}" in msg
         assert f"observable_type={F_FQDN}" in msg
         assert "cache_key_prefix=" in msg
+        assert "lookup_ms=7" in msg
         assert "replay_ms=" in msg
+        # Both timings surface as top-level fields for Splunk.
+        assert hit_logs[0].lookup_ms == 7
+        assert hasattr(hit_logs[0], "replay_ms")
 
     @pytest.mark.unit
     def test_attribution_delta_recorded_even_when_diff_is_empty(self, tmp_path):
@@ -145,7 +152,7 @@ class TestApplyCachedDelta:
         )
         empty_delta.cache_key = "00" * 32
 
-        executor._apply_cached_delta(root, obs, module, empty_delta)
+        executor._apply_cached_delta(root, obs, module, empty_delta, lookup_ms=2)
 
         # Even though the delta is empty, attribution is recorded.
         assert len(root.module_executions) == 1
@@ -164,7 +171,7 @@ class TestApplyCachedDelta:
         module = _make_module()
         delta = _make_delta_for(obs)
 
-        executor._apply_cached_delta(root, obs, module, delta)
+        executor._apply_cached_delta(root, obs, module, delta, lookup_ms=1)
 
         # Diff additions applied.
         assert "replayed" in obs.tags

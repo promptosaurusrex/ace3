@@ -1026,6 +1026,7 @@ class AnalysisExecutor:
         observable: Observable,
         module: AnalysisModuleInterface,
         delta,
+        lookup_ms: int,
     ) -> None:
         """Replay a cached delta and record cache-hit attribution.
 
@@ -1035,6 +1036,13 @@ class AnalysisExecutor:
         ``is_empty`` filter that Phase 1 uses for live captures does NOT
         apply here, because cache consultation is itself information
         worth keeping.
+
+        ``lookup_ms`` is the wall time the caller spent in
+        ``get_cached_delta`` (DB SELECT + zstd decompress + deserialize +
+        any blob fetch). It's logged alongside ``replay_ms`` so the
+        ``analysis cache hit`` line reflects the *total* cost of a hit —
+        for cheap modules like whois the lookup is the larger half, so
+        ``replay_ms`` alone would understate it.
 
         ``monitor`` and ``track_current_analysis_module`` are skipped on
         purpose: both are bounded by live module wall time, and replay
@@ -1046,22 +1054,24 @@ class AnalysisExecutor:
 
         attribution_delta = delta.with_cache_hit_metadata(
             executed_at=datetime.now(UTC),
-            execution_time_ms=replay_ms,
+            execution_time_ms=lookup_ms + replay_ms,
         )
         root.record_module_execution(attribution_delta)
 
         cache_key_prefix = (delta.cache_key or "")[:12] or "n/a"
         logging.info(
             "analysis cache hit module_name=%s observable_type=%s "
-            "cache_key_prefix=%s replay_ms=%d",
+            "cache_key_prefix=%s lookup_ms=%d replay_ms=%d",
             module.config.name,
             observable.type,
             cache_key_prefix,
+            lookup_ms,
             replay_ms,
             extra={
                 "module_name": module.config.name,
                 "observable_type": observable.type,
                 "cache_key_prefix": cache_key_prefix,
+                "lookup_ms": lookup_ms,
                 "replay_ms": replay_ms,
             },
         )
@@ -1136,12 +1146,15 @@ class AnalysisExecutor:
                 and get_config().analysis_cache.enabled
             ):
                 try:
+                    lookup_start_ns = time.monotonic_ns()
                     cached_delta = get_cached_delta(
                         work_item.observable, analysis_module, get_blob_store()
                     )
+                    lookup_ms = (time.monotonic_ns() - lookup_start_ns) // 1_000_000
                     if cached_delta is not None:
                         self._apply_cached_delta(
                             root, work_item.observable, analysis_module, cached_delta,
+                            lookup_ms,
                         )
                         self._process_generated_analysis(
                             AnalysisExecutionResult.COMPLETED, root, work_item,
