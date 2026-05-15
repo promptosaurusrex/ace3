@@ -430,6 +430,35 @@ class FileCollectorConfig(BaseModel):
     )
 
 
+class ExternalRemediationProbeConfig(BaseModel):
+    """Configuration for a probe that polls an external system to discover
+    whether that system has remediated a target observable. The probe class
+    itself ships in an integration repo; this config tells core ACE where to
+    import it from and how aggressively to poll."""
+    name: str = Field(..., description="The registered name of the probe.")
+    observable_type: str = Field(..., description="The observable type the probe consumes.")
+    python_module: str = Field(..., description="Python module holding the probe class.")
+    python_class: str = Field(..., description="Probe class name inside the module.")
+    enabled: bool = Field(default=True, description="Whether this probe is loaded by the service.")
+    thread_count: int = Field(default=2, description="Number of worker threads for this probe.")
+    initial_delay_seconds: int = Field(
+        default=60,
+        description="Initial per-row backoff between PENDING / transient-error attempts.",
+    )
+    max_delay_seconds: int = Field(
+        default=3600,
+        description="Maximum per-row backoff (1 hour default).",
+    )
+    max_retries: int = Field(
+        default=24,
+        description="Maximum probe attempts before a transient_error becomes terminal.",
+    )
+    deadline_seconds: int = Field(
+        default=604800,
+        description="Absolute cutoff per row (7 days default). After this, the row goes EXPIRED.",
+    )
+
+
 class NRDURLList(BaseModel):
     """A single configured newly-registered-domains list source.
 
@@ -549,6 +578,7 @@ class ACEConfig(BaseModel):
         self.__git_repos: Optional[dict[str, GitRepoConfig]] = None
         self.__remediators: Optional[dict[str, RemediatorConfig]] = None
         self.__file_collectors: Optional[dict[str, FileCollectorConfig]] = None
+        self.__external_remediation_probes: Optional[dict[str, ExternalRemediationProbeConfig]] = None
         self.__module_config_by_python_module: dict[tuple, "AnalysisModuleConfig"] = {}
 
     def resolve_all_values(self):
@@ -591,6 +621,7 @@ class ACEConfig(BaseModel):
         self.load_git_repo_configs()
         self.load_remediator_configs()
         self.load_file_collector_configs()
+        self.load_external_remediation_probe_configs()
     #
     # integrations
     #
@@ -1119,3 +1150,40 @@ class ACEConfig(BaseModel):
             raise ValueError(f"file collector config for {name} not found")
 
         return self.__file_collectors[name]
+
+    #
+    # external remediation probes
+    #
+
+    @property
+    def external_remediation_probes(self) -> list[ExternalRemediationProbeConfig]:
+        if self.__external_remediation_probes is None:
+            self._raise_raw_data_error()
+
+        return self.__external_remediation_probes.values()
+
+    def load_external_remediation_probe_configs(self):
+        self.__external_remediation_probes = {}
+
+        for key, value in self.raw._data.items():
+            if not key.startswith("external_remediation_probe_"):
+                continue
+
+            probe_config = ExternalRemediationProbeConfig.model_validate(value)
+            self.add_external_remediation_probe_config(probe_config.name, probe_config)
+
+    def add_external_remediation_probe_config(
+        self, name: str, probe_config: ExternalRemediationProbeConfig
+    ):
+        self.__external_remediation_probes[name] = probe_config
+
+    def get_external_remediation_probe_config(
+        self, name: str
+    ) -> ExternalRemediationProbeConfig:
+        if self.__external_remediation_probes is None:
+            self._raise_raw_data_error()
+
+        if name not in self.__external_remediation_probes:
+            raise ValueError(f"external remediation probe config for {name} not found")
+
+        return self.__external_remediation_probes[name]

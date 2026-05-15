@@ -2161,6 +2161,32 @@ module_group_action:
   modules:
     - crawlphish
 
+# EXTERNAL REMEDIATION CHECK SERVICE
+# Background daemon that polls external systems to discover whether *they*
+# have remediated a target observable.
+# Probes are registered per-integration via `external_remediation_probe_*`
+# config blocks. The daemon itself  is generic and ships disabled by default.
+service_external_remediation_check:
+  name: external_remediation_check
+  python_module: saq.remediation.external.service
+  python_class: ExternalRemediationCheckService
+  description: Polls external systems for autonomous remediation events
+  enabled: false
+  instance_types:
+    - ANY
+  # How long a row may stay locked by a worker before another worker is
+  # allowed to claim it. Should comfortably exceed your slowest probe call.
+  lock_timeout_seconds: 300
+  # Per-row exponential backoff between PENDING / transient-error attempts.
+  # delay = min(max_retry_delay_seconds, initial_retry_delay_seconds * 2^retry_count)
+  initial_retry_delay_seconds: 60
+  max_retry_delay_seconds: 3600
+  # If true, periodically cancel in-flight checks for alerts that have been
+  # dispositioned. Default false: late-arriving confirmations (e.g. a Defender
+  # ZAP hours after alert close) should still land on the timeline.
+  stop_on_disposition: false
+  disposition_sweep_interval_seconds: 300
+
 # ENGINE CONFIGURATION
 service_engine:
   name: engine

@@ -211,6 +211,14 @@ def gather_remediation_events(
     except Exception:
         logging.exception("failed to gather ACE email remediation events; skipping")
 
+    # Pull events confirmed by ``saq/remediation/external/`` probes. These
+    # are written by the background daemon after analysis completes, so
+    # they may include events that didn't exist when the alert was first analyzed.
+    try:
+        events.extend(_gather_external_check_events(root))
+    except Exception:
+        logging.exception("failed to gather external remediation check events; skipping")
+
     # Sort order matches the table reading order:
     #   1. event_time     (the "Event Time" column — the message's received time)
     #   2. timestamp      (the "When" column — when the action happened)
@@ -306,3 +314,17 @@ def _gather_ace_email_remediation_events(
         ))
 
     return events
+
+
+def _gather_external_check_events(root: "RootAnalysis") -> list[RemediationEvent]:
+    """Return the events confirmed by external remediation probes for this
+    alert. See :mod:`saq.remediation.external` — confirmed rows store a
+    serialized ``list[RemediationEvent]`` in ``events_json``."""
+    from saq.remediation.external.database import get_external_checks_for_alert
+    from saq.remediation.external.events import events_from_check
+
+    checks = get_external_checks_for_alert(root.uuid)
+    out: list[RemediationEvent] = []
+    for check in checks:
+        out.extend(events_from_check(check))
+    return out

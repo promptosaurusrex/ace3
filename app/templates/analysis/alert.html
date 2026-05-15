@@ -181,7 +181,7 @@
 </div>
 {% endif %}
 
-{% if remediation_timeline_events %}
+{% if remediation_timeline_events or (external_check_footer and external_check_footer.entries) %}
 <div class="row">
     <div class="col">
         <div class="card mb-3">
@@ -190,6 +190,7 @@
             </div>
             <div class="card-body">
                 <div class="card-text collapse show" id="collapse_remediation_timeline">
+                    {% if remediation_timeline_events %}
                     <table class="table table-hover table-sm">
                         <thead>
                             <tr>
@@ -216,6 +217,36 @@
                             {% endfor %}
                         </tbody>
                     </table>
+                    {% else %}
+                    <p class="text-muted mb-0">No remediation events have been confirmed yet.</p>
+                    {% endif %}
+
+                    {% if external_check_footer and external_check_footer.entries %}
+                    <div class="mt-3 pt-2 border-top small text-muted">
+                        <div class="mb-1"><strong>External remediation checks</strong></div>
+                        <ul class="list-unstyled mb-0">
+                            {% for entry in external_check_footer.entries %}
+                            <li>
+                                <code>{{ entry.probe_name }}</code> &mdash;
+                                {% if entry.pending > 0 %}
+                                    {{ entry.pending }} pending
+                                    {%- if entry.last_attempt_at %}, last checked {{ entry.last_attempt_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC{% endif -%}
+                                    {%- if entry.next_attempt_at %}, next attempt {{ entry.next_attempt_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC{% endif -%}
+                                {% else %}
+                                    all complete
+                                {% endif %}
+                                {%- set complete_parts = [] -%}
+                                {%- if entry.confirmed %}{% set _ = complete_parts.append(entry.confirmed ~ ' confirmed') %}{% endif -%}
+                                {%- if entry.not_found %}{% set _ = complete_parts.append(entry.not_found ~ ' not found') %}{% endif -%}
+                                {%- if entry.expired %}{% set _ = complete_parts.append(entry.expired ~ ' expired') %}{% endif -%}
+                                {%- if entry.errored %}{% set _ = complete_parts.append(entry.errored ~ ' errored') %}{% endif -%}
+                                {%- if entry.cancelled %}{% set _ = complete_parts.append(entry.cancelled ~ ' cancelled') %}{% endif -%}
+                                {%- if complete_parts %} ({{ complete_parts|join(', ') }}){% endif -%}
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                    {% endif %}
                 </div>
             </div>
         </div>
