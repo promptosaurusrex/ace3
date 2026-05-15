@@ -5,8 +5,10 @@ import base64
 import json
 import os
 import random
+import re
 import shutil
 import signal
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -24,16 +26,65 @@ from selenium_recaptcha_solver import RecaptchaSolver  # type: ignore
 from seleniumbase import SB  # type: ignore
 from yaml import safe_load  # type: ignore
 
-# Stealth JS to inject into ServiceWorker/Worker contexts via CDP.
-# Must be self-contained (no references to main page globals).
+# Stealth JS to inject into ServiceWorker/Worker contexts via CDP and via the
+# Worker/Blob constructor patches in STEALTH_JS. Must be self-contained
+# (no references to main page globals). Mirrors what main-page STEALTH_JS does
+# but for worker scope, because workers are what creepjs / browserscan use to
+# cross-check OS / GPU / timezone signals against the spoofed UA.
 SW_STEALTH_JS = """
 (function() {
+    // platform: workers' WorkerNavigator.platform leaks 'Linux x86_64' even with
+    // CDP Network.setUserAgentOverride.userAgentMetadata.platform = 'Windows'.
     const navProto = Object.getPrototypeOf(navigator);
     if (navProto) {
-        Object.defineProperty(navProto, 'platform', {
-            get: () => 'Win32', configurable: true,
-        });
+        try {
+            Object.defineProperty(navProto, 'platform', {
+                get: () => 'Win32', configurable: true,
+            });
+        } catch(e) {}
     }
+    // navigator.userAgentData: the CDP override sets the *header* values but the
+    // JS accessor often still reports the underlying OS. Override the prototype.
+    if (typeof navigator !== 'undefined' && navigator.userAgentData) {
+        const uad = navigator.userAgentData;
+        const uadProto = Object.getPrototypeOf(uad);
+        try {
+            Object.defineProperty(uadProto, 'platform', {
+                get: () => 'Windows', configurable: true,
+            });
+        } catch(e) {}
+        const _orig = uadProto.getHighEntropyValues;
+        if (typeof _orig === 'function') {
+            uadProto.getHighEntropyValues = function(hints) {
+                return _orig.call(this, hints).then(v => Object.assign({}, v, {
+                    platform: 'Windows',
+                    platformVersion: '10.0.0',
+                    architecture: 'x86',
+                    bitness: '64',
+                    model: '',
+                    wow64: false,
+                }));
+            };
+        }
+    }
+    // WebGL: both OffscreenCanvas-derived contexts AND the bare prototypes
+    // (which both context types share methods from). Hook getParameter on the
+    // prototypes so every gl.getParameter(UNMASKED_VENDOR_WEBGL/RENDERER_WEBGL)
+    // returns the spoofed Intel iGPU instead of SwiftShader.
+    function patchGetParam(proto) {
+        if (!proto || !proto.prototype || !proto.prototype.getParameter) return;
+        const _gp = proto.prototype.getParameter;
+        proto.prototype.getParameter = function(p) {
+            if (p === 0x9245) return 'Intel Inc.';
+            if (p === 0x9246) return 'Intel Iris OpenGL Engine';
+            return _gp.call(this, p);
+        };
+        try {
+            proto.prototype.getParameter.toString = () => 'function getParameter() { [native code] }';
+        } catch(e) {}
+    }
+    if (typeof WebGLRenderingContext !== 'undefined')  patchGetParam(WebGLRenderingContext);
+    if (typeof WebGL2RenderingContext !== 'undefined') patchGetParam(WebGL2RenderingContext);
     if (typeof OffscreenCanvas !== 'undefined') {
         const _gc = OffscreenCanvas.prototype.getContext;
         OffscreenCanvas.prototype.getContext = function(t, a) {
@@ -49,15 +100,149 @@ SW_STEALTH_JS = """
             return c;
         };
     }
+    // Timezone: the container has no TZ set so Intl reports UTC. Override at
+    // the JS level since CDP Emulation.setTimezoneOverride doesn't always
+    // propagate to worker contexts.
+    if (typeof Intl !== 'undefined' && Intl.DateTimeFormat) {
+        const _ro = Intl.DateTimeFormat.prototype.resolvedOptions;
+        Intl.DateTimeFormat.prototype.resolvedOptions = function() {
+            const r = _ro.call(this);
+            if (r && r.timeZone === 'UTC') r.timeZone = 'America/New_York';
+            return r;
+        };
+        try {
+            Intl.DateTimeFormat.prototype.resolvedOptions.toString = () => 'function resolvedOptions() { [native code] }';
+        } catch(e) {}
+    }
 })();
 """
 
-BYPASS_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
-BYPASS_CHROME_MAJOR = "146"
-BYPASS_CHROME_FULL = "146.0.0.0"
+def _detect_chrome_version() -> tuple[str, str]:
+    """Returns (major, full) version of the Chrome/Chromium binary the scanner will drive.
+
+    Reads it from the binary itself at module load so the spoofed UA and
+    Sec-CH-UA headers stay in lockstep with the actual Chrome the image ships,
+    closing the version-drift gap that bot detectors fingerprint on. Falls
+    back to a known-recent version if detection fails.
+    """
+    for binary in ("google-chrome", "google-chrome-stable", "chromium"):
+        try:
+            result = subprocess.run(
+                [binary, "--version"],
+                capture_output=True, text=True, timeout=5, check=True,
+            )
+        except (FileNotFoundError, subprocess.SubprocessError):
+            continue
+        for tok in result.stdout.strip().split():
+            if tok and tok[0].isdigit() and "." in tok:
+                return tok.split(".", 1)[0], tok
+    return "147", "147.0.7727.101"
+
+
+BYPASS_CHROME_MAJOR, BYPASS_CHROME_FULL = _detect_chrome_version()
+BYPASS_UA = (
+    f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    f"AppleWebKit/537.36 (KHTML, like Gecko) "
+    f"Chrome/{BYPASS_CHROME_FULL} Safari/537.36"
+)
+
+
+def _detect_chrome_grease(major: str, full: str) -> tuple[list[dict], list[dict]]:
+    """Returns (brands, fullVersionList) — Chrome's own userAgentData output.
+
+    Chrome's GREASE algorithm (the rotating "Not_A Brand"-style entry that
+    accompanies Chromium/Google Chrome in userAgentData.brands) changes
+    periodically — different brand strings, different shuffle positions, even
+    different version numbers. Hardcoding goes stale silently when Chrome
+    rotates. Instead we ask the installed Chrome what it would emit, by
+    rendering a tiny page that resolves navigator.userAgentData and writes the
+    result to a data attribute, then parsing the dumped DOM.
+
+    Falls back to a sensible hardcoded list if detection fails (Chrome binary
+    missing, parse failure, etc.) so the scanner still works.
+    """
+    fallback_brands = [
+        {"brand": "Chromium", "version": major},
+        {"brand": "Not_A Brand", "version": "8"},
+        {"brand": "Google Chrome", "version": major},
+    ]
+    fallback_full = [
+        {"brand": "Chromium", "version": full},
+        {"brand": "Not_A Brand", "version": "8.0.0.0"},
+        {"brand": "Google Chrome", "version": full},
+    ]
+
+    html_payload = (
+        '<!DOCTYPE html><html><body data-uad=""></body><script>'
+        'navigator.userAgentData.getHighEntropyValues(["fullVersionList"])'
+        '.then(function(v){'
+        '  document.body.dataset.uad = btoa(JSON.stringify({'
+        '    brands: v.brands, full: v.fullVersionList'
+        '  }));'
+        '}).catch(function(e){});'
+        '</script></html>'
+    )
+    data_url = "data:text/html;base64," + base64.b64encode(html_payload.encode()).decode()
+
+    for binary in ("google-chrome", "google-chrome-stable", "chromium"):
+        try:
+            result = subprocess.run(
+                [
+                    binary,
+                    "--headless=new",
+                    "--no-sandbox",
+                    "--disable-gpu",
+                    "--virtual-time-budget=2000",
+                    "--dump-dom",
+                    data_url,
+                ],
+                capture_output=True, text=True, timeout=15, check=True,
+            )
+        except (FileNotFoundError, subprocess.SubprocessError):
+            continue
+        m = re.search(r'data-uad="([A-Za-z0-9+/=]+)"', result.stdout)
+        if not m:
+            continue
+        try:
+            decoded = base64.b64decode(m.group(1)).decode("utf-8")
+            data = json.loads(decoded)
+            brands = data.get("brands")
+            full_list = data.get("full")
+            if isinstance(brands, list) and isinstance(full_list, list) and brands and full_list:
+                return brands, full_list
+        except Exception:
+            continue
+    return fallback_brands, fallback_full
+
+
+BYPASS_BRANDS, BYPASS_FULL_VERSION_LIST = _detect_chrome_grease(BYPASS_CHROME_MAJOR, BYPASS_CHROME_FULL)
 
 # JavaScript to inject before any page scripts run, to mask automation signals.
 STEALTH_JS = """
+// 0. Native toString masking (per-function, not global)
+// Browserscan / creepjs lie-detection reads Object.getOwnPropertyDescriptor(...).get.toString()
+// for getters. If the result isn't "function ... { [native code] }", the override is flagged.
+// We could override Function.prototype.toString globally, but creepjs's lie-detector then
+// trips its hasToStringProxy / Function.toString lieProps detector via behavioral checks
+// (new toString(), call interface, etc.) that are very hard to mimic perfectly for a
+// non-native function. So instead: we attach a per-function .toString property that returns
+// the native-looking string. This works for `.toString()` direct calls — which is what
+// browserscan's getter inspector uses — and avoids tripping the toString-proxy detector.
+function maskNative(fn, signature) {
+    const masked = 'function ' + signature + '() { [native code] }';
+    try {
+        Object.defineProperty(fn, 'toString', {
+            value: function toString() { return masked; },
+            writable: false, enumerable: false, configurable: true,
+        });
+        Object.defineProperty(fn.toString, 'toString', {
+            value: function toString() { return 'function toString() { [native code] }'; },
+            writable: false, enumerable: false, configurable: true,
+        });
+    } catch(e) {}
+    return fn;
+}
+
 // 1. navigator.webdriver — handled natively by --disable-blink-features=AutomationControlled
 // Do NOT override via Object.defineProperty, as CreepJS lie detection will flag
 // a non-native getter on Navigator.prototype.webdriver.
@@ -107,50 +292,132 @@ Object.defineProperty(Screen.prototype, 'availHeight', {
 // if we're in the main window context, inject via Page.addScriptToEvaluateOnNewDocument.
 // For the main context, fix navigator.platform to match our Windows UA spoof.
 if (typeof Navigator !== 'undefined') {
+    const platGet = maskNative(function() { return 'Win32'; }, 'get platform');
     Object.defineProperty(Navigator.prototype, 'platform', {
-        get: () => 'Win32',
+        get: platGet,
         configurable: true,
     });
 }
 
+// 6b. Fix navigator.userAgentData to match Windows UA spoof
+// CDP Network.setUserAgentOverride.userAgentMetadata sets the Sec-CH-UA-Platform
+// HEADER but the JS-side navigator.userAgentData.platform accessor still leaks
+// the underlying OS (e.g. 'Linux'). Override the prototype so JS reads Windows.
+if (typeof navigator !== 'undefined' && navigator.userAgentData) {
+    const uad = navigator.userAgentData;
+    const uadProto = Object.getPrototypeOf(uad);
+    try {
+        const uadPlatGet = maskNative(function() { return 'Windows'; }, 'get platform');
+        Object.defineProperty(uadProto, 'platform', {
+            get: uadPlatGet,
+            configurable: true,
+        });
+    } catch(e) {}
+    const _orig = uadProto.getHighEntropyValues;
+    if (typeof _orig === 'function') {
+        const hookedGHEV = maskNative(function(hints) {
+            return _orig.call(this, hints).then(v => Object.assign({}, v, {
+                platform: 'Windows',
+                platformVersion: '10.0.0',
+                architecture: 'x86',
+                bitness: '64',
+                model: '',
+                wow64: false,
+            }));
+        }, 'getHighEntropyValues');
+        uadProto.getHighEntropyValues = hookedGHEV;
+    }
+}
+
 // 7. Inject stealth overrides into Worker contexts
 // Page.addScriptToEvaluateOnNewDocument only covers the main page; Workers get a
-// clean global.  We intercept Blob construction and Worker creation to prepend
+// clean global. We intercept Blob construction and Worker creation to prepend
 // stealth overrides into any JavaScript blob that might be used as a Worker script.
+// Mirrors SW_STEALTH_JS: platform, userAgentData, WebGL prototype hook, timezone.
 (function() {
     const WORKER_STEALTH = [
         '/* stealth */',
-        'const navProto = Object.getPrototypeOf(navigator);',
-        'if (navProto) {',
-        '  Object.defineProperty(navProto, "platform", { get: () => "Win32", configurable: true });',
-        '}',
-        'if (typeof OffscreenCanvas !== "undefined") {',
-        '  const _gc = OffscreenCanvas.prototype.getContext;',
-        '  OffscreenCanvas.prototype.getContext = function(t, a) {',
-        '    const c = _gc.call(this, t, a);',
-        '    if (c && (t==="webgl"||t==="webgl2"||t==="experimental-webgl")) {',
-        '      const _gp = c.getParameter.bind(c);',
-        '      c.getParameter = function(p) {',
-        '        if (p===0x9245) return "Intel Inc.";',
-        '        if (p===0x9246) return "Intel Iris OpenGL Engine";',
-        '        return _gp(p);',
-        '      };',
-        '    }',
-        '    return c;',
-        '  };',
-        '}',
+        '(function(){',
+        '  try {',
+        '    const navProto = Object.getPrototypeOf(navigator);',
+        '    if (navProto) Object.defineProperty(navProto, "platform", { get: () => "Win32", configurable: true });',
+        '  } catch(e) {}',
+        '  if (navigator.userAgentData) {',
+        '    try {',
+        '      const uadProto = Object.getPrototypeOf(navigator.userAgentData);',
+        '      Object.defineProperty(uadProto, "platform", { get: () => "Windows", configurable: true });',
+        '      const _o = uadProto.getHighEntropyValues;',
+        '      if (typeof _o === "function") {',
+        '        uadProto.getHighEntropyValues = function(h) {',
+        '          return _o.call(this, h).then(v => Object.assign({}, v, {',
+        '            platform: "Windows", platformVersion: "10.0.0",',
+        '            architecture: "x86", bitness: "64", model: "", wow64: false',
+        '          }));',
+        '        };',
+        '      }',
+        '    } catch(e) {}',
+        '  }',
+        '  function patchGP(proto) {',
+        '    if (!proto || !proto.prototype || !proto.prototype.getParameter) return;',
+        '    const _gp = proto.prototype.getParameter;',
+        '    proto.prototype.getParameter = function(p) {',
+        '      if (p===0x9245) return "Intel Inc.";',
+        '      if (p===0x9246) return "Intel Iris OpenGL Engine";',
+        '      return _gp.call(this, p);',
+        '    };',
+        '    try { proto.prototype.getParameter.toString = () => "function getParameter() { [native code] }"; } catch(e) {}',
+        '  }',
+        '  if (typeof WebGLRenderingContext !== "undefined")  patchGP(WebGLRenderingContext);',
+        '  if (typeof WebGL2RenderingContext !== "undefined") patchGP(WebGL2RenderingContext);',
+        '  if (typeof OffscreenCanvas !== "undefined") {',
+        '    const _gc = OffscreenCanvas.prototype.getContext;',
+        '    OffscreenCanvas.prototype.getContext = function(t, a) {',
+        '      const c = _gc.call(this, t, a);',
+        '      if (c && (t==="webgl"||t==="webgl2"||t==="experimental-webgl")) {',
+        '        const _gp = c.getParameter.bind(c);',
+        '        c.getParameter = function(p) {',
+        '          if (p===0x9245) return "Intel Inc.";',
+        '          if (p===0x9246) return "Intel Iris OpenGL Engine";',
+        '          return _gp(p);',
+        '        };',
+        '      }',
+        '      return c;',
+        '    };',
+        '  }',
+        '  if (typeof Intl !== "undefined" && Intl.DateTimeFormat) {',
+        '    const _ro = Intl.DateTimeFormat.prototype.resolvedOptions;',
+        '    Intl.DateTimeFormat.prototype.resolvedOptions = function() {',
+        '      const r = _ro.call(this);',
+        '      if (r && r.timeZone === "UTC") r.timeZone = "America/New_York";',
+        '      return r;',
+        '    };',
+        '  }',
+        '})();',
     ].join('\\n');
 
-    // Patch Worker/SharedWorker constructors for URL-based Workers.
+    // Patch Worker/SharedWorker constructors. For URL-based workers we prepend
+    // the stealth code via importScripts(). For blob: URLs we fetch the blob
+    // synchronously (sync XHR works because the blob URL is same-origin),
+    // prepend the stealth code, and recreate the blob.
     function patchWorkerCtor(Orig, name) {
         const Patched = function(scriptURL, options) {
+            // Module workers can't easily importScripts; pass through.
             if (options && options.type === 'module') {
                 return new Orig(scriptURL, options);
             }
             try {
                 const url = String(scriptURL);
                 if (url.startsWith('blob:')) {
-                    return new Orig(scriptURL, options);
+                    // Sync-fetch the blob body, prepend stealth, recreate.
+                    const xhr = new XMLHttpRequest();
+                    xhr.open('GET', url, false);
+                    xhr.send();
+                    const body = xhr.responseText || '';
+                    const newBlob = new Blob(
+                        [WORKER_STEALTH + '\\n' + body],
+                        { type: 'application/javascript' }
+                    );
+                    return new Orig(URL.createObjectURL(newBlob), options);
                 }
                 const resolved = new URL(url, location.href).href;
                 const blob = new Blob(
@@ -173,30 +440,50 @@ if (typeof Navigator !== 'undefined') {
     if (typeof SharedWorker !== 'undefined') {
         window.SharedWorker = patchWorkerCtor(SharedWorker, 'SharedWorker');
     }
+
+    // 7b. Block ServiceWorker registration so fingerprinters fall through to
+    // SharedWorker / Worker (which we patch with WORKER_STEALTH). ServiceWorker
+    // requires same-origin URLs and rejects blob: URLs, so we can't easily
+    // prepend stealth at the URL level. Cleanest path is to make register()
+    // reject — callers' .catch handlers then move on.
+    try {
+        if (navigator.serviceWorker) {
+            const swProto = Object.getPrototypeOf(navigator.serviceWorker);
+            const reg = maskNative(function register() {
+                return Promise.reject(new DOMException(
+                    'ServiceWorker registration is not supported in this context.',
+                    'SecurityError'
+                ));
+            }, 'register');
+            try {
+                Object.defineProperty(swProto, 'register', {
+                    value: reg, writable: false, enumerable: false, configurable: true,
+                });
+            } catch(e) {}
+        }
+    } catch(e) {}
 })();
 
 // 8. Spoof WebGL renderer to hide SwiftShader
 // Chrome falls back to SwiftShader in Docker (no GPU). The renderer string
-// "SwiftShader" is a known headless signal. We override getParameter to
-// return a common integrated GPU string instead.
+// "SwiftShader" is a known headless signal. Hook getParameter to return a
+// common integrated GPU string. Mask the hook's toString via maskNative so
+// browserscan / creepjs prototype-lies detectors don't flag it.
 (function() {
     const SPOOFED_VENDOR = 'Intel Inc.';
     const SPOOFED_RENDERER = 'Intel Iris OpenGL Engine';
-    const getParam = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = function(param) {
-        // UNMASKED_VENDOR_WEBGL = 0x9245, UNMASKED_RENDERER_WEBGL = 0x9246
-        if (param === 0x9245) return SPOOFED_VENDOR;
-        if (param === 0x9246) return SPOOFED_RENDERER;
-        return getParam.call(this, param);
-    };
-    if (typeof WebGL2RenderingContext !== 'undefined') {
-        const getParam2 = WebGL2RenderingContext.prototype.getParameter;
-        WebGL2RenderingContext.prototype.getParameter = function(param) {
+    function patchGP(proto) {
+        if (!proto || !proto.prototype || !proto.prototype.getParameter) return;
+        const _gp = proto.prototype.getParameter;
+        proto.prototype.getParameter = maskNative(function(param) {
+            // UNMASKED_VENDOR_WEBGL = 0x9245, UNMASKED_RENDERER_WEBGL = 0x9246
             if (param === 0x9245) return SPOOFED_VENDOR;
             if (param === 0x9246) return SPOOFED_RENDERER;
-            return getParam2.call(this, param);
-        };
+            return _gp.call(this, param);
+        }, 'getParameter');
     }
+    patchGP(WebGLRenderingContext);
+    if (typeof WebGL2RenderingContext !== 'undefined') patchGP(WebGL2RenderingContext);
 })();
 
 // 9. Fix CSS system colors for headless detection
@@ -249,6 +536,273 @@ window.matchMedia = function(query) {
     }
     return result;
 };
+
+// 10. Apply stealth into same-origin iframe windows
+// Each frame has its own globals (its own Navigator, Worker, WebGLRenderingContext,
+// Intl, etc.). Page.addScriptToEvaluateOnNewDocument does propagate to about:blank
+// iframes in theory, but in practice creepjs and similar fingerprinters create a
+// hidden iframe and access self[i] / iframe.contentWindow before our injected
+// script reliably runs in that frame. So we proactively patch any iframe's window
+// the moment JS first reaches for it.
+(function() {
+    // The same WORKER_STEALTH the main-window section 7 uses. Defined here
+    // because section 7's IIFE-local copy is out of scope. Keep them in sync.
+    const WORKER_STEALTH = [
+        '/* stealth */',
+        '(function(){',
+        '  try {',
+        '    const navProto = Object.getPrototypeOf(navigator);',
+        '    if (navProto) Object.defineProperty(navProto, "platform", { get: () => "Win32", configurable: true });',
+        '  } catch(e) {}',
+        '  if (navigator.userAgentData) {',
+        '    try {',
+        '      const uadProto = Object.getPrototypeOf(navigator.userAgentData);',
+        '      Object.defineProperty(uadProto, "platform", { get: () => "Windows", configurable: true });',
+        '      const _o = uadProto.getHighEntropyValues;',
+        '      if (typeof _o === "function") {',
+        '        uadProto.getHighEntropyValues = function(h) {',
+        '          return _o.call(this, h).then(v => Object.assign({}, v, {',
+        '            platform: "Windows", platformVersion: "10.0.0",',
+        '            architecture: "x86", bitness: "64", model: "", wow64: false',
+        '          }));',
+        '        };',
+        '      }',
+        '    } catch(e) {}',
+        '  }',
+        '  function patchGP(proto) {',
+        '    if (!proto || !proto.prototype || !proto.prototype.getParameter) return;',
+        '    const _gp = proto.prototype.getParameter;',
+        '    proto.prototype.getParameter = function(p) {',
+        '      if (p===0x9245) return "Intel Inc.";',
+        '      if (p===0x9246) return "Intel Iris OpenGL Engine";',
+        '      return _gp.call(this, p);',
+        '    };',
+        '    try { proto.prototype.getParameter.toString = () => "function getParameter() { [native code] }"; } catch(e) {}',
+        '  }',
+        '  if (typeof WebGLRenderingContext !== "undefined")  patchGP(WebGLRenderingContext);',
+        '  if (typeof WebGL2RenderingContext !== "undefined") patchGP(WebGL2RenderingContext);',
+        '  if (typeof OffscreenCanvas !== "undefined") {',
+        '    const _gc = OffscreenCanvas.prototype.getContext;',
+        '    OffscreenCanvas.prototype.getContext = function(t, a) {',
+        '      const c = _gc.call(this, t, a);',
+        '      if (c && (t==="webgl"||t==="webgl2"||t==="experimental-webgl")) {',
+        '        const _gp = c.getParameter.bind(c);',
+        '        c.getParameter = function(p) {',
+        '          if (p===0x9245) return "Intel Inc.";',
+        '          if (p===0x9246) return "Intel Iris OpenGL Engine";',
+        '          return _gp(p);',
+        '        };',
+        '      }',
+        '      return c;',
+        '    };',
+        '  }',
+        '  if (typeof Intl !== "undefined" && Intl.DateTimeFormat) {',
+        '    const _ro = Intl.DateTimeFormat.prototype.resolvedOptions;',
+        '    Intl.DateTimeFormat.prototype.resolvedOptions = function() {',
+        '      const r = _ro.call(this);',
+        '      if (r && r.timeZone === "UTC") r.timeZone = "America/New_York";',
+        '      return r;',
+        '    };',
+        '  }',
+        '})();',
+    ].join('\\n');
+
+    // Track patched frames via a WeakSet in main scope (not via an enumerable
+    // property on iframe.window — that would leak to lie-detectors as a
+    // non-standard property on the window object).
+    const _patchedFrames = new WeakSet();
+    function patchFrame(w) {
+        if (!w) return;
+        if (_patchedFrames.has(w)) return;
+        _patchedFrames.add(w);
+
+        // platform on the iframe's Navigator.prototype
+        try {
+            if (w.Navigator && w.Navigator.prototype) {
+                Object.defineProperty(w.Navigator.prototype, 'platform', {
+                    get: () => 'Win32', configurable: true,
+                });
+            }
+        } catch(e) {}
+
+        // navigator.userAgentData on the iframe's instance/prototype
+        try {
+            const uad = w.navigator && w.navigator.userAgentData;
+            if (uad) {
+                const uadProto = Object.getPrototypeOf(uad);
+                try {
+                    Object.defineProperty(uadProto, 'platform', {
+                        get: () => 'Windows', configurable: true,
+                    });
+                } catch(e) {}
+                const _orig = uadProto.getHighEntropyValues;
+                if (typeof _orig === 'function') {
+                    uadProto.getHighEntropyValues = function(hints) {
+                        return _orig.call(this, hints).then(v => Object.assign({}, v, {
+                            platform: 'Windows', platformVersion: '10.0.0',
+                            architecture: 'x86', bitness: '64', model: '', wow64: false,
+                        }));
+                    };
+                }
+            }
+        } catch(e) {}
+
+        // WebGL on iframe's prototypes
+        try {
+            function patchGP(proto) {
+                if (!proto || !proto.prototype || !proto.prototype.getParameter) return;
+                const _gp = proto.prototype.getParameter;
+                proto.prototype.getParameter = function(p) {
+                    if (p === 0x9245) return 'Intel Inc.';
+                    if (p === 0x9246) return 'Intel Iris OpenGL Engine';
+                    return _gp.call(this, p);
+                };
+            }
+            if (w.WebGLRenderingContext) patchGP(w.WebGLRenderingContext);
+            if (w.WebGL2RenderingContext) patchGP(w.WebGL2RenderingContext);
+        } catch(e) {}
+
+        // Timezone override on iframe's Intl
+        try {
+            if (w.Intl && w.Intl.DateTimeFormat) {
+                const _ro = w.Intl.DateTimeFormat.prototype.resolvedOptions;
+                w.Intl.DateTimeFormat.prototype.resolvedOptions = function() {
+                    const r = _ro.call(this);
+                    if (r && r.timeZone === 'UTC') r.timeZone = 'America/New_York';
+                    return r;
+                };
+            }
+        } catch(e) {}
+
+        // Worker / SharedWorker ctor patches on iframe's window. These use the
+        // iframe's own Blob, URL, XMLHttpRequest so the resulting blob URL is
+        // same-origin to the iframe.
+        try {
+            function patchWorkerCtor(Orig, name) {
+                const Patched = function(scriptURL, options) {
+                    if (options && options.type === 'module') {
+                        return new Orig(scriptURL, options);
+                    }
+                    try {
+                        const url = String(scriptURL);
+                        if (url.startsWith('blob:')) {
+                            const xhr = new w.XMLHttpRequest();
+                            xhr.open('GET', url, false);
+                            xhr.send();
+                            const body = xhr.responseText || '';
+                            const newBlob = new w.Blob(
+                                [WORKER_STEALTH + '\\n' + body],
+                                { type: 'application/javascript' }
+                            );
+                            return new Orig(w.URL.createObjectURL(newBlob), options);
+                        }
+                        const resolved = new w.URL(url, w.location.href).href;
+                        const blob = new w.Blob(
+                            [WORKER_STEALTH + '\\nimportScripts("' + resolved + '");'],
+                            { type: 'application/javascript' }
+                        );
+                        return new Orig(w.URL.createObjectURL(blob), options);
+                    } catch(e) {
+                        return new Orig(scriptURL, options);
+                    }
+                };
+                Patched.prototype = Orig.prototype;
+                try { Object.defineProperty(Patched, 'name', { value: name }); } catch(e) {}
+                return Patched;
+            }
+            if (w.Worker) w.Worker = patchWorkerCtor(w.Worker, 'Worker');
+            if (w.SharedWorker) w.SharedWorker = patchWorkerCtor(w.SharedWorker, 'SharedWorker');
+        } catch(e) {}
+    }
+
+    // Hook 1: iframe.contentWindow getter — covers any code that reads it
+    try {
+        const cwDesc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow');
+        if (cwDesc && cwDesc.get) {
+            const _origGet = cwDesc.get;
+            Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+                get: function() {
+                    const w = _origGet.call(this);
+                    try { patchFrame(w); } catch(e) {}
+                    return w;
+                },
+                configurable: true,
+            });
+        }
+    } catch(e) {}
+
+    // Hook 2: DOM insertion methods — covers code that does `self[i]` indexed
+    // window access, which bypasses the contentWindow getter. We patch the
+    // iframe's contentWindow synchronously when it's appended to the DOM, so
+    // by the time any later code reads self[i], the patches are already in.
+    //
+    // Important: when a DocumentFragment is appended (creepjs does this), its
+    // children move OUT of the fragment INTO the parent. By the time we run,
+    // the fragment is empty — so we have to also walk the parent to find any
+    // iframes that just landed there.
+    function checkNodeForIframes(n) {
+        if (!n) return;
+        try {
+            if (n.tagName === 'IFRAME') {
+                const w = n.contentWindow;
+                if (w) patchFrame(w);
+            }
+            if (n.querySelectorAll) {
+                n.querySelectorAll('iframe').forEach(function(f) {
+                    try { if (f.contentWindow) patchFrame(f.contentWindow); } catch(e) {}
+                });
+            }
+        } catch(e) {}
+    }
+    function patchInsertedNode(parent, child) {
+        checkNodeForIframes(child);   // common case: child is an Element with iframes
+        checkNodeForIframes(parent);  // DocumentFragment case: children moved to parent
+    }
+    try {
+        const _appendChild = Node.prototype.appendChild;
+        Node.prototype.appendChild = function(child) {
+            const r = _appendChild.call(this, child);
+            patchInsertedNode(this, child);
+            return r;
+        };
+    } catch(e) {}
+    try {
+        const _insertBefore = Node.prototype.insertBefore;
+        Node.prototype.insertBefore = function(child, ref) {
+            const r = _insertBefore.call(this, child, ref);
+            patchInsertedNode(this, child);
+            return r;
+        };
+    } catch(e) {}
+    try {
+        if (Element.prototype.append) {
+            const _append = Element.prototype.append;
+            Element.prototype.append = function() {
+                const args = arguments;
+                const r = _append.apply(this, args);
+                for (let i = 0; i < args.length; i++) patchInsertedNode(this, args[i]);
+                return r;
+            };
+        }
+        if (Element.prototype.prepend) {
+            const _prepend = Element.prototype.prepend;
+            Element.prototype.prepend = function() {
+                const args = arguments;
+                const r = _prepend.apply(this, args);
+                for (let i = 0; i < args.length; i++) patchInsertedNode(this, args[i]);
+                return r;
+            };
+        }
+    } catch(e) {}
+
+    // Patch any iframes that exist at script load (rare for our injection
+    // timing but cheap to handle)
+    try {
+        document.querySelectorAll && document.querySelectorAll('iframe').forEach(function(f) {
+            try { if (f.contentWindow) patchFrame(f.contentWindow); } catch(e) {}
+        });
+    } catch(e) {}
+})();
 """
 
 # Default config path baked into the scanner Docker image.
@@ -1197,16 +1751,14 @@ class Scanner:
                     "userAgent": BYPASS_UA,
                     "platform": "Win32",
                     "userAgentMetadata": {
-                        "brands": [
-                            {"brand": "Chromium", "version": BYPASS_CHROME_MAJOR},
-                            {"brand": "Not(A:Brand", "version": "99"},
-                            {"brand": "Google Chrome", "version": BYPASS_CHROME_MAJOR},
-                        ],
-                        "fullVersionList": [
-                            {"brand": "Chromium", "version": BYPASS_CHROME_FULL},
-                            {"brand": "Not(A:Brand", "version": "99.0.0.0"},
-                            {"brand": "Google Chrome", "version": BYPASS_CHROME_FULL},
-                        ],
+                        # GREASE brand convention rotates with Chrome versions.
+                        # Brands and fullVersionList are dynamically captured from the
+                        # installed Chrome at module load (see _detect_chrome_grease).
+                        # Chrome's GREASE algorithm rotates its "Not_A Brand"-style
+                        # entry across versions; asking Chrome itself keeps us aligned
+                        # automatically, no hardcoded staleness to babysit.
+                        "brands": BYPASS_BRANDS,
+                        "fullVersionList": BYPASS_FULL_VERSION_LIST,
                         "platform": "Windows",
                         "platformVersion": "10.0.0",
                         "architecture": "x86",
@@ -1217,6 +1769,27 @@ class Scanner:
                     },
                 },
             )
+
+            # Spoof timezone and locale at the CDP level so JS Intl APIs report a
+            # plausible US timezone instead of the container's UTC default.
+            # Intl.DateTimeFormat().resolvedOptions().timeZone == 'UTC' is a
+            # well-known automation signal (creepjs + many CF Bot Management
+            # heuristics flag it). The STEALTH_JS Intl override is a backup for
+            # contexts where setTimezoneOverride doesn't propagate.
+            try:
+                sb.execute_cdp_cmd(
+                    "Emulation.setTimezoneOverride",
+                    {"timezoneId": "America/New_York"},
+                )
+            except Exception as e:
+                print(f"setTimezoneOverride failed (continuing): {e}")
+            try:
+                sb.execute_cdp_cmd(
+                    "Emulation.setLocaleOverride",
+                    {"locale": "en-US"},
+                )
+            except Exception as e:
+                print(f"setLocaleOverride failed (continuing): {e}")
 
             # emulate a realistic desktop screen (1920x1080)
             # This sets screen dimensions at the browser level, affecting both
