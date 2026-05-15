@@ -50,6 +50,34 @@ class SummaryDetailConfig(BaseModel):
         return value
 
 
+PIVOT_LINK_TARGET_ANALYSIS = "analysis"
+PIVOT_LINK_TARGET_ROOT = "root"
+VALID_PIVOT_LINK_TARGETS = {PIVOT_LINK_TARGET_ANALYSIS, PIVOT_LINK_TARGET_ROOT}
+
+
+class PivotLinkConfig(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    url: str = Field(..., description="Jinja template for the pivot link URL, rendered against each event.")
+    text: str = Field(..., description="Jinja template for the pivot link display text, rendered against each event.")
+    icon: Optional[str] = Field(default=None, description="Optional icon name for the pivot link.")
+    target: str = Field(
+        default=PIVOT_LINK_TARGET_ROOT,
+        description="Where to attach the rendered link: 'root' (the root alert) or 'analysis' (the analysis node).",
+    )
+
+    @field_validator("target")
+    @classmethod
+    def validate_target(cls, value: str) -> str:
+        if value not in VALID_PIVOT_LINK_TARGETS:
+            logging.error(
+                "invalid pivot_link target %s - must be one of %s - defaulting to %s",
+                value, VALID_PIVOT_LINK_TARGETS, PIVOT_LINK_TARGET_ROOT,
+            )
+            return PIVOT_LINK_TARGET_ROOT
+        return value
+
+
 class TimeRangeConfig(BaseModel):
     """Configuration for a named TIMESPEC token's time range."""
     model_config = {"extra": "forbid"}
@@ -86,6 +114,11 @@ class BaseQueryConfig(BaseModel):
     query_suffix: Optional[str] = Field(
         default=None,
         description="Text to append to the resolved query (before auto_append).",
+    )
+    pivot_links: list[PivotLinkConfig] = Field(
+        default_factory=list,
+        description="Pivot links to add to analysis or the root alert. Each entry's url/text "
+                    "are Jinja templates rendered against each query-result event."
     )
     time_ranges: Optional[dict[str, TimeRangeConfig]] = Field(
         default=None,

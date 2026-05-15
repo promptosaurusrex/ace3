@@ -31,8 +31,9 @@ from saq.constants import AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.observables.mapping import ObservableMapping, apply_mapping_properties
-from saq.query.config import BaseQueryConfig, resolve_query
+from saq.query.config import BaseQueryConfig, PIVOT_LINK_TARGET_ROOT, resolve_query
 from saq.query.extraction import extract_observables_from_event, process_summary_details
+from saq.query.template_rendering import UndefinedError, render_event_templates_multi
 from saq.util import abs_path, create_timedelta
 
 KEY_QUERY = 'query'
@@ -476,6 +477,49 @@ class BaseAPIAnalyzer(AnalysisModule):
         """
         pass
 
+    def process_pivot_links(self, analysis: Analysis) -> None:
+        """Render configured pivot_links against each query-result event and attach them.
+
+            url/text are Jinja templates rendered per event via render_event_templates_multi
+            (shared with the hunt system). Rendered links route to the root alert or the
+            analysis node per the entry's `target`. Identical (url, icon, text) tuples are
+            deduplicated per target within this run.
+
+            Args:
+                analysis: The respective Analysis object whose query_results are rendered.
+        """
+        if not self.config.pivot_links:
+            return
+
+        results = analysis.query_results if isinstance(analysis.query_results, list) else [analysis.query_results]
+        root = self.get_root()
+        seen: dict[int, set] = {}  # id(target) -> set of (url, icon, text)
+
+        for pivot_link in self.config.pivot_links:
+            target = root if pivot_link.target == PIVOT_LINK_TARGET_ROOT else analysis
+            # seed the dedup set from links already on the target so dedup spans every
+            # module run that writes to it (e.g. a module running on multiple observables
+            # all adding to the same root alert) and survives re-analysis
+            target_seen = seen.get(id(target))
+            if target_seen is None:
+                target_seen = {(p.url, p.icon, p.text) for p in target.pivot_links}
+                seen[id(target)] = target_seen
+            for event in results:
+                try:
+                    rows = render_event_templates_multi(
+                        [pivot_link.url, pivot_link.text], event, strict=True,
+                    )
+                except UndefinedError:
+                    continue
+                for url_value, text_value in rows:
+                    if not url_value or not text_value:
+                        continue
+                    key = (url_value, pivot_link.icon, text_value)
+                    if key in target_seen:
+                        continue
+                    target_seen.add(key)
+                    target.add_pivot_link(url_value, pivot_link.icon, text_value)
+
     def execute_analysis(self, observable, **kwargs) -> AnalysisExecutionResult:
         """Analysis module execution. See base class for more information.
 
@@ -545,6 +589,8 @@ class BaseAPIAnalyzer(AnalysisModule):
         logging.debug('Processing query results')
         self.process_query_results(analysis.query_results, analysis, observable)
         self.process_finalize(analysis, observable)
+
+        self.process_pivot_links(analysis)
 
         if self.config.summary_details:
             root = self.get_root()
