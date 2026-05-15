@@ -27,7 +27,8 @@ from saq.environment import get_base_dir, get_data_dir, get_global_runtime_setti
 
 
 import pytest
-from saq.integration.integration_loader import get_valid_integration_dirs, load_integration_component_src
+from saq.integration.integration_loader import load_integration_component_src
+from saq.integration.integration_util import get_valid_integration_dirs
 from saq.modules.context import AnalysisModuleContext
 from saq.monitor import reset_emitter
 from saq.permissions.user import add_user_permission

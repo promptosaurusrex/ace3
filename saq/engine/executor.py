@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, UTC
 import logging
 from operator import attrgetter
 import os
@@ -11,7 +11,12 @@ from enum import Enum
 import iptools
 from saq.analysis.analysis import Analysis
 from saq.analysis.blob_store import get_blob_store
-from saq.analysis.cache import generate_cache_key, put_cached_delta
+from saq.analysis.cache import (
+    apply_delta,
+    generate_cache_key,
+    get_cached_delta,
+    put_cached_delta,
+)
 from saq.analysis.errors import ExcessiveFileDataSizeError
 from saq.analysis.module_path import MODULE_PATH
 from saq.analysis.observable import Observable
@@ -1015,6 +1020,52 @@ class AnalysisExecutor:
             elif work_item.dependency.completed:
                 work_item.dependency.increment_status()
 
+    def _apply_cached_delta(
+        self,
+        root: RootAnalysis,
+        observable: Observable,
+        module: AnalysisModuleInterface,
+        delta,
+    ) -> None:
+        """Replay a cached delta and record cache-hit attribution.
+
+        Calls ``apply_delta`` to mutate the tree, then appends a
+        ``from_cache_hit=True`` copy of the delta to
+        ``root._module_executions`` for audit. Always records — the
+        ``is_empty`` filter that Phase 1 uses for live captures does NOT
+        apply here, because cache consultation is itself information
+        worth keeping.
+
+        ``monitor`` and ``track_current_analysis_module`` are skipped on
+        purpose: both are bounded by live module wall time, and replay
+        completes in milliseconds.
+        """
+        replay_start_ns = time.monotonic_ns()
+        apply_delta(root, observable, delta)
+        replay_ms = (time.monotonic_ns() - replay_start_ns) // 1_000_000
+
+        attribution_delta = delta.with_cache_hit_metadata(
+            executed_at=datetime.now(UTC),
+            execution_time_ms=replay_ms,
+        )
+        root.record_module_execution(attribution_delta)
+
+        cache_key_prefix = (delta.cache_key or "")[:12] or "n/a"
+        logging.info(
+            "analysis cache hit module_name=%s observable_type=%s "
+            "cache_key_prefix=%s replay_ms=%d",
+            module.config.name,
+            observable.type,
+            cache_key_prefix,
+            replay_ms,
+            extra={
+                "module_name": module.config.name,
+                "observable_type": observable.type,
+                "cache_key_prefix": cache_key_prefix,
+                "replay_ms": replay_ms,
+            },
+        )
+
     def _execute_module_analysis(
         self,
         context: AnalysisExecutionContext,
@@ -1072,6 +1123,46 @@ class AnalysisExecutor:
                     "analysis module failed in previous execution"
                 )
 
+            # Phase 3: cache-hit short-circuit. By the time we reach this
+            # branch, accepts() has already returned True, which means the
+            # observable has no analysis at this module_path. Cache replay
+            # therefore does not conflict with a pre-existing slot. The
+            # inner try/except deliberately does NOT re-raise — replay
+            # failure must fall through to the live path so the outer
+            # except Exception below doesn't treat it as a module failure
+            # (which would call report_exception() spuriously).
+            if (
+                analysis_module.cache_ttl is not None
+                and get_config().analysis_cache.enabled
+            ):
+                try:
+                    cached_delta = get_cached_delta(
+                        work_item.observable, analysis_module, get_blob_store()
+                    )
+                    if cached_delta is not None:
+                        self._apply_cached_delta(
+                            root, work_item.observable, analysis_module, cached_delta,
+                        )
+                        self._process_generated_analysis(
+                            AnalysisExecutionResult.COMPLETED, root, work_item,
+                            work_stack, work_stack_buffer, analysis_module,
+                        )
+                        root.save()
+                        return
+                except Exception:
+                    logging.warning(
+                        "cache replay failed module_name=%s observable_uuid=%s "
+                        "— falling through to live run",
+                        analysis_module.config.name, work_item.observable.uuid,
+                        exc_info=True,
+                        extra={
+                            "module_name": analysis_module.config.name,
+                            "observable_uuid": work_item.observable.uuid,
+                            "observable_type": work_item.observable.type,
+                        },
+                    )
+                    # Intentional: do not return, do not re-raise.
+
             logging.debug(
                 "analyzing {} with {} (final analysis={}) (delayed analysis={})".format(
                     work_item.observable, analysis_module, context.final_analysis_mode, context.is_delayed_analysis
@@ -1103,9 +1194,14 @@ class AnalysisExecutor:
                         snapshot_before = ModuleExecutionSnapshot.narrow(root, work_item.observable, analysis_module)
                 except Exception:
                     logging.warning(
-                        "failed to capture pre-execution snapshot for %s on %s",
-                        analysis_module, work_item.observable,
+                        "failed to capture pre-execution snapshot module_name=%s "
+                        "observable_uuid=%s",
+                        analysis_module.config.name, work_item.observable.uuid,
                         exc_info=True,
+                        extra={
+                            "module_name": analysis_module.config.name,
+                            "observable_uuid": work_item.observable.uuid,
+                        },
                     )
                 delta_start_ns = time.monotonic_ns()
 
@@ -1136,8 +1232,14 @@ class AnalysisExecutor:
 
                         if delta.has_removals:
                             logging.info(
-                                "module %s produced removals in delta for observable %s",
-                                analysis_module.config.name, work_item.observable,
+                                "module produced removals in delta module_name=%s "
+                                "observable_uuid=%s",
+                                analysis_module.config.name, work_item.observable.uuid,
+                                extra={
+                                    "module_name": analysis_module.config.name,
+                                    "observable_uuid": work_item.observable.uuid,
+                                    "observable_type": work_item.observable.type,
+                                },
                             )
 
                         # Phase 2: persist the delta to the analysis result
@@ -1155,15 +1257,25 @@ class AnalysisExecutor:
                                 put_cached_delta(delta, analysis_module, get_blob_store())
                             except Exception:
                                 logging.warning(
-                                    "failed to write analysis cache for %s on %s",
-                                    analysis_module, work_item.observable,
+                                    "failed to write analysis cache module_name=%s "
+                                    "observable_uuid=%s",
+                                    analysis_module.config.name, work_item.observable.uuid,
                                     exc_info=True,
+                                    extra={
+                                        "module_name": analysis_module.config.name,
+                                        "observable_uuid": work_item.observable.uuid,
+                                    },
                                 )
                     except Exception:
                         logging.warning(
-                            "failed to record module execution delta for %s on %s",
-                            analysis_module, work_item.observable,
+                            "failed to record module execution delta module_name=%s "
+                            "observable_uuid=%s",
+                            analysis_module.config.name, work_item.observable.uuid,
                             exc_info=True,
+                            extra={
+                                "module_name": analysis_module.config.name,
+                                "observable_uuid": work_item.observable.uuid,
+                            },
                         )
 
                 logging.debug(

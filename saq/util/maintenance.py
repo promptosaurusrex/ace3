@@ -231,7 +231,9 @@ def prune_analysis_result_cache(dry_run: bool = False) -> int:
 
     # Cache-health heartbeat for Splunk. One line per prune run so operators
     # can trend total_rows / total_uncompressed_bytes over time without
-    # touching MySQL directly.
+    # touching MySQL directly. ExtraAwareFluentFormatter surfaces the
+    # extras as top-level JSON fields so `| timechart max(total_rows)`
+    # works without per-query rex.
     try:
         stats = collect_cache_stats()
         logging.info(
@@ -242,6 +244,13 @@ def prune_analysis_result_cache(dry_run: bool = False) -> int:
             stats["total_uncompressed_bytes"],
             stats["blob_refs_rows"],
             stats["modules_with_entries"],
+            extra={
+                "total_rows": stats["total_rows"],
+                "expired_rows": stats["expired_rows"],
+                "total_uncompressed_bytes": stats["total_uncompressed_bytes"],
+                "blob_refs_rows": stats["blob_refs_rows"],
+                "modules": stats["modules_with_entries"],
+            },
         )
         # If rows remain expired after the sweep, either the batch size is
         # too small for the backlog or the sweep ran behind schedule. Either
@@ -251,10 +260,9 @@ def prune_analysis_result_cache(dry_run: bool = False) -> int:
                 "prune_backlog remaining_expired=%d — prune sweep did not "
                 "clear all expired rows this run",
                 stats["expired_rows"],
+                extra={"remaining_expired": stats["expired_rows"]},
             )
     except Exception as e:
         logging.warning(f"failed to collect cache_stats: {e}")
 
     return deleted
-
-    return success_count

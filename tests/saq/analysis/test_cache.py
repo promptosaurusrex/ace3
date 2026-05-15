@@ -1,5 +1,6 @@
 """Integration tests for saq.analysis.cache (put, prune, delete_for_module)."""
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
@@ -18,8 +19,11 @@ from saq.analysis.cache import (
 from saq.analysis.module_execution_delta import (
     ModuleExecutionDelta,
     ObservableDiff,
+    ObservableSpec,
     RootDiff,
 )
+from saq.configuration.config import get_config
+from saq.constants import F_FILE
 from saq.database.pool import get_db, get_db_connection
 
 
@@ -98,11 +102,10 @@ class TestPutCachedDelta:
 
     @pytest.mark.integration
     def test_happy_path_writes_row(self, blob_store, caplog):
-        import logging as _logging
         module = _make_module()
         delta = _make_delta(module)
         try:
-            with caplog.at_level(_logging.INFO):
+            with caplog.at_level(logging.INFO):
                 assert put_cached_delta(delta, module, blob_store) is True
             assert _row_count(delta.cache_key) == 1
 
@@ -111,7 +114,7 @@ class TestPutCachedDelta:
             assert telemetry, "expected 'wrote analysis cache entry' log line"
             msg = telemetry[0].getMessage()
             assert "op=insert" in msg
-            assert f"module={module.config.name}" in msg
+            assert f"module_name={module.config.name}" in msg
             assert "observable_type=url" in msg
             assert "uncompressed_bytes=" in msg
             assert "compressed_bytes=" in msg
@@ -141,7 +144,6 @@ class TestPutCachedDelta:
     @pytest.mark.integration
     def test_repeat_write_logs_update_op(self, blob_store, caplog):
         """Second call with the same cache_key must log op=update, not insert."""
-        import logging as _logging
         module = _make_module()
         delta = _make_delta(module)
         try:
@@ -154,7 +156,7 @@ class TestPutCachedDelta:
                 observable_value=delta.observable_value,
             )
             delta2.cache_key = delta.cache_key
-            with caplog.at_level(_logging.INFO):
+            with caplog.at_level(logging.INFO):
                 assert put_cached_delta(delta2, module, blob_store) is True
             telemetry = [r for r in caplog.records if "wrote analysis cache entry" in r.getMessage()]
             assert telemetry
@@ -174,6 +176,55 @@ class TestPutCachedDelta:
         delta = _make_delta(module, has_removal=True)
         assert put_cached_delta(delta, module, blob_store) is False
         assert _row_count(delta.cache_key) == 0
+
+    @pytest.mark.integration
+    def test_skips_delta_with_delayed_analysis(self, blob_store, caplog):
+        """Step 3.2: deltas captured mid-delay must not be cached.
+
+        Replay would mark the analysis completed, lying about state.
+        The skip is INFO-level — for delayed-analysis modules this fires
+        once per intermediate cycle and is expected behavior.
+        """
+        module = _make_module()
+        delta = _make_delta(
+            module,
+            analysis={
+                "module_path": "saq.modules.test:Dummy",
+                "details": {"x": 1},
+                "delayed": True,
+                "completed": False,
+            },
+        )
+        with caplog.at_level(logging.INFO):
+            assert put_cached_delta(delta, module, blob_store) is False
+        assert _row_count(delta.cache_key) == 0
+        skip_logs = [r for r in caplog.records if "skip_reason=still_delayed" in r.getMessage()]
+        assert skip_logs
+        assert skip_logs[0].levelno == logging.INFO
+        # ExtraAwareFluentFormatter surfaces these as top-level JSON fields.
+        assert skip_logs[0].skip_reason == "still_delayed"
+        assert skip_logs[0].module_name == module.config.name
+
+    @pytest.mark.integration
+    def test_refuses_delta_with_file_observables(self, blob_store, caplog):
+        """Step 3.3: file-observable replay is Phase 4 territory."""
+        module = _make_module()
+        delta = _make_delta(module)
+        delta.new_observables = [
+            ObservableSpec(
+                uuid="00000000-0000-0000-0000-000000000001",
+                type=F_FILE,
+                value="some/file.txt",
+            )
+        ]
+        with caplog.at_level(logging.WARNING):
+            assert put_cached_delta(delta, module, blob_store) is False
+        assert _row_count(delta.cache_key) == 0
+        warn_logs = [r for r in caplog.records if "refusal_reason=file_observables" in r.getMessage()]
+        assert warn_logs
+        assert warn_logs[0].levelno == logging.WARNING
+        assert warn_logs[0].refusal_reason == "file_observables"
+        assert warn_logs[0].module_name == module.config.name
 
     @pytest.mark.integration
     def test_upsert_idempotent_on_duplicate_key(self, blob_store):
@@ -242,7 +293,6 @@ class TestPutCachedDelta:
     @pytest.mark.integration
     def test_refuses_oversized_delta(self, blob_store, monkeypatch):
         # Drop the cap to something tiny so even a small analysis blows it.
-        from saq.configuration.config import get_config
         monkeypatch.setattr(
             get_config().analysis_cache, "max_compressed_bytes", 50
         )
@@ -256,7 +306,6 @@ class TestKillSwitch:
 
     @pytest.mark.integration
     def test_global_kill_switch_blocks_writes(self, blob_store, monkeypatch):
-        from saq.configuration.config import get_config
         monkeypatch.setattr(
             get_config().analysis_cache, "enabled", False
         )

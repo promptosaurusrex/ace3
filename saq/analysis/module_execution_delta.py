@@ -7,8 +7,11 @@ after → diff) and stored in RootAnalysis._module_executions for attribution an
 eventual caching.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from typing import Optional
+
+from saq.constants import F_FILE
 
 
 @dataclass
@@ -297,6 +300,11 @@ class ModuleExecutionDelta:
     # For wide-diff: changes to Analysis objects' child observable membership
     analysis_children_diffs: list[AnalysisChildrenDiff] = field(default_factory=list)
 
+    # Phase 3: True when this delta was synthesized by a cache replay rather
+    # than a live module run. Lets audit consumers (root.json readers, GUI)
+    # distinguish replay attribution from live attribution.
+    from_cache_hit: bool = False
+
     @property
     def has_removals(self) -> bool:
         if self.target_observable_diff.has_removals:
@@ -318,6 +326,33 @@ class ModuleExecutionDelta:
             and self.analysis is None
             and not self.other_observable_diffs
             and not self.analysis_children_diffs
+        )
+
+    @property
+    def has_file_observables(self) -> bool:
+        """True if this delta would spawn file observables on replay.
+
+        Phase 3 cache replay does not yet materialize file bytes (Phase 4
+        territory). Used as a write-time refusal and a read-time
+        defense-in-depth check.
+        """
+        return any(spec.type == F_FILE for spec in self.new_observables)
+
+    def with_cache_hit_metadata(
+        self, executed_at: datetime, execution_time_ms: int,
+    ) -> "ModuleExecutionDelta":
+        """Return a copy of this delta marked as a cache replay.
+
+        Preserves all mutation fields (so root.json shows the same
+        attribution as the original live run) but updates the timestamps
+        and sets ``from_cache_hit=True``. Used by the executor's cache-hit
+        branch to record replay attribution distinct from live runs.
+        """
+        return replace(
+            self,
+            created_at=executed_at.isoformat(),
+            execution_time_ms=execution_time_ms,
+            from_cache_hit=True,
         )
 
     def to_dict(self) -> dict:
@@ -355,6 +390,8 @@ class ModuleExecutionDelta:
                 acd.to_dict() for acd in self.analysis_children_diffs
                 if not acd.is_empty
             ]
+        if self.from_cache_hit:
+            result["from_cache_hit"] = True
         return result
 
     @classmethod
@@ -388,4 +425,5 @@ class ModuleExecutionDelta:
             wide_diff=data.get("wide_diff", False),
             other_observable_diffs=other_diffs,
             analysis_children_diffs=analysis_children,
+            from_cache_hit=data.get("from_cache_hit", False),
         )

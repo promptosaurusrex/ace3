@@ -10,8 +10,9 @@ def _get_tests_dir() -> str:
     return os.path.join(get_base_dir(), "tests")
 
 def install_integration(name: str) -> bool:
-    dir_path = get_integration_path_from_name(name)
-    if not os.path.exists(dir_path):
+    try:
+        dir_path = get_integration_path_from_name(name)
+    except FileNotFoundError:
         return False
 
     source_test_dir = os.path.join(dir_path, "tests")
