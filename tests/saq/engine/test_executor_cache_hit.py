@@ -51,7 +51,20 @@ def _make_module(name="whois_analyzer"):
     return SimpleNamespace(config=SimpleNamespace(name=name))
 
 
+SOURCE_OBSERVABLE_UUID = "00000000-source-source-source-000000000000"
+SOURCE_ROOT_UUID = "00000000-source-root-source-root-00000000"
+
+
 def _make_delta_for(observable, *, with_analysis=True):
+    """Build a cached-style delta as if it had been captured from a
+    *different* alert — observable_uuid and root_uuid are sentinel
+    strings that intentionally do NOT match the current ``observable``
+    or its parent root. This mirrors what a real cache hit looks like:
+    the cached row carries the source alert's identifiers, and the
+    executor's _apply_cached_delta has to rewrite them onto the
+    attribution copy. Reusing the current observable's uuid here would
+    mask exactly the bug that broke the GUI badge in production.
+    """
     analysis = None
     if with_analysis:
         analysis = {
@@ -64,11 +77,12 @@ def _make_delta_for(observable, *, with_analysis=True):
         module_path="saq.modules.whois:WhoisAnalysis",
         module_instance=None,
         module_version=1,
-        observable_uuid=observable.uuid,
+        observable_uuid=SOURCE_OBSERVABLE_UUID,
         observable_type=observable.type,
         observable_value=observable.value,
         created_at=datetime.now(timezone.utc).isoformat(),
         execution_time_ms=42,
+        root_uuid=SOURCE_ROOT_UUID,
         target_observable_diff=ObservableDiff(added_tags=["replayed"]),
         new_observables=[],
         root_diff=RootDiff(),
@@ -93,9 +107,16 @@ class TestApplyCachedDelta:
         assert len(root.module_executions) == 1
         recorded = root.module_executions[0]
         assert recorded.from_cache_hit is True
-        assert recorded.observable_uuid == obs.uuid
-        # root_uuid is rewritten to the current alert being analyzed.
+        # Both root_uuid AND observable_uuid are rewritten to the current
+        # alert / observable — the cached delta carried sentinel "source"
+        # UUIDs (see _make_delta_for). Confirming both rewrites prevents
+        # regressions of the bug where the alert GUI couldn't find the
+        # badge because the attribution carried the source observable's
+        # uuid instead of the current one.
         assert recorded.root_uuid == root.uuid
+        assert recorded.root_uuid != SOURCE_ROOT_UUID
+        assert recorded.observable_uuid == obs.uuid
+        assert recorded.observable_uuid != SOURCE_OBSERVABLE_UUID
         # Mutation fields preserved from original capture.
         assert recorded.target_observable_diff.added_tags == ["replayed"]
         # Attribution execution_time_ms reflects total hit cost
@@ -195,6 +216,7 @@ class TestModuleExecutionDeltaCacheHitMetadata:
 
     @pytest.mark.unit
     def test_with_cache_hit_metadata_sets_flag(self):
+        original_created_at = "2026-05-10T12:34:56+00:00"
         delta = ModuleExecutionDelta(
             module_path="m",
             module_instance=None,
@@ -202,30 +224,42 @@ class TestModuleExecutionDeltaCacheHitMetadata:
             observable_uuid="u",
             observable_type="t",
             observable_value="v",
-            created_at=datetime.now(timezone.utc).isoformat(),
+            created_at=original_created_at,
             execution_time_ms=1234,
             root_uuid="source-alert-uuid",
             target_observable_diff=ObservableDiff(added_tags=["t1"]),
             new_observables=[],
             root_diff=RootDiff(),
         )
-        executed_at = datetime(2026, 5, 7, 12, 0, 0, tzinfo=timezone.utc)
+        executed_at = datetime(2026, 5, 15, 12, 0, 0, tzinfo=timezone.utc)
         copy = delta.with_cache_hit_metadata(
             executed_at=executed_at,
             execution_time_ms=5,
             root_uuid="current-alert-uuid",
+            observable_uuid="current-observable-uuid",
         )
         # Original is untouched.
         assert delta.from_cache_hit is False
         assert delta.execution_time_ms == 1234
         assert delta.root_uuid == "source-alert-uuid"
+        assert delta.observable_uuid == "u"
+        assert delta.cached_at is None
         # Copy reflects the cache-hit replay.
         assert copy.from_cache_hit is True
         assert copy.execution_time_ms == 5
         assert copy.created_at == executed_at.isoformat()
-        # root_uuid is rewritten to the current alert, not the source alert
-        # the cached delta originated from.
+        # root_uuid AND observable_uuid are rewritten to the current alert /
+        # observable. Both UUIDs are per-alert-instance, so leaving the
+        # source's in place would (a) misattribute the replay in root.json
+        # audits and (b) break the alert GUI's (module_path, observable_uuid)
+        # lookup for the "cached" badge.
         assert copy.root_uuid == "current-alert-uuid"
+        assert copy.observable_uuid == "current-observable-uuid"
+        # cached_at preserves the *original* created_at (when the source
+        # delta was first captured), since created_at itself gets rewritten
+        # to the replay time. Surfaced in the alert GUI tooltip so analysts
+        # can tell at a glance how stale a cached result is.
+        assert copy.cached_at == original_created_at
         # Mutations preserved.
         assert copy.target_observable_diff.added_tags == ["t1"]
 
@@ -244,11 +278,14 @@ class TestModuleExecutionDeltaCacheHitMetadata:
             new_observables=[],
             root_diff=RootDiff(),
             from_cache_hit=True,
+            cached_at="2026-05-10T12:34:56+00:00",
         )
         d = delta.to_dict()
         assert d["from_cache_hit"] is True
+        assert d["cached_at"] == "2026-05-10T12:34:56+00:00"
         rebuilt = ModuleExecutionDelta.from_dict(d)
         assert rebuilt.from_cache_hit is True
+        assert rebuilt.cached_at == "2026-05-10T12:34:56+00:00"
 
     @pytest.mark.unit
     def test_from_cache_hit_default_false_on_old_dicts(self):

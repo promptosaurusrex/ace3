@@ -1056,6 +1056,7 @@ class AnalysisExecutor:
             executed_at=datetime.now(UTC),
             execution_time_ms=lookup_ms + replay_ms,
             root_uuid=root.uuid,
+            observable_uuid=observable.uuid,
         )
         root.record_module_execution(attribution_delta)
 

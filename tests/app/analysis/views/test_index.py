@@ -1,8 +1,10 @@
 import shutil
+from datetime import datetime, timezone
 from uuid import uuid4
 from flask import url_for
 import pytest
 
+from saq.analysis.module_execution_delta import ModuleExecutionDelta
 from saq.analysis.module_path import MODULE_PATH
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODULE_BASIC_TEST, F_TEST
@@ -433,6 +435,104 @@ def test_index_with_comments(web_client, root_analysis):
     # The view should handle cases where comments query might fail
     result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
     assert result.status_code == 200
+
+
+def _run_basic_analyzer(root_analysis, test_context):
+    """Helper: add a "test_1" observable and execute BasicTestAnalyzer on it.
+    Returns (observable, analysis). Uses "test_1" specifically because
+    BasicTestAnalyzer.execute_analysis dispatches on the observable
+    value (saq/modules/test.py:65) and only specific values trigger
+    create_analysis() — "test_1" being the canonical happy-path case
+    used by test_index above.
+    """
+    from saq.modules.test import BasicTestAnalyzer, BasicTestAnalysis
+    from saq.modules.context import AnalysisModuleContext
+
+    test_observable = root_analysis.add_observable_by_spec(F_TEST, "test_1")
+    analyzer = AnalysisModuleAdapter(BasicTestAnalyzer(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_BASIC_TEST)))
+    context = AnalysisModuleContext(root=root_analysis)
+    analyzer.set_context(context)
+    analyzer.execute_analysis(test_observable)
+    analysis = test_observable.get_and_load_analysis(BasicTestAnalysis)
+    assert analysis is not None, "BasicTestAnalyzer did not produce an analysis"
+    return test_observable, analysis
+
+
+@pytest.mark.integration
+def test_index_renders_cache_hit_badge(web_client, root_analysis, test_context):
+    """When root._module_executions contains a from_cache_hit=True delta
+    matching an analysis in the tree, the rendered alert page shows the
+    'cached' badge next to that analysis line.
+    """
+    test_observable, analysis = _run_basic_analyzer(root_analysis, test_context)
+
+    # Synthesize the attribution delta the executor would have recorded
+    # had this analysis been replayed from cache. ``cached_at`` is fixed
+    # so the rendered tooltip carries a deterministic timestamp the test
+    # can grep for.
+    root_analysis.record_module_execution(ModuleExecutionDelta(
+        module_path=MODULE_PATH(analysis),
+        module_instance=None,
+        module_version=1,
+        observable_uuid=test_observable.uuid,
+        observable_type=test_observable.type,
+        observable_value=test_observable.value,
+        created_at=datetime.now(timezone.utc).isoformat(),
+        execution_time_ms=4,
+        root_uuid=root_analysis.uuid,
+        cache_key="dead" * 16,  # 64-char hex-shaped placeholder
+        from_cache_hit=True,
+        cached_at="2026-05-10T12:34:56+00:00",
+    ))
+
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    result = web_client.get(
+        url_for("analysis.index"),
+        query_string={"direct": root_analysis.uuid},
+    )
+    assert result.status_code == 200
+
+    body = result.data.decode("utf-8")
+    # Badge HTML pieces — checked independently so a small markup tweak
+    # to one (icon class, label text) doesn't silently mask a regression
+    # in the others.
+    assert 'class="badge bg-white border border-dark"' in body
+    assert "bi-lightning-fill" in body
+    # Tooltip carries the cache_key prefix, the original cache timestamp
+    # formatted YYYY-MM-DD HH:MM UTC, and execution_time_ms.
+    assert "deaddeaddead" in body  # first 12 chars of the placeholder key
+    assert "cached 2026-05-10 12:34 UTC" in body
+    assert "4ms" in body
+
+
+@pytest.mark.integration
+def test_index_no_cache_hit_badge_for_live_analysis(
+    web_client, root_analysis, test_context,
+):
+    """Mirror of the positive test: same alert shape but no from_cache_hit
+    delta — the badge HTML must NOT appear. Guards against the macro
+    rendering unconditionally.
+    """
+    _run_basic_analyzer(root_analysis, test_context)
+
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    result = web_client.get(
+        url_for("analysis.index"),
+        query_string={"direct": root_analysis.uuid},
+    )
+    assert result.status_code == 200
+
+    body = result.data.decode("utf-8")
+    # The cached-badge string composition is unique to this feature so a
+    # substring check is reliable. If it fires here the macro is leaking
+    # the badge for non-cache-hit analyses.
+    assert "bi-lightning-fill" not in body
 
 
 @pytest.mark.integration
