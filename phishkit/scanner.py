@@ -6,6 +6,7 @@ import json
 import os
 import random
 import shutil
+import signal
 import sys
 import time
 from dataclasses import dataclass
@@ -1096,6 +1097,39 @@ class Scanner:
             print(f"using proxy: {redacted}")
 
         with SB(**sb_kwargs) as sb:
+            # docker stop delivers SIGTERM with 5s grace before SIGKILL (see
+            # --stop-timeout 5 in phishkit/phishkit.py). Best-effort flush of
+            # whatever scan state we have so analysts get partial dom/requests
+            # /screenshot/metrics instead of an empty output dir when the
+            # celery worker kills us mid-navigation.
+            def _on_term(signum, frame):
+                try:
+                    with open(os.path.join(output_dir, "requests.json"), "w") as fp:
+                        json.dump(self.requests, fp, indent=2)
+                except Exception as e:
+                    print(f"sigterm: failed to flush requests.json: {e}")
+                try:
+                    with open(os.path.join(output_dir, "dom.html"), "w") as fp:
+                        fp.write(sb.get_page_source())
+                except Exception as e:
+                    print(f"sigterm: failed to flush dom.html: {e}")
+                try:
+                    sb.save_screenshot(
+                        os.path.join(output_dir, "screenshot.png"), selector="body"
+                    )
+                except Exception as e:
+                    print(f"sigterm: failed to save screenshot: {e}")
+                try:
+                    metrics = self._compute_metrics(url, time.time() - scan_start_time)
+                    metrics["interrupted"] = True
+                    with open(os.path.join(output_dir, "metrics.json"), "w") as fp:
+                        json.dump(metrics, fp, indent=2)
+                except Exception as e:
+                    print(f"sigterm: failed to flush metrics.json: {e}")
+                sys.exit(143)  # 128 + SIGTERM
+
+            signal.signal(signal.SIGTERM, _on_term)
+
             # ask Jeremy about this
             sb.activate_cdp_mode("about:blank")
             self._cdp_tab = sb.cdp.page  # nodriver Tab for sending CDP commands from handlers

@@ -150,9 +150,27 @@ class PhishkitAnalysis(Analysis):
     def proxy_status(self, value: dict):
         self.details[FIELD_PROXY_STATUS] = value
 
+    def _is_unfinished(self) -> bool:
+        # Job dispatched (scan_type + job_id set) but no result ever flowed back:
+        # neither success fields nor an explicit error are populated. The engine's
+        # delayed_analysis deadline fires asynchronously from the analyzer's POV
+        # and never lets continue_analysis set error, so this is the only signal
+        # an analyst gets that the scan was abandoned.
+        return (
+            self.job_id is not None
+            and self.scan_type in (SCAN_TYPE_URL, SCAN_TYPE_FILE)
+            and self.scan_result is None
+            and self.exit_code is None
+            and not self.output_files
+            and not self.error
+        )
+
     def generate_summary(self):
         if self.error:
             return f"{self.display_name}: failed: {self.error}"
+
+        if self._is_unfinished():
+            return f"{self.display_name}: scan timed out — no content captured"
 
         if self.scan_type == SCAN_TYPE_URL or self.scan_type == SCAN_TYPE_FILE:
             summary = f"{self.display_name}: output files created (" + format_item_list_for_summary(self.output_files) + ")"
@@ -276,12 +294,61 @@ class PhishkitAnalyzer(AnalysisModule):
             return text.replace(creds, "****:****")
         return text
 
+    def _emit_scan_outcome(self, observable: Observable, analysis: "PhishkitAnalysis", outcome: str) -> None:
+        """Emit a scan-level outcome event to fluent-bit for proxy-reliability dashboards.
+
+        outcome: "success" | "failed" | "scan_timeout"
+        """
+        if not self.fluent_bit_metrics_sender:
+            return
+        try:
+            proxy_status = analysis.proxy_status or {}
+            self.fluent_bit_metrics_sender.emit(None, {
+                "event": "scan_outcome",
+                "job_id": analysis.job_id,
+                "scan_type": analysis.scan_type,
+                "observable_value": observable.value,
+                "outcome": outcome,
+                "error": analysis.error,
+                "exit_code": analysis.exit_code,
+                "proxy_configured": proxy_status.get("configured"),
+                "proxy_fallback_enabled": proxy_status.get("fallback_enabled"),
+                "proxy_fallback_triggered": proxy_status.get("fallback_triggered"),
+                "proxy_fallback_reason": proxy_status.get("fallback_reason"),
+                "proxy_final_route": proxy_status.get("final_route"),
+                "scan_duration_seconds": (analysis.metrics or {}).get("scan_duration_seconds"),
+                "total_bytes_downloaded": (analysis.metrics or {}).get("total_bytes_downloaded"),
+            })
+        except Exception as e:
+            logging.error(f"failed to send scan_outcome to fluent-bit for {observable}: {e}")
+
+    def _emit_scan_dispatched(self, observable: Observable, analysis: "PhishkitAnalysis") -> None:
+        """Emit a scan-dispatch event to fluent-bit. Pair with _emit_scan_outcome.
+
+        Splunk can join scan_dispatched against scan_outcome on job_id; unmatched
+        dispatched events imply the engine's delayed_analysis deadline fired before
+        the scan completed (hard timeout, no analyzer-side callback).
+        """
+        if not self.fluent_bit_metrics_sender:
+            return
+        try:
+            self.fluent_bit_metrics_sender.emit(None, {
+                "event": "scan_dispatched",
+                "job_id": analysis.job_id,
+                "scan_type": analysis.scan_type,
+                "observable_value": observable.value,
+                "proxy_configured": bool(self._proxy_string),
+                "proxy_fallback_enabled": self.config.proxy_fallback_to_direct,
+            })
+        except Exception as e:
+            logging.error(f"failed to send scan_dispatched to fluent-bit for {observable}: {e}")
+
     def continue_analysis(self, observable: Observable, analysis: PhishkitAnalysis) -> AnalysisExecutionResult:
         """Completes an existing analysis."""
         if not analysis.job_id:
             logging.error(f"no job ID for analysis {analysis}")
             return AnalysisExecutionResult.COMPLETED
-        
+
         # wait for the job to complete
         logging.info(f"checking for phishkit scan results for {observable} job ID {analysis.job_id}")
         try:
@@ -290,17 +357,19 @@ class PhishkitAnalyzer(AnalysisModule):
             error_msg = f"phishkit scan timed out for {observable} job ID {analysis.job_id}: {e}"
             logging.warning(error_msg)
             analysis.error = error_msg
+            self._emit_scan_outcome(observable, analysis, "scan_timeout")
             return AnalysisExecutionResult.COMPLETED
         except Exception as e:
             error_msg = f"phishkit scan failed for {observable} job ID {analysis.job_id}: {e}"
             logging.error(error_msg)
             report_exception()
             analysis.error = error_msg
+            self._emit_scan_outcome(observable, analysis, "failed")
             return AnalysisExecutionResult.COMPLETED
 
         if scan_results is None:
             logging.info(f"scan results not ready yet for {observable} job ID {analysis.job_id}")
-            return self.delay_analysis(observable, analysis, seconds=3, timeout_seconds=max(self.config.scanner_timeout, 60))
+            return self.delay_analysis(observable, analysis, seconds=3, timeout_seconds=max(self.config.scanner_timeout, 60) * 2 + 30)
 
         # if we get this far then the scan results are ready
         analysis.scan_result = f"successfully scanned {observable}"
@@ -416,6 +485,9 @@ class PhishkitAnalyzer(AnalysisModule):
             except Exception as e:
                 logging.error(f"failed to extract URLs from requests.json for {observable}: {e}")
 
+        self._emit_scan_outcome(
+            observable, analysis, "failed" if analysis.error else "success"
+        )
         return AnalysisExecutionResult.COMPLETED
 
     def execute_analysis(self, observable) -> AnalysisExecutionResult:
@@ -462,30 +534,34 @@ class PhishkitAnalyzer(AnalysisModule):
         if observable.type == F_URL:
             logging.info(f"executing phishkit URL scan for {observable}")
             analysis.scan_type = SCAN_TYPE_URL
-            
+
             try:
                 analysis.job_id = scan_url(observable.value, analysis.output_dir, is_async=True, scanner_timeout=self.config.scanner_timeout, proxy=self._proxy_string, proxy_fallback_to_direct=self.config.proxy_fallback_to_direct, config_path=self.config.config_path)
-                self.delay_analysis(observable, analysis, seconds=5, timeout_seconds=max(self.config.scanner_timeout, 60))
-                
+                self._emit_scan_dispatched(observable, analysis)
+                self.delay_analysis(observable, analysis, seconds=5, timeout_seconds=max(self.config.scanner_timeout, 60) * 2 + 30)
+
             except Exception as e:
                 error_msg = f"failed to scan URL {observable.value}: {str(e)}"
                 logging.error(error_msg)
                 analysis.error = error_msg
+                self._emit_scan_outcome(observable, analysis, "failed")
                 return AnalysisExecutionResult.COMPLETED
 
         elif observable.type == F_FILE:
             logging.info(f"executing phishkit file scan for {observable.value}")
             analysis.scan_type = SCAN_TYPE_FILE
-            
+
             try:
                 analysis.job_id = scan_file(observable.full_path, analysis.output_dir, is_async=True, scanner_timeout=self.config.scanner_timeout, proxy=self._proxy_string, proxy_fallback_to_direct=self.config.proxy_fallback_to_direct, config_path=self.config.config_path)
-                return self.delay_analysis(observable, analysis, seconds=5, timeout_seconds=max(self.config.scanner_timeout, 60))
-                
+                self._emit_scan_dispatched(observable, analysis)
+                return self.delay_analysis(observable, analysis, seconds=5, timeout_seconds=max(self.config.scanner_timeout, 60) * 2 + 30)
+
             except Exception as e:
                 error_msg = f"Failed to scan file {observable.value}: {str(e)}"
                 logging.error(error_msg)
                 report_exception()
                 analysis.error = error_msg
+                self._emit_scan_outcome(observable, analysis, "failed")
                 return AnalysisExecutionResult.COMPLETED
 
         return AnalysisExecutionResult.COMPLETED

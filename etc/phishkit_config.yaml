@@ -166,8 +166,15 @@ proxy_fallback:
 # default). If you raise max_network_wait, also raise scanner_timeout or the
 # scanner process will be killed before the adaptive wait can complete.
 scan_waits:
-  additional_wait: 3
-  max_network_wait: 10
+  # Fixed sleep after document.readyState=complete; covers deferred challenge
+  # UI injected via setTimeout. Bumped from 3 → 5 to give one extra render
+  # tick before the network-quiescence loop starts.
+  additional_wait: 5
+  # Additional cap, on top of additional_wait, during which the scanner keeps
+  # waiting while any Network.* CDP activity is in flight. Exits early when
+  # everything goes quiet. Bumped from 10 → 15 to match the larger
+  # scanner_timeout floor.
+  max_network_wait: 15
 
 # Resource limits applied to each scanner container spawned by the phishkit
 # manager, plus settings for the orphan-container reaper.
@@ -189,6 +196,11 @@ resource_limits:
   # How often (seconds) the reaper sweeps for orphans.
   reaper_interval_seconds: 60
 
-  # Hint used only by the reaper's max-age floor calculation. Keep in sync
-  # with PhishkitAnalyzerConfig.scanner_timeout default.
-  scanner_timeout_hint: 15
+  # Drives BOTH the reaper's max-age floor (hint * 4 + 120) AND celery's task
+  # time limits (phishkit/phishkit.py uses hint * 2 + 60 / hint * 2 + 120 for
+  # soft/hard limits). Must be at least as large as the worst-case
+  # scanner_timeout any ACE deployment sharing this celery worker sets,
+  # otherwise SoftTimeLimitExceeded preempts subprocess.TimeoutExpired inside
+  # _run_scanner and silently skips retry_on_timeout. If you raise
+  # scanner_timeout anywhere, raise this in lockstep.
+  scanner_timeout_hint: 90

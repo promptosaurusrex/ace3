@@ -1961,7 +1961,14 @@ analysis_module_phishkit_analyzer:
   python_module: saq.modules.phishkit
   python_class: PhishkitAnalyzer
   enabled: true
-  scanner_timeout: 15
+  # Per-attempt cap (seconds) on the docker-wrapped scanner subprocess inside
+  # the celery worker. Up to two attempts may run back-to-back when the proxy
+  # times out (proxy_fallback_to_direct + proxy_fallback.retry_on_timeout in
+  # phishkit_config.yaml). The engine's delayed_analysis deadline is derived
+  # from this value as (scanner_timeout * 2 + 30) so the analyzer waits long
+  # enough to pick up results from a direct-fallback retry. Default floor —
+  # override per deployment (BV overlay sets 90).
+  scanner_timeout: 30
   # list of file extensions to enable for scanning
   valid_file_extensions:
     - .html

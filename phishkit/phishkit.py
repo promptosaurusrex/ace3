@@ -31,7 +31,12 @@ DEFAULT_RESOURCE_LIMITS = {
     "container_cpus": "2.0",
     "reaper_max_age_seconds": 600,
     "reaper_interval_seconds": 60,
-    "scanner_timeout_hint": 15,
+    # Worst-case scanner_timeout across deployments — drives celery's task
+    # time limits (hint * 2 + 60 / hint * 2 + 120). Must always exceed any
+    # scanner_timeout set in any saq.yaml or SoftTimeLimitExceeded will
+    # preempt subprocess.TimeoutExpired and silently skip retry_on_timeout.
+    # Fallback only — the active value lives in etc/phishkit_config.yaml.
+    "scanner_timeout_hint": 90,
 }
 
 
@@ -422,8 +427,17 @@ app = Celery(
     broker=f"pyamqp://ace3:{rabbitmq_password}@rabbitmq//")
 
 app.conf.broker_transport_options = {"global_keyprefix": "phishkit"}
-app.conf.task_time_limit = 300
-app.conf.task_soft_time_limit = 240
+
+# Celery's task time limits are the safety net only — per-attempt duration is
+# enforced by subprocess.communicate(timeout=scanner_timeout) inside _run_scanner.
+# _run_scanner's worst case is two attempts (proxy + direct fallback) plus
+# container-stop grace, so the soft limit must comfortably exceed
+# (2 * scanner_timeout_hint). Without this headroom, SoftTimeLimitExceeded
+# preempts subprocess.TimeoutExpired and the retry_on_timeout branch in
+# _run_scanner never runs.
+_scanner_timeout_hint = int(_load_resource_limits()["scanner_timeout_hint"])
+app.conf.task_soft_time_limit = _scanner_timeout_hint * 2 + 60
+app.conf.task_time_limit = _scanner_timeout_hint * 2 + 120
 
 @app.task
 def ping() -> str:
