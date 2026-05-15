@@ -698,6 +698,10 @@ class ObservableModifierAnalyzer(AnalysisModule):
 
         return AnalysisExecutionResult.COMPLETED
 
+    def continue_analysis(self, observable: Observable, analysis: Analysis) -> AnalysisExecutionResult:
+        logging.warning("observable modifier continue_analysis called, but this module never calls delay_analysis()")
+        return AnalysisExecutionResult.INCOMPLETE
+
     def _apply_ignore(self, rule: "Rule", observable: Observable, root: RootAnalysis) -> None:
         """Apply a matched rule's ``ignore`` action: surgically remove the
         observable from matching parent analyses and/or mark it ignored.

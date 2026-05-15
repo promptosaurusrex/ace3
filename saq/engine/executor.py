@@ -1182,9 +1182,20 @@ class AnalysisExecutor:
                     )
                     # Intentional: do not return, do not re-raise.
 
+            # delayed_analysis=True must only be passed to the module that is actually
+            # being resumed from its prior delay_analysis() call -- not to every module
+            # invoked during a DelayedAnalysisRequest resumption. context.is_delayed_analysis
+            # is context-wide and would otherwise route unrelated modules with persisted
+            # incomplete analyses (e.g. two-phase modules like ObservableModifierAnalyzer)
+            # into continue_analysis(), which they do not implement.
+            is_resuming_delayed_module = (
+                context.delayed_analysis_request is not None
+                and work_item.analysis_module is context.delayed_analysis_request.analysis_module
+            )
+
             logging.debug(
                 "analyzing {} with {} (final analysis={}) (delayed analysis={})".format(
-                    work_item.observable, analysis_module, context.final_analysis_mode, context.is_delayed_analysis
+                    work_item.observable, analysis_module, context.final_analysis_mode, is_resuming_delayed_module
                 )
             )
 
@@ -1229,11 +1240,11 @@ class AnalysisExecutor:
                 if analysis_module.semaphore_name is not None:
                     with NetworkSemaphore(analysis_module.semaphore_name):
                         analysis_result = analysis_module.analyze(
-                            work_item.observable, context.final_analysis_mode, context.is_delayed_analysis
+                            work_item.observable, context.final_analysis_mode, is_resuming_delayed_module
                         )
                 else:
                     analysis_result = analysis_module.analyze(
-                        work_item.observable, context.final_analysis_mode, context.is_delayed_analysis
+                        work_item.observable, context.final_analysis_mode, is_resuming_delayed_module
                     )
 
                 # snapshot after and compute delta — wrapped in try/except so
