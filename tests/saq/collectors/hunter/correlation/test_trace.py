@@ -398,6 +398,22 @@ class TestEngineTrace:
         assert transform.result_count == 1
         assert transform.error is None
         assert "/bin/echo enriched_value" in transform.rendered_command
+        # merge_dropped is only set for merge transforms
+        assert transform.merge_dropped is None
+
+    def test_transform_trace_merge_dropped_round_trips(self):
+        """TransformTrace.merge_dropped survives a model_dump/model_validate cycle
+        so the merge-dropped count reaches the UI from a persisted alert."""
+        original = TransformTrace(
+            transform_type="stream",
+            method="merge",
+            command_type="query",
+            result_count=5,
+            merge_dropped=2,
+        )
+        restored = TransformTrace.model_validate(original.model_dump())
+        assert restored.merge_dropped == 2
+        assert restored.result_count == 5
 
     def test_transform_error_short_circuits_to_alert(self):
         """A failing transform stops step processing for the event and alerts it."""

@@ -82,13 +82,20 @@ class CorrelationEngine:
         self,
         correlate_config: CorrelateConfig,
         predefined_commands: list[PredefinedCommandConfig],
-        hunt_time: datetime.datetime,
+        hunt_start_time: datetime.datetime,
+        hunt_end_time: Optional[datetime.datetime] = None,
         max_result_count: Optional[int] = None,
         hunt_source_type: Optional[str] = None,
     ):
         self.config = correlate_config
         self.predefined_commands = predefined_commands or []
-        self.hunt_time = hunt_time
+        # the hunt's query window. stream transforms (and event transforms with no
+        # resolvable per-event time field) anchor their relative time_range to it:
+        # `before` extends before hunt_start_time, `after` extends after hunt_end_time.
+        # hunt_end_time defaults to hunt_start_time (a zero-width window) so callers
+        # that don't have a range behave as a single reference point.
+        self.hunt_start_time = hunt_start_time
+        self.hunt_end_time = hunt_end_time if hunt_end_time is not None else hunt_start_time
         self.max_result_count = max_result_count
         self.timeout = parse_timespec(correlate_config.timeout)
         self.stream_query_cache: dict[str, str] = {}
@@ -154,16 +161,18 @@ class CorrelationEngine:
                     at_event_index=event_index,
                     detail=f"stream reset to {len(sr.new_stream)} events, resuming at step {sr.resume_step_index}",
                 ))
-                # Keep the partial event trace that led to the reset
-                trace.event_traces.append(event_trace)
                 events = sr.new_stream
                 event_index = 0
                 start_step_index = sr.resume_step_index
                 # Clear accumulated alerts since stream changed
                 alert_events = []
                 result.event_actions = {}
-                # Clear prior event traces since the stream changed
-                trace.event_traces = []
+                # Prior per-event traces ran against the now-replaced stream, so
+                # drop them — but keep the trace that triggered the reset. Its
+                # steps hold the stream transform's rendered command and result
+                # count, the only record of what the transform actually did.
+                event_trace.outcome = "stream_reset"
+                trace.event_traces = [event_trace]
                 continue
             except _StepError:
                 # A step raised an error. Short-circuit further step processing
@@ -397,19 +406,22 @@ class CorrelationEngine:
                     events,
                     transform.type,
                     self.predefined_commands,
-                    self.hunt_time,
+                    self.hunt_start_time,
                     temp_dir,
                     self.stream_query_cache,
                     self._secrets,
                     self._config,
                     self._current_source,
+                    hunt_end_time=self.hunt_end_time,
                 )
 
             # Count result rows from command output
             output_lines = [line for line in output.strip().splitlines() if line.strip()] if output else []
             transform_trace.result_count = len(output_lines)
 
-            updated_event, new_stream = apply_transform(transform, output, event, events)
+            updated_event, new_stream, merge_dropped = apply_transform(transform, output, event, events)
+            if merge_dropped is not None:
+                transform_trace.merge_dropped = merge_dropped
 
             if new_stream is not None:
                 # a stream mutate driven by a query replaces the stream's origin;
