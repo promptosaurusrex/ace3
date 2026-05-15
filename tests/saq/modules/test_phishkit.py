@@ -682,17 +682,18 @@ def test_phishkit_analyzer_continue_analysis_not_ready(monkeypatch, test_context
     analyzer = PhishkitAnalyzer(
         get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
         context=create_test_context(root=root))
-    
+    analyzer.config.scanner_timeout = 100
+
     # Mock delay_analysis to return the expected result
     def mock_delay_analysis(*args, **kwargs):
         return AnalysisExecutionResult.INCOMPLETE
-    
+
     analyzer.delay_analysis = MagicMock(side_effect=mock_delay_analysis)
-    
+
     result = analyzer.continue_analysis(url_observable, analysis)
-    
+
     # Should call delay_analysis and return its result
-    analyzer.delay_analysis.assert_called_once_with(url_observable, analysis, seconds=3, timeout_seconds=60)
+    analyzer.delay_analysis.assert_called_once_with(url_observable, analysis, seconds=3, timeout_seconds=230)
     assert result == AnalysisExecutionResult.INCOMPLETE
 
 

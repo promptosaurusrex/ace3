@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.50] - 2026-05-15
+
+- [Adds framework for external remediation checking](https://github.com/ACE-Collective/ace3/pull/225)
+- [Allows config-based analysis modules to add pivot links](https://github.com/ACE-Collective/ace3/pull/228)
+- [Makes Original Query section collapsible](https://github.com/ACE-Collective/ace3/pull/229)
+- [Fixes various stream transform issues](https://github.com/ACE-Collective/ace3/pull/231)
+- [Includes lookup_ms on cache hits](https://github.com/ACE-Collective/ace3/pull/232)
+- [Fix issue when delayed analysis applied across the execution context](https://github.com/ACE-Collective/ace3/pull/233)
+- [Various phishkit logging and timeout fixes](https://github.com/ACE-Collective/ace3/pull/234)
+
 ## [3.0.49] - 2026-05-14
 
 - [Adds buttons to download alert and view logs](https://github.com/ACE-Collective/ace3/pull/222)
