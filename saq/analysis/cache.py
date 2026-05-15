@@ -269,11 +269,13 @@ def put_cached_delta(
         # work without per-query rex.
         logging.info(
             "wrote analysis cache entry op=%s module_name=%s observable_type=%s "
-            "uncompressed_bytes=%d compressed_bytes=%d has_blob_refs=%s "
-            "ttl_seconds=%d write_ms=%d",
+            "observable_value=%s root_uuid=%s uncompressed_bytes=%d "
+            "compressed_bytes=%d has_blob_refs=%s ttl_seconds=%d write_ms=%d",
             op,
             module.config.name,
             delta.observable_type,
+            delta.observable_value,
+            delta.root_uuid or "n/a",
             uncompressed_size,
             len(delta_zstd),
             bool(has_blob_refs),
@@ -283,6 +285,8 @@ def put_cached_delta(
                 "op": op,
                 "module_name": module.config.name,
                 "observable_type": delta.observable_type,
+                "observable_value": delta.observable_value,
+                "root_uuid": delta.root_uuid or "n/a",
                 "uncompressed_bytes": uncompressed_size,
                 "compressed_bytes": len(delta_zstd),
                 "has_blob_refs": bool(has_blob_refs),
@@ -518,6 +522,14 @@ def get_cached_delta(
 
     module_name = getattr(getattr(module, "config", None), "name", "<unknown>")
     observable_type = getattr(observable, "type", "<unknown>")
+    observable_value = getattr(observable, "value", "<unknown>")
+    # Derive the root_uuid from the observable's tree manager. Defensive
+    # getattr chain: the observable always has the tree manager injected in
+    # the real executor path, but test stubs may not — and lookup is
+    # best-effort, so a missing root must never raise here.
+    _tree_manager = getattr(observable, "analysis_tree_manager", None)
+    _root = getattr(_tree_manager, "root_analysis", None)
+    root_uuid = getattr(_root, "uuid", "<unknown>")
     cache_key_prefix = cache_key[:12]
     lookup_start_ns = time.monotonic_ns()
 
@@ -525,11 +537,15 @@ def get_cached_delta(
         lookup_ms = (time.monotonic_ns() - lookup_start_ns) // 1_000_000
         logging.info(
             "analysis cache miss module_name=%s observable_type=%s "
-            "cache_key_prefix=%s reason=%s lookup_ms=%d",
-            module_name, observable_type, cache_key_prefix, reason, lookup_ms,
+            "observable_value=%s root_uuid=%s cache_key_prefix=%s "
+            "reason=%s lookup_ms=%d",
+            module_name, observable_type, observable_value, root_uuid,
+            cache_key_prefix, reason, lookup_ms,
             extra={
                 "module_name": module_name,
                 "observable_type": observable_type,
+                "observable_value": observable_value,
+                "root_uuid": root_uuid,
                 "cache_key_prefix": cache_key_prefix,
                 "reason": reason,
                 "lookup_ms": lookup_ms,
