@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.51] - 2026-05-16
+
+- [Several Phishkit anti-bot improvements](https://github.com/ACE-Collective/ace3/pull/236)
+- [Surfaces cached analysis in the GUI](https://github.com/ACE-Collective/ace3/pull/237)
+- [skip post-analysis logic if root did not load](https://github.com/ACE-Collective/ace3/pull/238)
+- [Refactor _sync_config to create unique config files for concurrent scans](https://github.com/ACE-Collective/ace3/pull/239)
+- [Add permanent error handling to probe outcomes](https://github.com/ACE-Collective/ace3/pull/240)
+
 ## [3.0.50] - 2026-05-15
 
 - [Adds framework for external remediation checking](https://github.com/ACE-Collective/ace3/pull/225)
