@@ -11,6 +11,7 @@ import mimetypes
 import os
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 from subprocess import PIPE, Popen, TimeoutExpired
@@ -23,7 +24,7 @@ import magic
 
 logger = logging.getLogger(__name__)
 
-SHARED_CONFIG = "/phishkit/config/phishkit_config.yaml"
+SHARED_CONFIG_DIR = "/phishkit/config"
 DEFAULT_CONFIG_PATH = "/opt/ace/etc/phishkit_config.yaml"
 
 DEFAULT_RESOURCE_LIMITS = {
@@ -206,21 +207,32 @@ def _sanitize_proxy_for_display(proxy: str | None) -> str | None:
 
 
 def _sync_config(source_path: str | None) -> str | None:
-    """Copy phishkit config to the shared phishkit volume.
+    """Copy phishkit config to a unique file on the shared phishkit volume.
 
-    Returns the destination path inside the shared volume if successful, None otherwise.
+    Each call writes a fresh uniquely-named file so concurrent scans never read
+    a partially-written config. Returns the destination path if successful, None
+    otherwise. The caller owns the returned file and must delete it after use.
     """
     if not source_path or not os.path.isfile(source_path):
         logger.info("no config found at %s", source_path)
         return None
 
+    dest = None
     try:
-        os.makedirs(os.path.dirname(SHARED_CONFIG), exist_ok=True)
-        shutil.copy2(source_path, SHARED_CONFIG)
-        logger.info("synced config %s to %s", source_path, SHARED_CONFIG)
-        return SHARED_CONFIG
+        os.makedirs(SHARED_CONFIG_DIR, exist_ok=True)
+        fd, dest = tempfile.mkstemp(
+            dir=SHARED_CONFIG_DIR, prefix="phishkit_config-", suffix=".yaml")
+        os.close(fd)
+        shutil.copyfile(source_path, dest)
+        logger.info("synced config %s to %s", source_path, dest)
+        return dest
     except Exception as e:
         logger.warning("failed to sync config: %s", e)
+        if dest is not None:
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
         return None
 
 
@@ -250,163 +262,170 @@ def _run_scanner(
 
     synced = _sync_config(abs_config)
 
-    container_name = f"phishkit-scan-{job_id}"
-    worker_hostname = socket.gethostname()
-
-    def build_cmd(use_proxy, out_dir, name):
-        mem = resource_limits["container_memory"]
-        cmd = [
-            "docker",
-            "run",
-            "--rm",
-            "--init",
-            "--name", name,
-            "--label", f"phishkit.job_id={job_id}",
-            "--label", f"phishkit.worker={worker_hostname}",
-            "--label", f"phishkit.started_at={int(time.time())}",
-            "--memory", str(mem),
-            "--memory-swap", str(mem),
-            "--cpus", str(resource_limits["container_cpus"]),
-            "--stop-timeout", "5",
-            "-v",
-            "ace-phishkit:/phishkit",
-            os.environ.get("ACE3_PHISHKIT_IMAGE_URL", "phishkit"),
-            "/opt/venv/bin/python",
-            "/opt/app/scanner.py",
-            *target_args,
-            "--output-dir",
-            out_dir,
-        ]
-        if use_proxy and proxy:
-            cmd.extend(["--proxy", proxy])
-        if synced:
-            cmd.extend(["--config", synced])
-        return cmd
-
-    cmd = build_cmd(use_proxy=True, out_dir=output_dir, name=container_name)
-    process = Popen(cmd, stdout=PIPE, stderr=PIPE, text=True)
-
-    fallback_reason: str | None = None
-    fallback_details: dict = {}
-    timed_out = False
-    _stdout, _stderr = "", ""
-
     try:
-        try:
-            _stdout, _stderr = process.communicate(timeout=timeout)
-        except TimeoutExpired:
-            logger.warning("phishkit job %s timed out, killing container %s", job_id, container_name)
-            _force_stop_container(container_name)
-            try:
-                _stdout, _stderr = process.communicate(timeout=10)
-            except TimeoutExpired:
-                process.kill()
-                _stdout, _stderr = process.communicate()
-            timed_out = True
-            if proxy and proxy_fallback_to_direct and proxy_fallback.get("retry_on_timeout", False):
-                fallback_reason = "timeout"
-                logger.warning("timeout for job %s, retrying without proxy", job_id)
-            else:
-                raise
-    finally:
-        _force_stop_container(container_name)
+        container_name = f"phishkit-scan-{job_id}"
+        worker_hostname = socket.gethostname()
 
-    if not timed_out:
-        for line in _stdout.splitlines():
-            logging.info(f"stdout> {line}")
+        def build_cmd(use_proxy, out_dir, name):
+            mem = resource_limits["container_memory"]
+            cmd = [
+                "docker",
+                "run",
+                "--rm",
+                "--init",
+                "--name", name,
+                "--label", f"phishkit.job_id={job_id}",
+                "--label", f"phishkit.worker={worker_hostname}",
+                "--label", f"phishkit.started_at={int(time.time())}",
+                "--memory", str(mem),
+                "--memory-swap", str(mem),
+                "--cpus", str(resource_limits["container_cpus"]),
+                "--stop-timeout", "5",
+                "-v",
+                "ace-phishkit:/phishkit",
+                os.environ.get("ACE3_PHISHKIT_IMAGE_URL", "phishkit"),
+                "/opt/venv/bin/python",
+                "/opt/app/scanner.py",
+                *target_args,
+                "--output-dir",
+                out_dir,
+            ]
+            if use_proxy and proxy:
+                cmd.extend(["--proxy", proxy])
+            if synced:
+                cmd.extend(["--config", synced])
+            return cmd
 
-        if process.returncode != 0:
-            for line in _stderr.splitlines():
-                logging.info(f"stderr> {line}")
+        cmd = build_cmd(use_proxy=True, out_dir=output_dir, name=container_name)
+        process = Popen(cmd, stdout=PIPE, stderr=PIPE, text=True)
 
-        if proxy and proxy_fallback_to_direct:
-            matched_patterns = _matched_proxy_error_patterns(
-                _stdout, _stderr, proxy_fallback.get("error_patterns", []),
-            )
-            if matched_patterns:
-                fallback_reason = "error_pattern"
-                fallback_details["matched_error_patterns"] = matched_patterns
-                logger.warning("proxy error detected for job %s, retrying without proxy", job_id)
-            else:
-                matched_code = _matched_proxy_status_code(
-                    output_dir, proxy_fallback.get("proxy_status_codes", []),
-                )
-                if matched_code is not None:
-                    fallback_reason = "status_code"
-                    fallback_details["matched_status_code"] = matched_code
-                    logger.warning("proxy error status code for job %s, retrying without proxy", job_id)
+        fallback_reason: str | None = None
+        fallback_details: dict = {}
+        timed_out = False
+        _stdout, _stderr = "", ""
 
-    should_retry = fallback_reason is not None
-
-    if should_retry:
-        proxy_stdout = _stdout
-
-        retry_output_dir = f"{output_dir}-direct"
-        os.makedirs(retry_output_dir, exist_ok=True)
-
-        retry_container_name = f"phishkit-scan-{job_id}-direct"
-        retry_cmd = build_cmd(use_proxy=False, out_dir=retry_output_dir, name=retry_container_name)
-        process = Popen(retry_cmd, stdout=PIPE, stderr=PIPE, text=True)
         try:
             try:
                 _stdout, _stderr = process.communicate(timeout=timeout)
             except TimeoutExpired:
-                logger.warning("phishkit job %s (direct retry) timed out, killing container %s",
-                               job_id, retry_container_name)
-                _force_stop_container(retry_container_name)
+                logger.warning("phishkit job %s timed out, killing container %s", job_id, container_name)
+                _force_stop_container(container_name)
                 try:
                     _stdout, _stderr = process.communicate(timeout=10)
                 except TimeoutExpired:
                     process.kill()
                     _stdout, _stderr = process.communicate()
-                raise
+                timed_out = True
+                if proxy and proxy_fallback_to_direct and proxy_fallback.get("retry_on_timeout", False):
+                    fallback_reason = "timeout"
+                    logger.warning("timeout for job %s, retrying without proxy", job_id)
+                else:
+                    raise
         finally:
-            _force_stop_container(retry_container_name)
+            _force_stop_container(container_name)
 
-        for line in _stdout.splitlines():
-            logging.info(f"stdout(direct)> {line}")
+        if not timed_out:
+            for line in _stdout.splitlines():
+                logging.info(f"stdout> {line}")
 
-        if process.returncode != 0:
-            for line in _stderr.splitlines():
-                logging.info(f"stderr(direct)> {line}")
+            if process.returncode != 0:
+                for line in _stderr.splitlines():
+                    logging.info(f"stderr> {line}")
 
-        reason = "timed out" if timed_out else "failed"
-        _stdout = f"--- PROXY ATTEMPT ({reason}, retried direct) ---\n{proxy_stdout}\n--- DIRECT ATTEMPT ---\n{_stdout}"
+            if proxy and proxy_fallback_to_direct:
+                matched_patterns = _matched_proxy_error_patterns(
+                    _stdout, _stderr, proxy_fallback.get("error_patterns", []),
+                )
+                if matched_patterns:
+                    fallback_reason = "error_pattern"
+                    fallback_details["matched_error_patterns"] = matched_patterns
+                    logger.warning("proxy error detected for job %s, retrying without proxy", job_id)
+                else:
+                    matched_code = _matched_proxy_status_code(
+                        output_dir, proxy_fallback.get("proxy_status_codes", []),
+                    )
+                    if matched_code is not None:
+                        fallback_reason = "status_code"
+                        fallback_details["matched_status_code"] = matched_code
+                        logger.warning("proxy error status code for job %s, retrying without proxy", job_id)
 
-        # copy retry output files into the main output directory
-        for entry in os.listdir(retry_output_dir):
-            src = os.path.join(retry_output_dir, entry)
-            dst = os.path.join(output_dir, entry)
-            if os.path.isfile(src):
-                shutil.copy2(src, dst)
-            elif os.path.isdir(src):
-                shutil.copytree(src, dst, dirs_exist_ok=True)
+        should_retry = fallback_reason is not None
 
-    with open(os.path.join(output_dir, "std.out"), "w") as fp:
-        fp.write(_stdout)
+        if should_retry:
+            proxy_stdout = _stdout
 
-    with open(os.path.join(output_dir, "std.err"), "w") as fp:
-        fp.write(_stderr)
+            retry_output_dir = f"{output_dir}-direct"
+            os.makedirs(retry_output_dir, exist_ok=True)
 
-    with open(os.path.join(output_dir, "exit.code"), "w") as fp:
-        fp.write(str(process.returncode))
+            retry_container_name = f"phishkit-scan-{job_id}-direct"
+            retry_cmd = build_cmd(use_proxy=False, out_dir=retry_output_dir, name=retry_container_name)
+            process = Popen(retry_cmd, stdout=PIPE, stderr=PIPE, text=True)
+            try:
+                try:
+                    _stdout, _stderr = process.communicate(timeout=timeout)
+                except TimeoutExpired:
+                    logger.warning("phishkit job %s (direct retry) timed out, killing container %s",
+                                   job_id, retry_container_name)
+                    _force_stop_container(retry_container_name)
+                    try:
+                        _stdout, _stderr = process.communicate(timeout=10)
+                    except TimeoutExpired:
+                        process.kill()
+                        _stdout, _stderr = process.communicate()
+                    raise
+            finally:
+                _force_stop_container(retry_container_name)
 
-    proxy_status = {
-        "configured": bool(proxy),
-        "host": _sanitize_proxy_for_display(proxy),
-        "fallback_enabled": bool(proxy_fallback_to_direct),
-        "fallback_triggered": should_retry,
-        "fallback_reason": fallback_reason,
-        "fallback_details": fallback_details,
-        "final_route": (
-            "direct" if should_retry
-            else ("proxy" if proxy else "none")
-        ),
-    }
-    with open(os.path.join(output_dir, "proxy.json"), "w") as fp:
-        json.dump(proxy_status, fp)
+            for line in _stdout.splitlines():
+                logging.info(f"stdout(direct)> {line}")
 
-    return _stdout, _stderr, process.returncode
+            if process.returncode != 0:
+                for line in _stderr.splitlines():
+                    logging.info(f"stderr(direct)> {line}")
+
+            reason = "timed out" if timed_out else "failed"
+            _stdout = f"--- PROXY ATTEMPT ({reason}, retried direct) ---\n{proxy_stdout}\n--- DIRECT ATTEMPT ---\n{_stdout}"
+
+            # copy retry output files into the main output directory
+            for entry in os.listdir(retry_output_dir):
+                src = os.path.join(retry_output_dir, entry)
+                dst = os.path.join(output_dir, entry)
+                if os.path.isfile(src):
+                    shutil.copy2(src, dst)
+                elif os.path.isdir(src):
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+
+        with open(os.path.join(output_dir, "std.out"), "w") as fp:
+            fp.write(_stdout)
+
+        with open(os.path.join(output_dir, "std.err"), "w") as fp:
+            fp.write(_stderr)
+
+        with open(os.path.join(output_dir, "exit.code"), "w") as fp:
+            fp.write(str(process.returncode))
+
+        proxy_status = {
+            "configured": bool(proxy),
+            "host": _sanitize_proxy_for_display(proxy),
+            "fallback_enabled": bool(proxy_fallback_to_direct),
+            "fallback_triggered": should_retry,
+            "fallback_reason": fallback_reason,
+            "fallback_details": fallback_details,
+            "final_route": (
+                "direct" if should_retry
+                else ("proxy" if proxy else "none")
+            ),
+        }
+        with open(os.path.join(output_dir, "proxy.json"), "w") as fp:
+            json.dump(proxy_status, fp)
+
+        return _stdout, _stderr, process.returncode
+    finally:
+        if synced:
+            try:
+                os.remove(synced)
+            except OSError as e:
+                logger.warning("failed to remove synced config %s: %s", synced, e)
 
 
 if os.path.exists("/auth/passwords/redis"):
