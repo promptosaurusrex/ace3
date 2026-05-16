@@ -160,5 +160,5 @@ class ExternalRemediationCheckWorker(CheckListener):
         else:
             logging.warning(
                 f"ERROR {self.probe.name} {work.observable_type} {work.observable_value}: "
-                f"{outcome.transient_error}"
+                f"{outcome.transient_error or outcome.permanent_error}"
             )

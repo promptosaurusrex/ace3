@@ -121,6 +121,27 @@ def test_worker_transient_error_retries_then_terminates(make_check):
 
 
 @pytest.mark.integration
+def test_worker_permanent_error_terminates_without_retries(make_check):
+    """A permanent error finalizes the row as COMPLETED+ERROR on the first
+    attempt, even with retries still available."""
+    probe = FakeProbe(outcome_factory=lambda t: ProbeOutcome(
+        permanent_error="read timeout", message="query timed out"))
+    worker = ExternalRemediationCheckWorker(probe)
+
+    check = make_check(retry_count=0, max_retries=30)
+    worker.process(_work_item_from(check, max_retries=30))
+
+    db = get_db()
+    db.refresh(check)
+    assert check.status == CheckStatus.COMPLETED.value
+    assert check.result == CheckResult.ERROR.value
+    assert check.retry_count == 1
+    assert check.last_error == "read timeout"
+    history = _history_for(check.id)
+    assert history[0].result == HistoryResult.ERROR.value
+
+
+@pytest.mark.integration
 def test_worker_expired_does_not_call_probe(make_check):
     """Past-deadline rows are finalized without ever invoking the probe."""
     probe = FakeProbe(outcome_factory=lambda t: pytest.fail("probe must not be called"))

@@ -22,6 +22,14 @@ class TestProbeOutcome:
         outcome = ProbeOutcome(transient_error="boom")
         assert outcome.kind is ProbeOutcomeKind.TRANSIENT_ERROR
 
+    def test_permanent_error_kind(self):
+        outcome = ProbeOutcome(permanent_error="fatal")
+        assert outcome.kind is ProbeOutcomeKind.PERMANENT_ERROR
+
+    def test_permanent_error_combined_with_other_rejected(self):
+        with pytest.raises(ValueError):
+            ProbeOutcome(permanent_error="fatal", transient_error="boom")
+
     def test_zero_outcomes_rejected(self):
         with pytest.raises(ValueError):
             ProbeOutcome()
