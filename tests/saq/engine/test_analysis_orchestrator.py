@@ -1,3 +1,6 @@
+import os
+import shutil
+
 import pytest
 from unittest.mock import Mock, patch
 
@@ -217,19 +220,19 @@ class TestAnalysisOrchestratorFinallyBlock:
             assert result is False
             mock_post_analysis.assert_called_once_with(execution_context)
 
-    def test_post_analysis_logic_called_when_process_work_item_fails(self, orchestrator, execution_context):
-        """test that _handle_post_analysis_logic is called even when _process_work_item returns False"""
+    def test_post_analysis_logic_skipped_when_process_work_item_fails(self, orchestrator, execution_context):
+        """test that _handle_post_analysis_logic is skipped when _process_work_item returns False"""
         with patch.object(orchestrator, '_process_work_item', return_value=False), \
              patch.object(orchestrator, '_handle_post_analysis_logic') as mock_post_analysis:
 
             result = orchestrator.orchestrate_analysis(execution_context)
 
             assert result is False
-            # the finally block still executes even when we return early from the try block
-            mock_post_analysis.assert_called_once_with(execution_context)
+            # the work item was never loaded for analysis - there is nothing to clean up
+            mock_post_analysis.assert_not_called()
 
-    def test_post_analysis_logic_called_when_root_is_none(self, orchestrator, execution_context):
-        """test that _handle_post_analysis_logic is called even when root is None after processing work item"""
+    def test_post_analysis_logic_skipped_when_root_is_none(self, orchestrator, execution_context):
+        """test that _handle_post_analysis_logic is skipped when root is None after processing work item"""
         execution_context.root = None
 
         with patch.object(orchestrator, '_process_work_item', return_value=True), \
@@ -238,8 +241,26 @@ class TestAnalysisOrchestratorFinallyBlock:
             result = orchestrator.orchestrate_analysis(execution_context)
 
             assert result is False
-            # the finally block still executes even when we return early from the try block
-            mock_post_analysis.assert_called_once_with(execution_context)
+            # the root was never loaded - there is nothing to clean up
+            mock_post_analysis.assert_not_called()
+
+    def test_post_analysis_logic_skipped_when_storage_dir_missing(self, orchestrator, execution_context):
+        """regression: a re-picked-up work item whose storage dir is gone must not run cleanup
+
+        this reproduces the production scenario where an orphaned workload row is
+        re-dispatched after its analysis already completed and its storage directory
+        was cleaned up - post-analysis logic must not attempt to rmtree a missing dir"""
+        # simulate the production scenario: the analysis already completed and its
+        # work storage directory was cleaned up before this orphaned workload row
+        # was re-dispatched
+        shutil.rmtree(execution_context.root.storage_dir)
+        assert not os.path.isdir(execution_context.root.storage_dir)
+
+        with patch.object(orchestrator, '_handle_post_analysis_logic') as mock_post_analysis:
+            result = orchestrator.orchestrate_analysis(execution_context)
+
+            assert result is False
+            mock_post_analysis.assert_not_called()
 
     def test_post_analysis_logic_called_when_check_disposition_returns_true(self, orchestrator, execution_context):
         """test that _handle_post_analysis_logic is called when _check_disposition returns True (skipping analysis)"""
