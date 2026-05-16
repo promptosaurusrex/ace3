@@ -7,7 +7,6 @@ manager, delayed analysis interface, tracking message manager, work
 stacks) and is deliberately deferred. These tests focus on the helper
 ``_apply_cached_delta`` and the dataclass plumbing that supports it.
 """
-import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -22,7 +21,7 @@ from saq.analysis.module_execution_delta import (
 )
 from saq.analysis.root import RootAnalysis
 from saq.constants import F_FILE, F_FQDN, F_URL
-from saq.engine.executor import AnalysisExecutor
+from saq.engine.executor import AnalysisExecutionContext, AnalysisExecutor
 from saq.modules.whois import WhoisAnalysis
 
 
@@ -44,6 +43,12 @@ def _make_root(tmp_path):
     root = RootAnalysis(storage_dir=str(tmp_path))
     root.initialize_storage()
     return root
+
+
+def _make_context(root) -> AnalysisExecutionContext:
+    """Real AnalysisExecutionContext bound to ``root`` so counter bumps
+    flow into the same dicts ``record_execution_statistics`` consumes."""
+    return AnalysisExecutionContext(root)
 
 
 def _make_module(name="whois_analyzer"):
@@ -84,11 +89,12 @@ class TestApplyCachedDelta:
     def test_records_attribution_delta_with_from_cache_hit_flag(self, tmp_path):
         executor = _make_executor()
         root = _make_root(tmp_path)
+        context = _make_context(root)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
         module = _make_module()
         delta = _make_delta_for(obs)
 
-        executor._apply_cached_delta(root, obs, module, delta, lookup_ms=4)
+        executor._apply_cached_delta(context, root, obs, module, delta, lookup_ms=4)
 
         assert len(root.module_executions) == 1
         recorded = root.module_executions[0]
@@ -103,32 +109,26 @@ class TestApplyCachedDelta:
         assert recorded.execution_time_ms >= 4
 
     @pytest.mark.unit
-    def test_emits_cache_hit_telemetry_log(self, tmp_path, caplog):
-
+    def test_bumps_cache_hit_counters_on_context(self, tmp_path):
+        """The plain ``analysis cache hit`` log line was replaced by
+        per-(root, module) aggregation on the AnalysisExecutionContext.
+        Each call to ``_apply_cached_delta`` must bump cache_hit_count
+        and the lookup-latency accumulators for the module.
+        """
         executor = _make_executor()
         root = _make_root(tmp_path)
+        context = _make_context(root)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
         module = _make_module()
         delta = _make_delta_for(obs)
 
-        with caplog.at_level(logging.INFO):
-            executor._apply_cached_delta(root, obs, module, delta, lookup_ms=7)
+        executor._apply_cached_delta(context, root, obs, module, delta, lookup_ms=7)
+        executor._apply_cached_delta(context, root, obs, module, delta, lookup_ms=3)
 
-        hit_logs = [r for r in caplog.records if "analysis cache hit" in r.getMessage()]
-        assert hit_logs
-        msg = hit_logs[0].getMessage()
-        assert f"module_name={module.config.name}" in msg
-        assert f"observable_type={F_FQDN}" in msg
-        assert "observable_value=example.com" in msg
-        assert f"root_uuid={root.uuid}" in msg
-        assert "cache_key_prefix=" in msg
-        assert "lookup_ms=7" in msg
-        assert "replay_ms=" in msg
-        # Both timings + identifiers surface as top-level fields for Splunk.
-        assert hit_logs[0].lookup_ms == 7
-        assert hasattr(hit_logs[0], "replay_ms")
-        assert hit_logs[0].observable_value == "example.com"
-        assert hit_logs[0].root_uuid == root.uuid
+        name = module.config.name
+        assert context.cache_hit_count[name] == 2
+        assert context.cache_lookup_ms_sum[name] == 10
+        assert context.cache_lookup_ms_max[name] == 7
 
     @pytest.mark.unit
     def test_attribution_delta_recorded_even_when_diff_is_empty(self, tmp_path):
@@ -138,6 +138,7 @@ class TestApplyCachedDelta:
         """
         executor = _make_executor()
         root = _make_root(tmp_path)
+        context = _make_context(root)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
         module = _make_module()
 
@@ -158,7 +159,7 @@ class TestApplyCachedDelta:
         )
         empty_delta.cache_key = "00" * 32
 
-        executor._apply_cached_delta(root, obs, module, empty_delta, lookup_ms=2)
+        executor._apply_cached_delta(context, root, obs, module, empty_delta, lookup_ms=2)
 
         # Even though the delta is empty, attribution is recorded.
         assert len(root.module_executions) == 1
@@ -173,11 +174,12 @@ class TestApplyCachedDelta:
 
         executor = _make_executor()
         root = _make_root(tmp_path)
+        context = _make_context(root)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
         module = _make_module()
         delta = _make_delta_for(obs)
 
-        executor._apply_cached_delta(root, obs, module, delta, lookup_ms=1)
+        executor._apply_cached_delta(context, root, obs, module, delta, lookup_ms=1)
 
         # Diff additions applied.
         assert "replayed" in obs.tags

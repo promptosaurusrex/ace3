@@ -160,6 +160,21 @@ class AnalysisExecutionContext:
         # Runtime state variables
         self._cancel_analysis_flag = False
         self.total_analysis_time = {}
+        # Per-(root, module) aggregates surfaced on the per-root metrics event.
+        # Keyed by module.name; default 0 when absent. Mutated in the live exec
+        # path (executor.py time-tracking block) and the cache hit/miss/write
+        # paths (_apply_cached_delta + get/put_cached_delta callers).
+        self.total_exec_count: dict[str, int] = {}
+        self.cache_hit_count: dict[str, int] = {}
+        self.cache_miss_count: dict[str, int] = {}
+        self.cache_write_count_insert: dict[str, int] = {}
+        self.cache_write_count_update: dict[str, int] = {}
+        self.cache_lookup_ms_sum: dict[str, int] = {}
+        self.cache_lookup_ms_max: dict[str, int] = {}
+        self.cache_write_ms_sum: dict[str, int] = {}
+        self.cache_write_ms_max: dict[str, int] = {}
+        self.cache_write_bytes_uncompressed_sum: dict[str, int] = {}
+        self.cache_write_bytes_compressed_sum: dict[str, int] = {}
         self.work_stack = None
         self.work_stack_buffer = None
         self.first_pass = True
@@ -183,12 +198,21 @@ class AnalysisExecutionContext:
 
     def record_execution_statistics(self, elapsed_time: float, stats_dir: str):
         """Records the execution statistics for the analysis.
-        
+
+        Emits one fluent-bit event per (root, module) pair where the module
+        had any activity in this execution context — either live execution
+        time, cache hits, cache misses, or cache writes. Each event carries
+        the per-module aggregates (exec_count, cache_* counters, byte/time
+        sums) and root-level context (alert_type, is_alert, queue).
+
+        See plans/federated-roaming-pearl.md for the field semantics and
+        the rationale for aggregating per-(root, module) instead of
+        emitting per-call events.
+
         Args:
             elapsed_time: The total elapsed time for the analysis.
             stats_dir: The (base) directory to save the statistics to (typically g(G_MODULE_STATS_DIR)).
         """
-        # save module execution time metrics
         try:
             engine_config = get_engine_config()
             if not engine_config.metrics_logging.enabled:
@@ -200,28 +224,65 @@ class AnalysisExecutionContext:
                 port=engine_config.metrics_logging.fluent_bit_port)
 
             current_time = local_time().strftime("%Y-%m-%d %H:%M:%S.%f")
-            # how long did all the analysis take combined?
-            _total = 0.0
-            for key in self.total_analysis_time.keys():
-                _total += self.total_analysis_time[key]
+            _total = sum(self.total_analysis_time.values())
 
-            for key in self.total_analysis_time.keys():
+            # Iterate the union of all per-(root, module) counter dicts so
+            # cache-only modules (cache hits, no live executions) still get
+            # a row.
+            all_module_keys = (
+                set(self.total_analysis_time.keys())
+                | set(self.total_exec_count.keys())
+                | set(self.cache_hit_count.keys())
+                | set(self.cache_miss_count.keys())
+                | set(self.cache_write_count_insert.keys())
+                | set(self.cache_write_count_update.keys())
+            )
+
+            for key in all_module_keys:
+                analysis_time = self.total_analysis_time.get(key, 0.0)
                 percentage = 0.0
                 if elapsed_time:
-                    percentage = (self.total_analysis_time[key] / elapsed_time) * 100.0
-
+                    percentage = (analysis_time / elapsed_time) * 100.0
                 if not elapsed_time:
                     elapsed_time = 0
 
-                fluent_bit_sender.emit(None, {
+                payload = {
                     "timestamp": current_time,
                     "module": key,
-                    "analysis_time_seconds": self.total_analysis_time[key],
+                    "analysis_time_seconds": analysis_time,
                     "percentage": percentage,
                     "total_analysis_time_seconds": _total,
                     "total_time_seconds": elapsed_time,
                     "root_uuid": self.root.uuid,
-                })
+                    "exec_count": self.total_exec_count.get(key, 0),
+                    "alert_type": self.root.alert_type,
+                    "is_alert": bool(self.root.alert_type),
+                    "queue": self.root.queue,
+                }
+
+                hits = self.cache_hit_count.get(key, 0)
+                misses = self.cache_miss_count.get(key, 0)
+                inserts = self.cache_write_count_insert.get(key, 0)
+                updates = self.cache_write_count_update.get(key, 0)
+                if hits or misses or inserts or updates:
+                    payload["cache_hit_count"] = hits
+                    payload["cache_miss_count"] = misses
+                    payload["cache_write_count_insert"] = inserts
+                    payload["cache_write_count_update"] = updates
+                    if hits:
+                        payload["cache_lookup_ms_sum"] = self.cache_lookup_ms_sum.get(key, 0)
+                        payload["cache_lookup_ms_max"] = self.cache_lookup_ms_max.get(key, 0)
+                    if inserts or updates:
+                        payload["cache_write_ms_sum"] = self.cache_write_ms_sum.get(key, 0)
+                        payload["cache_write_ms_max"] = self.cache_write_ms_max.get(key, 0)
+                        payload["cache_write_bytes_uncompressed_sum"] = (
+                            self.cache_write_bytes_uncompressed_sum.get(key, 0)
+                        )
+                        payload["cache_write_bytes_compressed_sum"] = (
+                            self.cache_write_bytes_compressed_sum.get(key, 0)
+                        )
+
+                fluent_bit_sender.emit(None, payload)
 
         except Exception as e:
             logging.error("unable to record statistics: {}".format(e))
@@ -1022,13 +1083,14 @@ class AnalysisExecutor:
 
     def _apply_cached_delta(
         self,
+        context: "AnalysisExecutionContext",
         root: RootAnalysis,
         observable: Observable,
         module: AnalysisModuleInterface,
         delta,
         lookup_ms: int,
     ) -> None:
-        """Replay a cached delta and record cache-hit attribution.
+        """Replay a cached delta and record cache-hit attribution + metrics.
 
         Calls ``apply_delta`` to mutate the tree, then appends a
         ``from_cache_hit=True`` copy of the delta to
@@ -1039,10 +1101,15 @@ class AnalysisExecutor:
 
         ``lookup_ms`` is the wall time the caller spent in
         ``get_cached_delta`` (DB SELECT + zstd decompress + deserialize +
-        any blob fetch). It's logged alongside ``replay_ms`` so the
-        ``analysis cache hit`` line reflects the *total* cost of a hit —
-        for cheap modules like whois the lookup is the larger half, so
-        ``replay_ms`` alone would understate it.
+        any blob fetch). Combined with ``replay_ms`` it gives the total
+        cost of a hit — for cheap modules like whois the lookup is the
+        larger half, so ``replay_ms`` alone would understate it.
+
+        Bumps ``context.cache_hit_count`` and the lookup latency
+        accumulators so the per-(root, module) metrics emitted at root
+        completion reflect this hit. Replaces the prior ``"analysis cache
+        hit"`` plain log — that data is now aggregated into the per-root
+        summary event.
 
         ``monitor`` and ``track_current_analysis_module`` are skipped on
         purpose: both are bounded by live module wall time, and replay
@@ -1059,27 +1126,15 @@ class AnalysisExecutor:
         )
         root.record_module_execution(attribution_delta)
 
-        cache_key_prefix = (delta.cache_key or "")[:12] or "n/a"
-        logging.info(
-            "analysis cache hit module_name=%s observable_type=%s "
-            "observable_value=%s root_uuid=%s cache_key_prefix=%s "
-            "lookup_ms=%d replay_ms=%d",
-            module.config.name,
-            observable.type,
-            observable.value,
-            root.uuid,
-            cache_key_prefix,
-            lookup_ms,
-            replay_ms,
-            extra={
-                "module_name": module.config.name,
-                "observable_type": observable.type,
-                "observable_value": observable.value,
-                "root_uuid": root.uuid,
-                "cache_key_prefix": cache_key_prefix,
-                "lookup_ms": lookup_ms,
-                "replay_ms": replay_ms,
-            },
+        module_name = module.config.name
+        context.cache_hit_count[module_name] = (
+            context.cache_hit_count.get(module_name, 0) + 1
+        )
+        context.cache_lookup_ms_sum[module_name] = (
+            context.cache_lookup_ms_sum.get(module_name, 0) + lookup_ms
+        )
+        context.cache_lookup_ms_max[module_name] = max(
+            context.cache_lookup_ms_max.get(module_name, 0), lookup_ms
         )
 
     def _execute_module_analysis(
@@ -1152,15 +1207,13 @@ class AnalysisExecutor:
                 and get_config().analysis_cache.enabled
             ):
                 try:
-                    lookup_start_ns = time.monotonic_ns()
-                    cached_delta = get_cached_delta(
+                    lookup_result = get_cached_delta(
                         work_item.observable, analysis_module, get_blob_store()
                     )
-                    lookup_ms = (time.monotonic_ns() - lookup_start_ns) // 1_000_000
-                    if cached_delta is not None:
+                    if lookup_result.delta is not None:
                         self._apply_cached_delta(
-                            root, work_item.observable, analysis_module, cached_delta,
-                            lookup_ms,
+                            context, root, work_item.observable, analysis_module,
+                            lookup_result.delta, lookup_result.lookup_ms,
                         )
                         self._process_generated_analysis(
                             AnalysisExecutionResult.COMPLETED, root, work_item,
@@ -1168,6 +1221,13 @@ class AnalysisExecutor:
                         )
                         root.save()
                         return
+                    elif lookup_result.miss_reason is not None:
+                        # Real cache miss (DB lookup happened, no usable row).
+                        # Falls through to live execution below; bump the
+                        # per-(root, module) miss counter for end-of-root metrics.
+                        context.cache_miss_count[analysis_module.name] = (
+                            context.cache_miss_count.get(analysis_module.name, 0) + 1
+                        )
                 except Exception:
                     logging.warning(
                         "cache replay failed module_name=%s observable_uuid=%s "
@@ -1284,7 +1344,33 @@ class AnalysisExecutor:
                         ):
                             try:
                                 delta.cache_key = generate_cache_key(work_item.observable, analysis_module)
-                                put_cached_delta(delta, analysis_module, get_blob_store())
+                                write_result = put_cached_delta(delta, analysis_module, get_blob_store())
+                                if write_result is not None:
+                                    module_name = analysis_module.name
+                                    if write_result.op == "insert":
+                                        context.cache_write_count_insert[module_name] = (
+                                            context.cache_write_count_insert.get(module_name, 0) + 1
+                                        )
+                                    else:
+                                        context.cache_write_count_update[module_name] = (
+                                            context.cache_write_count_update.get(module_name, 0) + 1
+                                        )
+                                    context.cache_write_ms_sum[module_name] = (
+                                        context.cache_write_ms_sum.get(module_name, 0)
+                                        + write_result.write_ms
+                                    )
+                                    context.cache_write_ms_max[module_name] = max(
+                                        context.cache_write_ms_max.get(module_name, 0),
+                                        write_result.write_ms,
+                                    )
+                                    context.cache_write_bytes_uncompressed_sum[module_name] = (
+                                        context.cache_write_bytes_uncompressed_sum.get(module_name, 0)
+                                        + write_result.uncompressed_bytes
+                                    )
+                                    context.cache_write_bytes_compressed_sum[module_name] = (
+                                        context.cache_write_bytes_compressed_sum.get(module_name, 0)
+                                        + write_result.compressed_bytes
+                                    )
                             except Exception:
                                 logging.warning(
                                     "failed to write analysis cache module_name=%s "
@@ -1451,6 +1537,11 @@ class AnalysisExecutor:
             context.total_analysis_time[analysis_module.name] += (
                 module_end_time - module_start_time
             ).total_seconds()
+            # Count every invocation including delayed-analysis retries
+            # (each retry is a real call with real wall time).
+            context.total_exec_count[analysis_module.name] = (
+                context.total_exec_count.get(analysis_module.name, 0) + 1
+            )
 
         # when analyze() executes it populates the work_stack_buffer with things that need to be analyzed
         # if the thing that was just analyzed turned out to be whitelisted (tagged with 'whitelisted')

@@ -28,7 +28,7 @@ import importlib
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, NamedTuple, Optional
 
 import zstandard
 from sqlalchemy import delete, func, select, text
@@ -74,6 +74,19 @@ def generate_cache_key(observable: "Observable", module) -> Optional[str]:
     return h.hexdigest()
 
 
+class CacheWriteResult(NamedTuple):
+    """Metadata returned by :func:`put_cached_delta` on a successful write.
+
+    Callers use this to bump per-(root, module) counters on the
+    :class:`AnalysisExecutionContext` — the actual metric emission happens at
+    end-of-root in ``record_execution_statistics``.
+    """
+    op: str  # "insert" or "update"
+    write_ms: int
+    uncompressed_bytes: int
+    compressed_bytes: int
+
+
 def _maybe_spill_details(delta_dict: dict, blob_store: BlobStore, cache_key: str) -> bool:
     """Move ``delta_dict['analysis']['details']`` into the blob store when it's
     large enough to hurt the cache table.
@@ -107,19 +120,20 @@ def put_cached_delta(
     delta: "ModuleExecutionDelta",
     module,
     blob_store: BlobStore,
-) -> bool:
+) -> Optional[CacheWriteResult]:
     """Persist a successful module execution's delta.
 
-    Returns True if a cache row was written, False otherwise (caller passed a
-    module with no ``cache_ttl``, the kill switch is off, the delta had
-    removals, or the compressed payload exceeded the size cap).
+    Returns a :class:`CacheWriteResult` if a cache row was written, ``None``
+    otherwise (caller passed a module with no ``cache_ttl``, the kill switch
+    is off, the delta had removals, was still delayed, spawned file
+    observables, exceeded the size cap, or the DB write failed).
 
     All DB failures are caught and logged — this function must never raise
     into the executor.
     """
     try:
         if module.cache_ttl is None:
-            return False
+            return None
         if delta.has_removals:
             logging.warning(
                 "refusing to cache delta module_name=%s observable_type=%s "
@@ -132,7 +146,7 @@ def put_cached_delta(
                     "refusal_reason": "removals",
                 },
             )
-            return False
+            return None
         # Step 3.2: refuse to cache deltas captured mid-delay. Replay path
         # unconditionally marks the analysis completed — caching a delayed
         # analysis would lie. Combined with snapshot Step 3.0, the only
@@ -152,7 +166,7 @@ def put_cached_delta(
                     "skip_reason": "still_delayed",
                 },
             )
-            return False
+            return None
         # Step 3.3: refuse to cache deltas that would spawn file
         # observables on replay. File-byte materialization is Phase 4
         # territory; until that lands, replaying a file-spawning delta
@@ -170,9 +184,9 @@ def put_cached_delta(
                     "refusal_reason": "file_observables",
                 },
             )
-            return False
+            return None
         if not get_config().analysis_cache.enabled:
-            return False
+            return None
 
         cache_key = delta.cache_key
         if cache_key is None:
@@ -180,7 +194,7 @@ def put_cached_delta(
             cache_key = generate_cache_key(_ObservableShim(delta), module)
             delta.cache_key = cache_key
         if cache_key is None:
-            return False
+            return None
 
         delta_dict = delta.to_dict()
         has_blob_refs = _maybe_spill_details(delta_dict, blob_store, cache_key)
@@ -223,7 +237,7 @@ def put_cached_delta(
                             sha, exc_info=True,
                             extra={"sha256": sha},
                         )
-            return False
+            return None
 
         ttl_seconds = int(module.cache_ttl.total_seconds())
 
@@ -263,38 +277,12 @@ def put_cached_delta(
         # refreshed" and 1 means "new URL seen for the first time".
         op = "insert" if result.rowcount == 1 else "update"
 
-        # Splunk-friendly size telemetry. With ExtraAwareFluentFormatter the
-        # extras land as top-level JSON fields, so aggregations like
-        # ``| stats avg(compressed_bytes), p99(compressed_bytes) by module_name``
-        # work without per-query rex.
-        logging.info(
-            "wrote analysis cache entry op=%s module_name=%s observable_type=%s "
-            "observable_value=%s root_uuid=%s uncompressed_bytes=%d "
-            "compressed_bytes=%d has_blob_refs=%s ttl_seconds=%d write_ms=%d",
-            op,
-            module.config.name,
-            delta.observable_type,
-            delta.observable_value,
-            delta.root_uuid or "n/a",
-            uncompressed_size,
-            len(delta_zstd),
-            bool(has_blob_refs),
-            ttl_seconds,
-            write_ms,
-            extra={
-                "op": op,
-                "module_name": module.config.name,
-                "observable_type": delta.observable_type,
-                "observable_value": delta.observable_value,
-                "root_uuid": delta.root_uuid or "n/a",
-                "uncompressed_bytes": uncompressed_size,
-                "compressed_bytes": len(delta_zstd),
-                "has_blob_refs": bool(has_blob_refs),
-                "ttl_seconds": ttl_seconds,
-                "write_ms": write_ms,
-            },
+        return CacheWriteResult(
+            op=op,
+            write_ms=write_ms,
+            uncompressed_bytes=uncompressed_size,
+            compressed_bytes=len(delta_zstd),
         )
-        return True
     except Exception:
         module_name = getattr(getattr(module, "config", None), "name", "<unknown>")
         logging.warning(
@@ -306,7 +294,7 @@ def put_cached_delta(
             get_db().rollback()
         except Exception:
             pass
-        return False
+        return None
 
 
 def delete_for_module(module_name: str) -> int:
@@ -497,60 +485,58 @@ def _inline_blob_refs(delta_dict: dict, blob_store: BlobStore) -> None:
         analysis["details"] = json.loads(blob_bytes.decode("utf-8"))
 
 
+class CacheLookupResult(NamedTuple):
+    """Result of a :func:`get_cached_delta` call.
+
+    - On hit: ``delta`` is the cached ``ModuleExecutionDelta``,
+      ``miss_reason`` is ``None``, ``lookup_ms`` is the wall time spent on
+      the DB lookup + decompress + deserialize + any blob fetch.
+    - On miss: ``delta`` is ``None``, ``miss_reason`` is one of
+      ``"not_found"``, ``"decode_error"``, ``"legacy_no_details"``,
+      ``"blob_missing"``. Caller increments ``cache_miss_count`` on the
+      execution context.
+    - On non-attempt (module not cacheable / cache disabled globally):
+      ``delta`` is ``None``, ``miss_reason`` is ``None``, ``lookup_ms``
+      is 0. Caller does not count this against cache_miss_count.
+
+    ``cache_key_prefix`` is the first 12 hex chars of the cache key (or
+    ``"n/a"`` when no lookup happened). Used by the executor to populate
+    the per-(root, module) telemetry on cache hits without re-deriving
+    the key.
+    """
+    delta: Optional[ModuleExecutionDelta]
+    miss_reason: Optional[str]
+    lookup_ms: int
+    cache_key_prefix: str
+
+
 def get_cached_delta(
     observable: "Observable",
     module,
     blob_store: BlobStore,
-) -> Optional[ModuleExecutionDelta]:
+) -> CacheLookupResult:
     """Look up a cached ``ModuleExecutionDelta`` for ``(observable, module)``.
 
-    Returns ``None`` on any of: module not opted in (``cache_ttl is None``),
-    cache disabled globally, no row, expired row, legacy pre-Step-3.1 row
-    (no ``details`` key in the analysis dict), missing blob, or any
-    decode/decompress failure. Misses are logged with a structured
-    ``reason`` so Splunk can break them down.
+    Returns a :class:`CacheLookupResult`. See its docstring for the three
+    possible shapes (hit, miss, non-attempt).
 
     All exceptions are caught — cache lookup is best-effort and must
     never propagate into the executor.
     """
     cache_key = generate_cache_key(observable, module)
     if cache_key is None:
-        return None
+        return CacheLookupResult(None, None, 0, "n/a")
 
     if not get_config().analysis_cache.enabled:
-        return None
+        return CacheLookupResult(None, None, 0, "n/a")
 
     module_name = getattr(getattr(module, "config", None), "name", "<unknown>")
     observable_type = getattr(observable, "type", "<unknown>")
-    observable_value = getattr(observable, "value", "<unknown>")
-    # Derive the root_uuid from the observable's tree manager. Defensive
-    # getattr chain: the observable always has the tree manager injected in
-    # the real executor path, but test stubs may not — and lookup is
-    # best-effort, so a missing root must never raise here.
-    _tree_manager = getattr(observable, "analysis_tree_manager", None)
-    _root = getattr(_tree_manager, "root_analysis", None)
-    root_uuid = getattr(_root, "uuid", "<unknown>")
     cache_key_prefix = cache_key[:12]
     lookup_start_ns = time.monotonic_ns()
 
-    def _miss(reason: str) -> None:
-        lookup_ms = (time.monotonic_ns() - lookup_start_ns) // 1_000_000
-        logging.info(
-            "analysis cache miss module_name=%s observable_type=%s "
-            "observable_value=%s root_uuid=%s cache_key_prefix=%s "
-            "reason=%s lookup_ms=%d",
-            module_name, observable_type, observable_value, root_uuid,
-            cache_key_prefix, reason, lookup_ms,
-            extra={
-                "module_name": module_name,
-                "observable_type": observable_type,
-                "observable_value": observable_value,
-                "root_uuid": root_uuid,
-                "cache_key_prefix": cache_key_prefix,
-                "reason": reason,
-                "lookup_ms": lookup_ms,
-            },
-        )
+    def _elapsed_ms() -> int:
+        return (time.monotonic_ns() - lookup_start_ns) // 1_000_000
 
     try:
         row = get_db().execute(
@@ -565,8 +551,7 @@ def get_cached_delta(
         ).first()
 
         if row is None:
-            _miss("not_found")
-            return None
+            return CacheLookupResult(None, "not_found", _elapsed_ms(), cache_key_prefix)
 
         delta_zstd, has_blob_refs = row
         try:
@@ -581,8 +566,7 @@ def get_cached_delta(
                     "cache_key_prefix": cache_key_prefix,
                 },
             )
-            _miss("decode_error")
-            return None
+            return CacheLookupResult(None, "decode_error", _elapsed_ms(), cache_key_prefix)
 
         # Step 3.4 legacy-shape guard: pre-Step-3.1 rows wrote
         # `analysis` dicts without a `details` key. Treat as miss so the
@@ -590,8 +574,7 @@ def get_cached_delta(
         # row via ON DUPLICATE KEY UPDATE with a Step-3.1-shaped delta.
         analysis_in_dict = delta_dict.get("analysis")
         if isinstance(analysis_in_dict, dict) and "details" not in analysis_in_dict:
-            _miss("legacy_no_details")
-            return None
+            return CacheLookupResult(None, "legacy_no_details", _elapsed_ms(), cache_key_prefix)
 
         if has_blob_refs:
             try:
@@ -607,8 +590,7 @@ def get_cached_delta(
                         "sha256": str(e),
                     },
                 )
-                _miss("blob_missing")
-                return None
+                return CacheLookupResult(None, "blob_missing", _elapsed_ms(), cache_key_prefix)
 
         try:
             delta = ModuleExecutionDelta.from_dict(delta_dict)
@@ -621,8 +603,7 @@ def get_cached_delta(
                     "cache_key_prefix": cache_key_prefix,
                 },
             )
-            _miss("decode_error")
-            return None
+            return CacheLookupResult(None, "decode_error", _elapsed_ms(), cache_key_prefix)
 
         # Step 3.4 cache-key recomputation: must match by construction;
         # mismatch indicates corruption (different module identity stored
@@ -644,7 +625,7 @@ def get_cached_delta(
                 },
             )
 
-        return delta
+        return CacheLookupResult(delta, None, _elapsed_ms(), cache_key_prefix)
 
     except Exception:
         logging.warning(
@@ -655,8 +636,7 @@ def get_cached_delta(
                 "cache_key_prefix": cache_key_prefix,
             },
         )
-        _miss("decode_error")
-        return None
+        return CacheLookupResult(None, "decode_error", _elapsed_ms(), cache_key_prefix)
 
 
 def apply_delta(

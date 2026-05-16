@@ -116,27 +116,24 @@ def _write_raw_row(cache_key, module, delta_dict, has_blob_refs=False):
 class TestGetCachedDelta:
 
     @pytest.mark.integration
-    def test_module_not_opted_in_returns_none(self, blob_store):
+    def test_module_not_opted_in_returns_non_attempt(self, blob_store):
+        """cache_ttl=None: no lookup happens, no miss is counted."""
         module = _make_module(ttl=None)
         obs = _make_observable()
-        assert get_cached_delta(obs, module, blob_store) is None
+        result = get_cached_delta(obs, module, blob_store)
+        assert result.delta is None
+        assert result.miss_reason is None  # non-attempt, not a miss
 
     @pytest.mark.integration
-    def test_miss_logs_not_found(self, blob_store, caplog):
+    def test_miss_reports_not_found(self, blob_store):
+        """First lookup against an empty cache returns miss_reason='not_found'."""
         module = _make_module()
         obs = _make_observable()
-        with caplog.at_level(logging.INFO):
-            assert get_cached_delta(obs, module, blob_store) is None
-        misses = [r for r in caplog.records if "analysis cache miss" in r.getMessage()]
-        assert misses
-        msg = misses[0].getMessage()
-        assert "reason=not_found" in msg
-        assert f"module_name={module.config.name}" in msg
-        assert "observable_value=https://example.com/" in msg
-        # SimpleNamespace stub has no analysis_tree_manager — the defensive
-        # getattr chain must fall back gracefully rather than raise.
-        assert "root_uuid=<unknown>" in msg
-        assert misses[0].observable_value == "https://example.com/"
+        result = get_cached_delta(obs, module, blob_store)
+        assert result.delta is None
+        assert result.miss_reason == "not_found"
+        assert result.lookup_ms >= 0
+        assert result.cache_key_prefix != "n/a"
 
     @pytest.mark.integration
     def test_hit_round_trips(self, blob_store):
@@ -152,12 +149,13 @@ class TestGetCachedDelta:
             },
         )
         try:
-            assert put_cached_delta(delta, module, blob_store) is True
-            recovered = get_cached_delta(obs, module, blob_store)
-            assert recovered is not None
-            assert recovered.observable_value == "https://example.com/"
-            assert recovered.target_observable_diff.added_tags == ["t1"]
-            assert recovered.analysis["details"] == {"foo": "bar"}
+            assert put_cached_delta(delta, module, blob_store) is not None
+            result = get_cached_delta(obs, module, blob_store)
+            assert result.delta is not None
+            assert result.miss_reason is None
+            assert result.delta.observable_value == "https://example.com/"
+            assert result.delta.target_observable_diff.added_tags == ["t1"]
+            assert result.delta.analysis["details"] == {"foo": "bar"}
         finally:
             _delete_cache_row(delta.cache_key)
 
@@ -169,12 +167,14 @@ class TestGetCachedDelta:
         try:
             put_cached_delta(delta, module, blob_store)
             _set_expires_at(delta.cache_key, "DATE_SUB(NOW(), INTERVAL 1 HOUR)")
-            assert get_cached_delta(obs, module, blob_store) is None
+            result = get_cached_delta(obs, module, blob_store)
+            assert result.delta is None
+            assert result.miss_reason == "not_found"
         finally:
             _delete_cache_row(delta.cache_key)
 
     @pytest.mark.integration
-    def test_legacy_shape_returns_miss(self, blob_store, caplog):
+    def test_legacy_shape_returns_miss(self, blob_store):
         """Step 3.4 legacy guard: rows without `details` in analysis dict
         are pre-Step-3.1 and must be treated as cache miss with reason
         ``legacy_no_details`` so the executor falls through to the live
@@ -200,11 +200,9 @@ class TestGetCachedDelta:
         }
         try:
             _write_raw_row(cache_key, module, legacy_dict)
-            with caplog.at_level(logging.INFO):
-                assert get_cached_delta(obs, module, blob_store) is None
-            misses = [r for r in caplog.records if "analysis cache miss" in r.getMessage()]
-            assert misses
-            assert "reason=legacy_no_details" in misses[0].getMessage()
+            result = get_cached_delta(obs, module, blob_store)
+            assert result.delta is None
+            assert result.miss_reason == "legacy_no_details"
         finally:
             _delete_cache_row(cache_key)
 
@@ -226,12 +224,12 @@ class TestGetCachedDelta:
             },
         )
         try:
-            assert put_cached_delta(delta, module, blob_store) is True
-            recovered = get_cached_delta(obs, module, blob_store)
-            assert recovered is not None
+            assert put_cached_delta(delta, module, blob_store) is not None
+            result = get_cached_delta(obs, module, blob_store)
+            assert result.delta is not None
             # Details should be the original dict, not the {"__blob_ref__": ...} pointer.
-            assert recovered.analysis["details"] == big_details
-            assert "__blob_ref__" not in recovered.analysis["details"]
+            assert result.delta.analysis["details"] == big_details
+            assert "__blob_ref__" not in result.delta.analysis["details"]
         finally:
             _delete_cache_row(delta.cache_key)
 
@@ -252,7 +250,7 @@ class TestGetCachedDelta:
             },
         )
         try:
-            assert put_cached_delta(delta, module, blob_store) is True
+            assert put_cached_delta(delta, module, blob_store) is not None
 
             # Wipe the underlying blob — simulates GC ahead of cache TTL.
             blob_root = blob_store.root_dir
@@ -260,20 +258,23 @@ class TestGetCachedDelta:
                 for f in files:
                     os.unlink(os.path.join(dirpath, f))
 
-            with caplog.at_level(logging.INFO):
-                assert get_cached_delta(obs, module, blob_store) is None
+            with caplog.at_level(logging.WARNING):
+                result = get_cached_delta(obs, module, blob_store)
+            assert result.delta is None
+            assert result.miss_reason == "blob_missing"
+            # The "missing blob" warning still fires from get_cached_delta
+            # so operators have a structured alertable signal independent
+            # of the per-(root, module) metric aggregation.
             warns = [r for r in caplog.records if "missing blob" in r.getMessage()]
             assert warns
-            misses = [r for r in caplog.records if "analysis cache miss" in r.getMessage()]
-            assert misses
-            assert "reason=blob_missing" in misses[-1].getMessage()
         finally:
             _delete_cache_row(delta.cache_key)
 
     @pytest.mark.integration
     def test_kill_switch_disables_lookup(self, blob_store, monkeypatch):
         """Global ``analysis_cache.enabled`` flag covers reads as well as
-        writes — no separate ``reads_enabled`` switch.
+        writes — no separate ``reads_enabled`` switch. Disabled = non-attempt
+        (miss_reason is None), so this doesn't get counted as a cache miss.
         """
         module = _make_module()
         obs = _make_observable()
@@ -284,6 +285,8 @@ class TestGetCachedDelta:
         try:
             put_cached_delta(delta, module, blob_store)
             monkeypatch.setattr(get_config().analysis_cache, "enabled", False)
-            assert get_cached_delta(obs, module, blob_store) is None
+            result = get_cached_delta(obs, module, blob_store)
+            assert result.delta is None
+            assert result.miss_reason is None
         finally:
             _delete_cache_row(delta.cache_key)
