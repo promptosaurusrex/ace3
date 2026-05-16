@@ -72,14 +72,19 @@ class AnalysisOrchestrator:
         Returns:
             True if analysis was successful, False if there was an error
         """
+        # tracks whether the work item was actually loaded and set up for analysis
+        work_item_processed = False
+
         try:
             # process the work item and set up the root analysis
             if not self._process_work_item(execution_context):
                 return False
-            
+
             if execution_context.root is None:
                 logging.warning(f"unable to process work item {execution_context.work_item} (root was None)")
                 return False
+
+            work_item_processed = True
 
             logging.debug(f"analyzing {execution_context.root} in analysis_mode {execution_context.root.analysis_mode}")
 
@@ -100,12 +105,12 @@ class AnalysisOrchestrator:
             report_exception()
             return False
         finally:
-            # Handle post-analysis logic: detection handling, mode changes, cleanup
-            try:
-                self._handle_post_analysis_logic(execution_context)
-            except Exception as e:
-                logging.error(f"error handling post-analysis logic for {execution_context.work_item}: {e}")
-                report_exception()
+            if work_item_processed:
+                try:
+                    self._handle_post_analysis_logic(execution_context)
+                except Exception as e:
+                    logging.error(f"error handling post-analysis logic for {execution_context.work_item}: {e}")
+                    report_exception()
 
     def _process_work_item(self, execution_context: EngineExecutionContext) -> bool:
         """Process the work item and set up the root analysis."""
