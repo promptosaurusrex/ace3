@@ -214,12 +214,16 @@ class TestSyncConfig:
             f.write("test: true\n")
 
         dest_dir = str(tmpdir.join("shared"))
-        dest_path = os.path.join(dest_dir, "phishkit_config.yaml")
-        monkeypatch.setattr(phishkit_mod, "SHARED_CONFIG", dest_path)
+        monkeypatch.setattr(phishkit_mod, "SHARED_CONFIG_DIR", dest_dir)
 
         result = phishkit_mod._sync_config(source)
-        assert result == dest_path
-        assert os.path.isfile(dest_path)
+        assert result is not None
+        assert os.path.dirname(result) == dest_dir
+        assert os.path.basename(result).startswith("phishkit_config-")
+        assert result.endswith(".yaml")
+        assert os.path.isfile(result)
+        with open(result) as f:
+            assert f.read() == "test: true\n"
 
     @pytest.mark.unit
     def test_sync_config_none_path(self):
@@ -241,12 +245,31 @@ class TestSyncConfig:
         with open(source, "w") as f:
             f.write("test: true\n")
 
-        dest_path = str(tmpdir.join("shared", "config.yaml"))
-        monkeypatch.setattr(phishkit_mod, "SHARED_CONFIG", dest_path)
-        monkeypatch.setattr(shutil, "copy2", MagicMock(side_effect=PermissionError("denied")))
+        dest_dir = str(tmpdir.join("shared"))
+        monkeypatch.setattr(phishkit_mod, "SHARED_CONFIG_DIR", dest_dir)
+        monkeypatch.setattr(shutil, "copyfile", MagicMock(side_effect=PermissionError("denied")))
 
         result = phishkit_mod._sync_config(source)
         assert result is None
+        # a failed sync must not leak a partial config file
+        assert not [n for n in os.listdir(dest_dir) if n.startswith("phishkit_config-")]
+
+    @pytest.mark.unit
+    def test_sync_config_unique_paths(self, tmpdir, monkeypatch):
+        """Each sync writes a distinct file so concurrent scans never collide."""
+        import phishkit as phishkit_mod
+
+        source = str(tmpdir.join("source.yaml"))
+        with open(source, "w") as f:
+            f.write("test: true\n")
+
+        monkeypatch.setattr(phishkit_mod, "SHARED_CONFIG_DIR", str(tmpdir.join("shared")))
+
+        first = phishkit_mod._sync_config(source)
+        second = phishkit_mod._sync_config(source)
+        assert first != second
+        assert os.path.isfile(first)
+        assert os.path.isfile(second)
 
 
 # ---------------------------------------------------------------------------
@@ -584,17 +607,22 @@ class TestRunScanner:
 
     @pytest.mark.unit
     @patch("phishkit._force_stop_container")
-    @patch("phishkit._sync_config", return_value="/phishkit/config/phishkit_config.yaml")
-    def test_run_scanner_with_config(self, mock_sync, mock_force_stop, tmpdir):
+    def test_run_scanner_with_config(self, mock_force_stop, tmpdir):
         from phishkit import _run_scanner
 
         config_path = self._write_config(tmpdir)
         output_dir = str(tmpdir.join("output"))
         os.makedirs(output_dir)
 
+        # a real synced config file the finally-block should delete after the scan
+        synced = str(tmpdir.join("synced_config.yaml"))
+        with open(synced, "w") as f:
+            f.write("test: true\n")
+
         proc = self._make_mock_process(stdout="ok", stderr="", returncode=0)
 
-        with patch("phishkit.Popen", return_value=proc) as mock_popen:
+        with patch("phishkit._sync_config", return_value=synced), \
+                patch("phishkit.Popen", return_value=proc) as mock_popen:
             _run_scanner(
                 target_args=["https://example.com"],
                 output_dir=output_dir,
@@ -607,7 +635,46 @@ class TestRunScanner:
 
         cmd = mock_popen.call_args[0][0]
         assert "--config" in cmd
-        assert "/phishkit/config/phishkit_config.yaml" in cmd
+        assert synced in cmd
+        # the synced config is removed once the scan completes
+        assert not os.path.exists(synced)
+
+    @pytest.mark.unit
+    @patch("phishkit._force_stop_container")
+    def test_run_scanner_deletes_config_on_failure(self, mock_force_stop, tmpdir):
+        """The synced config is removed even when the scan raises."""
+        from phishkit import _run_scanner
+
+        config_path = self._write_config(tmpdir)
+        output_dir = str(tmpdir.join("output"))
+        os.makedirs(output_dir)
+
+        synced = str(tmpdir.join("synced_config.yaml"))
+        with open(synced, "w") as f:
+            f.write("test: true\n")
+
+        proc = MagicMock()
+        proc.communicate.side_effect = [
+            TimeoutExpired(cmd="docker", timeout=10),
+            ("", ""),
+        ]
+        proc.kill = MagicMock()
+        proc.wait = MagicMock()
+
+        with patch("phishkit._sync_config", return_value=synced), \
+                patch("phishkit.Popen", return_value=proc):
+            with pytest.raises(TimeoutExpired):
+                _run_scanner(
+                    target_args=["https://example.com"],
+                    output_dir=output_dir,
+                    job_id="test-job",
+                    timeout=10,
+                    proxy=None,
+                    proxy_fallback_to_direct=False,
+                    config_path=config_path,
+                )
+
+        assert not os.path.exists(synced)
 
     @pytest.mark.unit
     @patch("phishkit._force_stop_container")
