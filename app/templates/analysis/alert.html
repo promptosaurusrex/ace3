@@ -362,6 +362,18 @@
                 {% endfor %}
 
                 {% if node.is_analysis %}
+                    {# Phase 3: cache-hit attribution badge. Rendered BEFORE the
+                       analysis name so badges line up vertically across the tree —
+                       parallels the detection-point button placement above. Lookup
+                       is O(1) via the precomputed cache_hit_map from the view. #}
+                    {% set _cache_hit = cache_hit_map.get((node.obj.module_path, node.parent.obj.uuid)) if cache_hit_map else none %}
+                    {% if _cache_hit %}
+                        <span class="badge bg-white border border-dark"
+                              data-bs-toggle="tooltip"
+                              title="Replayed from cache (key {{ (_cache_hit.cache_key or '')[:12] or 'n/a' }}{% if _cache_hit.cached_at %}, cached {{ _cache_hit.cached_at[:16].replace('T', ' ') }} UTC{% endif %}, {{ _cache_hit.execution_time_ms }}ms)">
+                            <i class="bi bi-lightning-fill" style="color: #ffa500;"></i>
+                        </span>
+                    {% endif %}
                     {% if node.obj.summary is none %}
                         {# if no summary is available then we just display the str rep of the analysis #}
                         {{node.obj}}

@@ -312,6 +312,14 @@ class ModuleExecutionDelta:
     # distinguish replay attribution from live attribution.
     from_cache_hit: bool = False
 
+    # Phase 3: when from_cache_hit is True, the ISO timestamp of the *original*
+    # live capture (i.e. when the cached delta was first written to the cache).
+    # ``created_at`` gets rewritten to the replay time by with_cache_hit_metadata,
+    # so without this field the original timestamp would be lost. Surfaced in
+    # the alert GUI tooltip so analysts can tell at a glance how stale a
+    # cached result is. None on live-run attribution deltas.
+    cached_at: Optional[str] = None
+
     @property
     def has_removals(self) -> bool:
         if self.target_observable_diff.has_removals:
@@ -346,23 +354,32 @@ class ModuleExecutionDelta:
         return any(spec.type == F_FILE for spec in self.new_observables)
 
     def with_cache_hit_metadata(
-        self, executed_at: datetime, execution_time_ms: int, root_uuid: str,
+        self, executed_at: datetime, execution_time_ms: int,
+        root_uuid: str, observable_uuid: str,
     ) -> "ModuleExecutionDelta":
         """Return a copy of this delta marked as a cache replay.
 
         Preserves all mutation fields (so root.json shows the same
-        attribution as the original live run) but updates the timestamps,
-        rewrites ``root_uuid`` to the *current* root being analyzed (the
-        cached delta carries the source alert's uuid, which would be
-        misleading once recorded against a different alert), and sets
-        ``from_cache_hit=True``. Used by the executor's cache-hit branch
-        to record replay attribution distinct from live runs.
+        attribution as the original live run) but rewrites both
+        ``root_uuid`` and ``observable_uuid`` to the *current* alert /
+        observable being analyzed. The cached delta carries the source
+        alert's identifiers — both UUIDs are per-alert-instance, so
+        leaving them in place would (a) misattribute the replay to the
+        wrong alert in root.json audits, and (b) break the
+        (module_path, observable_uuid) lookup used by the alert GUI to
+        render the "cached" badge against the current observable.
+
+        ``observable_type`` and ``observable_value`` are *not* rewritten
+        — by construction the cache key matches on those, so they're
+        identical between source and current observable.
         """
         return replace(
             self,
             created_at=executed_at.isoformat(),
+            cached_at=self.created_at,
             execution_time_ms=execution_time_ms,
             root_uuid=root_uuid,
+            observable_uuid=observable_uuid,
             from_cache_hit=True,
         )
 
@@ -405,6 +422,8 @@ class ModuleExecutionDelta:
             ]
         if self.from_cache_hit:
             result["from_cache_hit"] = True
+        if self.cached_at is not None:
+            result["cached_at"] = self.cached_at
         return result
 
     @classmethod
@@ -440,4 +459,5 @@ class ModuleExecutionDelta:
             other_observable_diffs=other_diffs,
             analysis_children_diffs=analysis_children,
             from_cache_hit=data.get("from_cache_hit", False),
+            cached_at=data.get("cached_at"),
         )

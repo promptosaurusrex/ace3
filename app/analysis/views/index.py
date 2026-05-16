@@ -424,9 +424,20 @@ def index():
     )
 
     import saq.constants
+
+    # Phase 3 follow-up: precompute (module_path, observable_uuid) -> delta
+    # for any module execution flagged as a cache hit. Lets the analysis-tree
+    # macro answer "is this analysis a cache replay?" in O(1) per node.
+    cache_hit_map = {
+        (delta.module_path, delta.observable_uuid): delta
+        for delta in alert.root_analysis.module_executions
+        if delta.from_cache_hit
+    }
+
     return render_template(
         'analysis/index.html',
         alert=alert,
+        cache_hit_map=cache_hit_map,
         target_types=target_types,
         remediation_timeline_events=remediation_timeline_events,
         external_check_footer=external_check_footer,
