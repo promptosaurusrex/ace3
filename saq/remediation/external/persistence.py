@@ -61,6 +61,11 @@ def persist_probe_outcome(
         new_status = CheckStatus.NEW.value
         new_result = None
         history_result = HistoryResult.PENDING
+    elif kind is ProbeOutcomeKind.PERMANENT_ERROR:
+        last_error = outcome.permanent_error
+        new_status = CheckStatus.COMPLETED.value
+        new_result = CheckResult.ERROR.value
+        history_result = HistoryResult.ERROR
     else:  # TRANSIENT_ERROR
         last_error = outcome.transient_error
         if next_retry_count >= max_retries:
@@ -96,7 +101,7 @@ def persist_probe_outcome(
     get_db().add(ExternalRemediationCheckHistory(
         check_id=check_id,
         result=history_result.value,
-        message=outcome.message or outcome.transient_error,
+        message=outcome.message or outcome.transient_error or outcome.permanent_error,
         status=new_status,
     ))
     get_db().commit()

@@ -39,11 +39,12 @@ class HistoryResult(Enum):
 
 
 class ProbeOutcomeKind(Enum):
-    """The four shapes a single probe attempt can return."""
+    """The five shapes a single probe attempt can return."""
     FOUND_EVENTS = "FOUND_EVENTS"           # terminal: events to persist
     NOT_FOUND = "NOT_FOUND"                 # terminal: target does not exist
     PENDING = "PENDING"                     # vendor returned nothing yet — keep polling
     TRANSIENT_ERROR = "TRANSIENT_ERROR"     # retry per backoff, count toward retry_count
+    PERMANENT_ERROR = "PERMANENT_ERROR"     # terminal: record result=ERROR immediately, no retries
 
 
 class ProbeTarget(BaseModel):
@@ -70,8 +71,8 @@ class ProbeOutcome(BaseModel):
     """A single probe attempt's result.
 
     Exactly one of ``found_events`` / ``not_found`` / ``pending`` /
-    ``transient_error`` describes the outcome (enforced by the validator). The
-    ``kind`` property summarizes which one.
+    ``transient_error`` / ``permanent_error`` describes the outcome (enforced by
+    the validator). The ``kind`` property summarizes which one.
     """
     found_events: Optional[list[dict]] = Field(
         default=None,
@@ -80,6 +81,10 @@ class ProbeOutcome(BaseModel):
     not_found: bool = False
     pending: bool = False
     transient_error: Optional[str] = None
+    permanent_error: Optional[str] = Field(
+        default=None,
+        description="terminal error — record result=ERROR immediately, no retries",
+    )
     message: Optional[str] = Field(
         default=None,
         description="Human-readable note recorded on the check row / history row.",
@@ -92,11 +97,12 @@ class ProbeOutcome(BaseModel):
             self.not_found,
             self.pending,
             self.transient_error is not None,
+            self.permanent_error is not None,
         ]
         if sum(1 for f in set_flags if f) != 1:
             raise ValueError(
                 "ProbeOutcome must set exactly one of "
-                "found_events / not_found / pending / transient_error"
+                "found_events / not_found / pending / transient_error / permanent_error"
             )
         return self
 
@@ -108,6 +114,8 @@ class ProbeOutcome(BaseModel):
             return ProbeOutcomeKind.NOT_FOUND
         if self.pending:
             return ProbeOutcomeKind.PENDING
+        if self.permanent_error is not None:
+            return ProbeOutcomeKind.PERMANENT_ERROR
         return ProbeOutcomeKind.TRANSIENT_ERROR
 
 
