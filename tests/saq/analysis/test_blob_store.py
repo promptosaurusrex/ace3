@@ -9,12 +9,18 @@ import os
 
 import pytest
 
-from saq.analysis.blob_store import BlobNotFound, LocalHardlinkBlobStore
+from saq.analysis.blob_store import (
+    BlobNotFound,
+    LocalHardlinkBlobStore,
+    LocalHardlinkBlobStoreConfig,
+)
 
 
 @pytest.fixture
 def blob_store(tmp_path):
-    return LocalHardlinkBlobStore(str(tmp_path / "blob_store"))
+    return LocalHardlinkBlobStore(
+        LocalHardlinkBlobStoreConfig(root_dir=str(tmp_path / "blob_store"))
+    )
 
 
 class TestPut:

@@ -16,6 +16,7 @@ filesystem link counts, because the S3 backend won't have them.
 """
 
 import hashlib
+import importlib
 import logging
 import os
 import shutil
@@ -23,12 +24,14 @@ import tempfile
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from datetime import timedelta
-from typing import BinaryIO, Iterator, Optional, Union
+from typing import BinaryIO, Iterator, Optional, Type, Union
 
+from pydantic import BaseModel
 from sqlalchemy import delete
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from saq.configuration.config import get_config
+from saq.configuration.schema import BlobStoreSpec
 from saq.database.model import BlobRef
 from saq.database.pool import get_db
 from saq.environment import get_base_dir
@@ -44,7 +47,36 @@ class BlobNotFound(Exception):
     pass
 
 
+class BlobStoreConfig(BaseModel):
+    """Base Pydantic config for blob store backends.
+
+    Backend implementations subclass this to declare their own config fields and
+    return the subclass from BlobStore.get_config_class().
+    """
+
+
+def resolve_blob_store_dir(configured: Optional[str]) -> str:
+    """Resolve a configured blob store root directory to an absolute path.
+
+    Absolute paths are used as-is; relative paths resolve against SAQ_HOME; an unset
+    value defaults to ``<data_dir>/blob_store``.
+    """
+    from saq.environment import get_data_dir
+    if configured:
+        return configured if os.path.isabs(configured) else os.path.join(get_base_dir(), configured)
+    return os.path.join(get_data_dir(), 'blob_store')
+
+
 class BlobStore(ABC):
+
+    @classmethod
+    def get_config_class(cls) -> Type[BlobStoreConfig]:
+        """Return the Pydantic config class used to validate this backend's config.
+
+        Mirrors AnalysisModule.get_config_class(). Backends with their own config
+        fields override this to return their BlobStoreConfig subclass.
+        """
+        return BlobStoreConfig
 
     @abstractmethod
     def put(self, data: Union[bytes, BinaryIO]) -> str:
@@ -86,6 +118,11 @@ class BlobStore(ABC):
         """
 
 
+class LocalHardlinkBlobStoreConfig(BlobStoreConfig):
+    """Config for the local filesystem blob store backend."""
+    root_dir: Optional[str] = None
+
+
 class LocalHardlinkBlobStore(BlobStore):
     """Local filesystem backend.
 
@@ -97,13 +134,22 @@ class LocalHardlinkBlobStore(BlobStore):
 
     SHARD_LEN = 3
 
-    def __init__(self, root_dir: str):
-        self.root_dir = root_dir
+    @classmethod
+    def get_config_class(cls) -> Type[BlobStoreConfig]:
+        return LocalHardlinkBlobStoreConfig
+
+    def __init__(self, config: LocalHardlinkBlobStoreConfig):
+        self.config = config
+        self.root_dir = resolve_blob_store_dir(config.root_dir)
 
     def _path_for(self, sha256: str) -> str:
         if len(sha256) != 64:
             raise ValueError(f"expected 64-char sha256, got {len(sha256)} chars")
         return os.path.join(self.root_dir, sha256[:self.SHARD_LEN], sha256)
+
+    def path_for(self, sha256: str) -> str:
+        """Return the on-disk path where the blob is (or would be) stored."""
+        return self._path_for(sha256)
 
     def put(self, data: Union[bytes, BinaryIO]) -> str:
         h = hashlib.sha256()
@@ -197,21 +243,32 @@ class LocalHardlinkBlobStore(BlobStore):
 _blob_store_singleton: Optional[BlobStore] = None
 
 
+def _load_blob_store(spec: BlobStoreSpec) -> BlobStore:
+    """Load a pluggable blob store backend from its config spec."""
+    module = importlib.import_module(spec.python_module)
+    cls = getattr(module, spec.python_class)
+    config = cls.get_config_class().model_validate(spec.config)
+    return cls(config)
+
+
 def get_blob_store() -> BlobStore:
     """Return the process-wide blob store singleton.
 
-    Lazy-initialized on first call — reads ``analysis_cache.blob_store_dir``
-    from config. Defaults to ``<data_dir>/blob_store`` when unset.
+    Lazy-initialized on first call. When ``analysis_cache.blob_store`` is set, the
+    configured pluggable backend is loaded; otherwise the local hardlink store is
+    used, rooted at ``analysis_cache.blob_store_dir`` (defaulting to
+    ``<data_dir>/blob_store``).
     """
     global _blob_store_singleton
     if _blob_store_singleton is None:
-        from saq.environment import get_data_dir
-        configured = get_config().analysis_cache.blob_store_dir
-        if configured:
-            root = configured if os.path.isabs(configured) else os.path.join(get_base_dir(), configured)
+        spec = get_config().analysis_cache.blob_store
+        if spec is not None:
+            _blob_store_singleton = _load_blob_store(spec)
         else:
-            root = os.path.join(get_data_dir(), 'blob_store')
-        _blob_store_singleton = LocalHardlinkBlobStore(root)
+            configured = get_config().analysis_cache.blob_store_dir
+            _blob_store_singleton = LocalHardlinkBlobStore(
+                LocalHardlinkBlobStoreConfig(root_dir=configured)
+            )
     return _blob_store_singleton
 
 
