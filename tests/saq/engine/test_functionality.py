@@ -1484,9 +1484,18 @@ def test_record_execution_statistics_with_fluent_bit(tmpdir):
             # check the log events that were emitted
             calls = mock_sender.emit.call_args_list
 
-            # first call should be for module_a
-            assert calls[0][0][0] is None  # first arg to emit
-            log_event_a = calls[0][0][1]  # second arg to emit
+            # Iteration order of set() is not guaranteed, so look up by
+            # module name rather than positional index.
+            payloads_by_module = {
+                call[0][1]["module"]: call[0][1] for call in calls
+            }
+            assert set(payloads_by_module) == {"module_a", "module_b"}
+            log_event_a = payloads_by_module["module_a"]
+            log_event_b = payloads_by_module["module_b"]
+
+            # first arg to emit() is the label (None means "now")
+            assert all(call[0][0] is None for call in calls)
+
             assert log_event_a["module"] == "module_a"
             assert log_event_a["analysis_time_seconds"] == 2.5
             assert log_event_a["percentage"] == 25.0  # 2.5 / 10.0 * 100
@@ -1494,14 +1503,32 @@ def test_record_execution_statistics_with_fluent_bit(tmpdir):
             assert log_event_a["total_time_seconds"] == 10.0
             assert log_event_a["root_uuid"] == root.uuid
             assert "timestamp" in log_event_a
+            # New fields added in the per-(root, module) aggregation PR:
+            # exec_count + alert fields are always present. Test helper
+            # create_root_analysis() defaults alert_type to "test_alert"
+            # so is_alert is True here.
+            assert log_event_a["exec_count"] == 0  # nothing populated total_exec_count
+            assert log_event_a["alert_type"] == root.alert_type
+            assert log_event_a["is_alert"] is bool(root.alert_type)
+            assert "queue" in log_event_a
+            # No cache activity was recorded → cache_* fields must be absent.
+            for k in [
+                "cache_hit_count", "cache_miss_count",
+                "cache_write_count_insert", "cache_write_count_update",
+                "cache_lookup_ms_sum", "cache_lookup_ms_max",
+                "cache_write_ms_sum", "cache_write_ms_max",
+                "cache_write_bytes_uncompressed_sum",
+                "cache_write_bytes_compressed_sum",
+            ]:
+                assert k not in log_event_a, f"unexpected cache field {k}"
 
-            # second call should be for module_b
-            log_event_b = calls[1][0][1]
             assert log_event_b["module"] == "module_b"
             assert log_event_b["analysis_time_seconds"] == 1.5
             assert log_event_b["percentage"] == 15.0  # 1.5 / 10.0 * 100
             assert log_event_b["total_analysis_time_seconds"] == 4.0
             assert log_event_b["total_time_seconds"] == 10.0
+            assert log_event_b["exec_count"] == 0
+            assert log_event_b["is_alert"] is bool(root.alert_type)
 
 
 @pytest.mark.unit
@@ -1621,6 +1648,203 @@ def test_record_execution_statistics_with_multiple_modules(tmpdir):
     elapsed_time = 15.0
     stats_dir = str(tmpdir)
     context.record_execution_statistics(elapsed_time, stats_dir)
+
+
+def _mock_fluent_config():
+    """Build an engine-config mock with metrics_logging enabled."""
+    from unittest.mock import MagicMock
+    cfg = MagicMock()
+    cfg.metrics_logging.enabled = True
+    cfg.metrics_logging.fluent_bit_tag = "test_tag"
+    cfg.metrics_logging.fluent_bit_hostname = "localhost"
+    cfg.metrics_logging.fluent_bit_port = 24224
+    return cfg
+
+
+@pytest.mark.unit
+def test_per_root_emits_for_cache_only_modules(tmpdir):
+    """A module that only ever hit the cache (no live execution) must still
+    produce a row in the per-root summary so the dashboard can count it.
+    """
+    from saq.engine.executor import AnalysisExecutionContext
+    from unittest.mock import MagicMock, patch
+
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    context = AnalysisExecutionContext(root)
+
+    # Module X had ONLY cache hits — no live executions.
+    context.cache_hit_count["module_x"] = 3
+    context.cache_lookup_ms_sum["module_x"] = 12
+    context.cache_lookup_ms_max["module_x"] = 5
+
+    with patch("saq.engine.executor.get_engine_config", return_value=_mock_fluent_config()):
+        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+            mock_sender = MagicMock()
+            mock_sender_class.return_value = mock_sender
+            context.record_execution_statistics(10.0, str(tmpdir))
+
+    assert mock_sender.emit.call_count == 1
+    payload = mock_sender.emit.call_args[0][1]
+    assert payload["module"] == "module_x"
+    assert payload["analysis_time_seconds"] == 0
+    assert payload["exec_count"] == 0
+    assert payload["cache_hit_count"] == 3
+    assert payload["cache_miss_count"] == 0
+    assert payload["cache_lookup_ms_sum"] == 12
+    assert payload["cache_lookup_ms_max"] == 5
+    # No writes happened, so write fields stay absent.
+    assert "cache_write_ms_sum" not in payload
+    assert "cache_write_bytes_uncompressed_sum" not in payload
+
+
+@pytest.mark.unit
+def test_per_root_omits_cache_fields_when_no_cache_activity(tmpdir):
+    """exec_count + alert fields are always present; cache_* fields appear
+    only when the module had cache activity in this (root, module)."""
+    from saq.engine.executor import AnalysisExecutionContext
+    from unittest.mock import MagicMock, patch
+
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    context = AnalysisExecutionContext(root)
+    context.total_analysis_time["module_a"] = 1.5
+    context.total_exec_count["module_a"] = 3
+
+    with patch("saq.engine.executor.get_engine_config", return_value=_mock_fluent_config()):
+        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+            mock_sender = MagicMock()
+            mock_sender_class.return_value = mock_sender
+            context.record_execution_statistics(10.0, str(tmpdir))
+
+    payload = mock_sender.emit.call_args[0][1]
+    assert payload["exec_count"] == 3
+    # No cache fields when the module had no cache activity.
+    for k in [
+        "cache_hit_count", "cache_miss_count",
+        "cache_write_count_insert", "cache_write_count_update",
+        "cache_lookup_ms_sum", "cache_lookup_ms_max",
+        "cache_write_ms_sum", "cache_write_ms_max",
+        "cache_write_bytes_uncompressed_sum",
+        "cache_write_bytes_compressed_sum",
+    ]:
+        assert k not in payload
+
+
+@pytest.mark.unit
+def test_per_root_exec_count_reflects_repeated_invocations(tmpdir):
+    """Each module.analyze() invocation bumps total_exec_count, so a module
+    invoked multiple times within a single context (e.g. via delayed
+    retries that resume in the same context) shows exec_count > 1."""
+    from saq.engine.executor import AnalysisExecutionContext
+    from unittest.mock import MagicMock, patch
+
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    context = AnalysisExecutionContext(root)
+    context.total_analysis_time["module_a"] = 2.0
+    context.total_exec_count["module_a"] = 2
+
+    with patch("saq.engine.executor.get_engine_config", return_value=_mock_fluent_config()):
+        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+            mock_sender = MagicMock()
+            mock_sender_class.return_value = mock_sender
+            context.record_execution_statistics(5.0, str(tmpdir))
+
+    payload = mock_sender.emit.call_args[0][1]
+    assert payload["exec_count"] == 2
+    assert payload["analysis_time_seconds"] == 2.0
+
+
+@pytest.mark.unit
+def test_per_root_includes_alert_fields(tmpdir):
+    """alert_type / is_alert / queue surface root context on every event."""
+    from saq.engine.executor import AnalysisExecutionContext
+    from unittest.mock import MagicMock, patch
+
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    root.alert_type = "splunk - ipv4 search"
+    root.queue = "external"
+    context = AnalysisExecutionContext(root)
+    context.total_analysis_time["module_a"] = 1.0
+    context.total_exec_count["module_a"] = 1
+
+    with patch("saq.engine.executor.get_engine_config", return_value=_mock_fluent_config()):
+        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+            mock_sender = MagicMock()
+            mock_sender_class.return_value = mock_sender
+            context.record_execution_statistics(2.0, str(tmpdir))
+
+    payload = mock_sender.emit.call_args[0][1]
+    assert payload["alert_type"] == "splunk - ipv4 search"
+    assert payload["is_alert"] is True
+    assert payload["queue"] == "external"
+
+
+@pytest.mark.unit
+def test_per_root_alert_fields_when_not_alert(tmpdir):
+    """alert_type stays None / is_alert stays False on benign triage roots."""
+    from saq.engine.executor import AnalysisExecutionContext
+    from unittest.mock import MagicMock, patch
+
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    # create_root_analysis defaults alert_type to "test_alert"; override
+    # for this test to exercise the "not an alert" path.
+    root.alert_type = None
+    context = AnalysisExecutionContext(root)
+    context.total_analysis_time["module_a"] = 1.0
+    context.total_exec_count["module_a"] = 1
+
+    with patch("saq.engine.executor.get_engine_config", return_value=_mock_fluent_config()):
+        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+            mock_sender = MagicMock()
+            mock_sender_class.return_value = mock_sender
+            context.record_execution_statistics(2.0, str(tmpdir))
+
+    payload = mock_sender.emit.call_args[0][1]
+    assert payload["alert_type"] is None
+    assert payload["is_alert"] is False
+
+
+@pytest.mark.unit
+def test_per_root_cache_write_byte_aggregation(tmpdir):
+    """Write byte sums flow through to the payload when cache writes occurred."""
+    from saq.engine.executor import AnalysisExecutionContext
+    from unittest.mock import MagicMock, patch
+
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    context = AnalysisExecutionContext(root)
+    context.total_analysis_time["module_a"] = 1.0
+    context.total_exec_count["module_a"] = 2
+    context.cache_miss_count["module_a"] = 2
+    context.cache_write_count_insert["module_a"] = 1
+    context.cache_write_count_update["module_a"] = 1
+    context.cache_write_ms_sum["module_a"] = 15
+    context.cache_write_ms_max["module_a"] = 10
+    context.cache_write_bytes_uncompressed_sum["module_a"] = 4000
+    context.cache_write_bytes_compressed_sum["module_a"] = 800
+
+    with patch("saq.engine.executor.get_engine_config", return_value=_mock_fluent_config()):
+        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+            mock_sender = MagicMock()
+            mock_sender_class.return_value = mock_sender
+            context.record_execution_statistics(5.0, str(tmpdir))
+
+    payload = mock_sender.emit.call_args[0][1]
+    assert payload["cache_miss_count"] == 2
+    assert payload["cache_write_count_insert"] == 1
+    assert payload["cache_write_count_update"] == 1
+    assert payload["cache_write_ms_sum"] == 15
+    assert payload["cache_write_ms_max"] == 10
+    assert payload["cache_write_bytes_uncompressed_sum"] == 4000
+    assert payload["cache_write_bytes_compressed_sum"] == 800
+    # No hits → lookup fields stay absent.
+    assert "cache_lookup_ms_sum" not in payload
+    assert "cache_lookup_ms_max" not in payload
+
 
 @pytest.mark.integration
 def test_exclusion():

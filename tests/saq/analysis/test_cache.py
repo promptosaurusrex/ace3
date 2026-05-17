@@ -106,26 +106,13 @@ class TestPutCachedDelta:
         delta = _make_delta(module)
         try:
             with caplog.at_level(logging.INFO):
-                assert put_cached_delta(delta, module, blob_store) is True
+                result = put_cached_delta(delta, module, blob_store)
+            assert result is not None
+            assert result.op == "insert"
+            assert result.uncompressed_bytes > 0
+            assert result.compressed_bytes > 0
+            assert result.write_ms >= 0
             assert _row_count(delta.cache_key) == 1
-
-            # Size telemetry line must be emitted for Splunk aggregation.
-            telemetry = [r for r in caplog.records if "wrote analysis cache entry" in r.getMessage()]
-            assert telemetry, "expected 'wrote analysis cache entry' log line"
-            msg = telemetry[0].getMessage()
-            assert "op=insert" in msg
-            assert f"module_name={module.config.name}" in msg
-            assert "observable_type=url" in msg
-            assert "observable_value=https://example.com/" in msg
-            assert "root_uuid=" in msg
-            assert "uncompressed_bytes=" in msg
-            assert "compressed_bytes=" in msg
-            assert "has_blob_refs=False" in msg
-            assert "ttl_seconds=3600" in msg
-            assert "write_ms=" in msg
-            # Extras land as top-level fields for Splunk auto-KV.
-            assert telemetry[0].observable_value == "https://example.com/"
-            assert hasattr(telemetry[0], "root_uuid")
 
             # Verify the payload round-trips through zstd → JSON → from_dict.
             with get_db_connection() as db:
@@ -147,13 +134,14 @@ class TestPutCachedDelta:
             _delete_cache_row(delta.cache_key)
 
     @pytest.mark.integration
-    def test_repeat_write_logs_update_op(self, blob_store, caplog):
-        """Second call with the same cache_key must log op=update, not insert."""
+    def test_repeat_write_returns_update_op(self, blob_store):
+        """Second call with the same cache_key must return op=update, not insert."""
         module = _make_module()
         delta = _make_delta(module)
         try:
-            put_cached_delta(delta, module, blob_store)
-            caplog.clear()
+            first_result = put_cached_delta(delta, module, blob_store)
+            assert first_result is not None
+            assert first_result.op == "insert"
             # Second call — force a value change so MySQL reports rowcount=2.
             delta2 = _make_delta(
                 module,
@@ -161,11 +149,9 @@ class TestPutCachedDelta:
                 observable_value=delta.observable_value,
             )
             delta2.cache_key = delta.cache_key
-            with caplog.at_level(logging.INFO):
-                assert put_cached_delta(delta2, module, blob_store) is True
-            telemetry = [r for r in caplog.records if "wrote analysis cache entry" in r.getMessage()]
-            assert telemetry
-            assert "op=update" in telemetry[0].getMessage()
+            second_result = put_cached_delta(delta2, module, blob_store)
+            assert second_result is not None
+            assert second_result.op == "update"
         finally:
             _delete_cache_row(delta.cache_key)
 
@@ -173,13 +159,13 @@ class TestPutCachedDelta:
     def test_skips_when_cache_ttl_is_none(self, blob_store):
         module = _make_module(ttl=None)
         delta = _make_delta(module)
-        assert put_cached_delta(delta, module, blob_store) is False
+        assert put_cached_delta(delta, module, blob_store) is None
 
     @pytest.mark.integration
     def test_refuses_delta_with_removals(self, blob_store):
         module = _make_module()
         delta = _make_delta(module, has_removal=True)
-        assert put_cached_delta(delta, module, blob_store) is False
+        assert put_cached_delta(delta, module, blob_store) is None
         assert _row_count(delta.cache_key) == 0
 
     @pytest.mark.integration
@@ -201,7 +187,7 @@ class TestPutCachedDelta:
             },
         )
         with caplog.at_level(logging.INFO):
-            assert put_cached_delta(delta, module, blob_store) is False
+            assert put_cached_delta(delta, module, blob_store) is None
         assert _row_count(delta.cache_key) == 0
         skip_logs = [r for r in caplog.records if "skip_reason=still_delayed" in r.getMessage()]
         assert skip_logs
@@ -223,7 +209,7 @@ class TestPutCachedDelta:
             )
         ]
         with caplog.at_level(logging.WARNING):
-            assert put_cached_delta(delta, module, blob_store) is False
+            assert put_cached_delta(delta, module, blob_store) is None
         assert _row_count(delta.cache_key) == 0
         warn_logs = [r for r in caplog.records if "refusal_reason=file_observables" in r.getMessage()]
         assert warn_logs
@@ -249,7 +235,7 @@ class TestPutCachedDelta:
             # different one) — we're testing the DB upsert contract, not key
             # derivation. Assign manually.
             delta2.cache_key = delta.cache_key
-            assert put_cached_delta(delta2, module2, blob_store) is True
+            assert put_cached_delta(delta2, module2, blob_store) is not None
             assert _row_count(delta.cache_key) == 1
             with get_db_connection() as db:
                 cursor = db.cursor()
@@ -274,7 +260,7 @@ class TestPutCachedDelta:
         }
         delta = _make_delta(module, analysis=analysis)
         try:
-            assert put_cached_delta(delta, module, blob_store) is True
+            assert put_cached_delta(delta, module, blob_store) is not None
             assert _blob_ref_count(delta.cache_key) == 1
 
             with get_db_connection() as db:
@@ -303,7 +289,7 @@ class TestPutCachedDelta:
         )
         module = _make_module()
         delta = _make_delta(module)
-        assert put_cached_delta(delta, module, blob_store) is False
+        assert put_cached_delta(delta, module, blob_store) is None
         assert _row_count(delta.cache_key) == 0
 
 
@@ -316,7 +302,7 @@ class TestKillSwitch:
         )
         module = _make_module()
         delta = _make_delta(module)
-        assert put_cached_delta(delta, module, blob_store) is False
+        assert put_cached_delta(delta, module, blob_store) is None
         assert _row_count(delta.cache_key) == 0
 
 
