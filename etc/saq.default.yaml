@@ -175,6 +175,10 @@ rabbitmq:
   host: rabbitmq
   port: 5672
 
+phishkit:
+  # age in days after which phishkit input/output job directories are deleted
+  max_file_age_days: 3
+
 storage:
   target: local
   base_dir: data/storage

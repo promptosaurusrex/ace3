@@ -462,6 +462,42 @@ app.conf.task_time_limit = _scanner_timeout_hint * 2 + 120
 def ping() -> str:
     return "pong"
 
+# immediate subdirectories of these are aged out by maintain_files
+PHISHKIT_DATA_DIRS = ("/phishkit/input", "/phishkit/output")
+
+
+def _delete_aged_dirs(directory: str, cutoff: float) -> list:
+    """Delete immediate subdirectories of `directory` whose mtime is older than `cutoff`.
+
+    Returns the list of removed paths.
+    """
+    removed = []
+    if not os.path.isdir(directory):
+        return removed
+    for entry in os.scandir(directory):
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        try:
+            if entry.stat(follow_symlinks=False).st_mtime >= cutoff:
+                continue
+            shutil.rmtree(entry.path)
+            removed.append(entry.path)
+        except OSError as e:
+            logger.warning("maintain_files failed to remove %s: %s", entry.path, e)
+    return removed
+
+
+@app.task
+def maintain_files(max_file_age_days: int) -> dict:
+    """Delete phishkit input/output job directories older than max_file_age_days."""
+    cutoff = time.time() - int(max_file_age_days) * 86400
+    deleted = {}
+    for directory in PHISHKIT_DATA_DIRS:
+        removed = _delete_aged_dirs(directory, cutoff)
+        logger.info("maintain_files removed %d directories from %s", len(removed), directory)
+        deleted[directory] = removed
+    return deleted
+
 def _process_output(job_id: str, output_dir: str) -> str:
     """Returns the output directory path for the completed scan job."""
     return output_dir

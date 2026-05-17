@@ -78,6 +78,12 @@ def get_async_scan_result(result_id: str, output_dir: str, timeout: float = 1) -
     except TimeoutError:
         return None
 
+def maintain_files(max_file_age_days: int, timeout: float = 300) -> dict:
+    """Run the phishkit file-maintenance task."""
+    from phishkit.phishkit import maintain_files as pk_maintain_files
+    result = pk_maintain_files.delay(max_file_age_days)
+    return result.get(timeout=timeout)
+
 
 #
 # cli
@@ -137,4 +143,17 @@ phishkit_scan_parser.add_argument("--async", dest="use_async", action="store_tru
 phishkit_scan_parser.add_argument("--id", help="The ID of the scan to get the result of.")
 phishkit_scan_parser.add_argument("--proxy", default=None, help="Proxy string to pass to phishkit scanner (e.g. host:port or user:pass@host:port).")
 phishkit_scan_parser.set_defaults(func=cli_scan)
+
+def cli_maintain_files(args) -> int:
+    max_file_age_days = args.max_file_age_days
+    if max_file_age_days is None:
+        max_file_age_days = get_config().phishkit.max_file_age_days
+    result = maintain_files(max_file_age_days)
+    print(result)
+    return os.EX_OK
+
+phishkit_maintain_parser = phishkit_sp.add_parser("maintain-files", help="Delete phishkit input/output files older than the configured age.")
+phishkit_maintain_parser.add_argument("--max-file-age-days", type=int, default=None,
+    help="Delete phishkit input/output directories older than this many days (default: phishkit.max_file_age_days from config).")
+phishkit_maintain_parser.set_defaults(func=cli_maintain_files)
 
