@@ -205,10 +205,6 @@ class AnalysisExecutionContext:
         the per-module aggregates (exec_count, cache_* counters, byte/time
         sums) and root-level context (alert_type, is_alert, queue).
 
-        See plans/federated-roaming-pearl.md for the field semantics and
-        the rationale for aggregating per-(root, module) instead of
-        emitting per-call events.
-
         Args:
             elapsed_time: The total elapsed time for the analysis.
             stats_dir: The (base) directory to save the statistics to (typically g(G_MODULE_STATS_DIR)).

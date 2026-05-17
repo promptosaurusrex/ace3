@@ -114,12 +114,6 @@ class TestPutCachedDelta:
             assert result.write_ms >= 0
             assert _row_count(delta.cache_key) == 1
 
-            # The plain "wrote analysis cache entry" log line was dropped in
-            # favor of per-(root, module) aggregation on the per-root metrics
-            # event. The metadata previously carried by that log now lives on
-            # the CacheWriteResult return value (above) and the in-DB row
-            # (verified below by re-reading the row).
-
             # Verify the payload round-trips through zstd → JSON → from_dict.
             with get_db_connection() as db:
                 cursor = db.cursor()
