@@ -45,16 +45,41 @@ class ObservableModifierAnalysis(Analysis):
         return f"Applied {len(matched)} rule(s): {', '.join(names)}"
 
 
-def get_nested_value(data: dict, dot_path: str):
-    """Traverse nested dicts using dot notation."""
-    keys = dot_path.split(".")
-    current = data
-    for key in keys:
-        if isinstance(current, dict):
-            current = current.get(key)
-        else:
+def get_nested_value(data, dot_path: str):
+    """Traverse nested dicts (and lists) using dot notation.
+
+    Walks the path one segment at a time, carrying a set of candidate values
+    forward. When the current candidate set contains a list, the next key is
+    applied to each element of that list (transparently fanning out). This
+    lets rules write `query_results.message_id_seen` against list-shaped
+    analysis details (e.g. SplunkAPIAnalysis.query_results) without needing
+    an explicit index. The caller (`_check_details`) treats any list return
+    as "match if any element matches".
+
+    Returns a scalar when the path resolves through dicts only, a flat list
+    of leaf values when traversal fanned out through one or more lists, or
+    None when no element of the path resolves.
+    """
+    candidates = [data]
+    has_fanout = False
+    for key in dot_path.split("."):
+        next_candidates = []
+        for c in candidates:
+            if isinstance(c, list):
+                has_fanout = True
+                for item in c:
+                    if isinstance(item, dict):
+                        v = item.get(key)
+                        if v is not None:
+                            next_candidates.append(v)
+            elif isinstance(c, dict):
+                v = c.get(key)
+                if v is not None:
+                    next_candidates.append(v)
+        if not next_candidates:
             return None
-    return current
+        candidates = next_candidates
+    return candidates if has_fanout else candidates[0]
 
 
 @dataclass
@@ -124,7 +149,8 @@ class TreeCondition:
             value = get_nested_value(details, dot_path)
             if value is None:
                 return False
-            if not pattern.search(str(value)):
+            candidates = value if isinstance(value, list) else [value]
+            if not any(pattern.search(str(v)) for v in candidates):
                 return False
         return True
 

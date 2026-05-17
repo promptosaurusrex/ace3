@@ -98,6 +98,48 @@ def test_get_nested_value_top_level():
     assert get_nested_value(data, "status") == "active"
 
 
+@pytest.mark.unit
+def test_get_nested_value_list_mid_path_single_element():
+    # Single-row Splunk-style stats result.
+    data = {"query_results": [{"message_id_seen": "0"}]}
+    assert get_nested_value(data, "query_results.message_id_seen") == ["0"]
+
+
+@pytest.mark.unit
+def test_get_nested_value_list_mid_path_multiple_elements():
+    # Multi-row result fans out; results are returned in input order.
+    data = {"query_results": [{"x": "a"}, {"x": "b"}, {"x": "c"}]}
+    assert get_nested_value(data, "query_results.x") == ["a", "b", "c"]
+
+
+@pytest.mark.unit
+def test_get_nested_value_list_mid_path_partial_matches():
+    # Elements that don't have the requested key are silently skipped.
+    data = {"query_results": [{"x": "a"}, {"y": "b"}, {"x": "c"}]}
+    assert get_nested_value(data, "query_results.x") == ["a", "c"]
+
+
+@pytest.mark.unit
+def test_get_nested_value_list_mid_path_no_matches():
+    # No element has the requested key — returns None, not [].
+    data = {"query_results": [{"x": "a"}, {"x": "b"}]}
+    assert get_nested_value(data, "query_results.y") is None
+
+
+@pytest.mark.unit
+def test_get_nested_value_terminal_list_returned_as_list():
+    # Path that resolves to a list value returns the list as-is.
+    data = {"tags": ["alpha", "beta"]}
+    assert get_nested_value(data, "tags") == ["alpha", "beta"]
+
+
+@pytest.mark.unit
+def test_get_nested_value_nested_lists():
+    # List of dicts containing lists of dicts — fan-out flattens to a single list.
+    data = {"a": [{"b": [{"c": "1"}, {"c": "2"}]}, {"b": [{"c": "3"}]}]}
+    assert get_nested_value(data, "a.b.c") == ["1", "2", "3"]
+
+
 # ============================================================
 # Analysis class tests
 # ============================================================
@@ -1625,6 +1667,41 @@ def test_detection_point_action_integration():
 # ============================================================
 # TreeCondition negate tests
 # ============================================================
+
+
+@pytest.mark.unit
+def test_tree_condition_details_match_walks_list_mid_path():
+    """details_match should walk a mid-path list and match if any element satisfies the regex.
+
+    Mirrors the SplunkAPIAnalysis shape: details = {"query_results": [{"message_id_seen": "0"}]}.
+    """
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    parent = root.add_observable_by_spec(F_FQDN, "example.com")
+
+    class ListResultAnalysis(Analysis):
+        pass
+
+    parent_analysis = ListResultAnalysis()
+    parent_analysis.details = {"query_results": [{"message_id_seen": "0"}]}
+    parent_analysis.details_modified = True
+    parent.add_analysis(parent_analysis)
+
+    target = parent_analysis.add_observable_by_spec(F_URL, "https://example.com/x")
+    module_path = f"{ListResultAnalysis.__module__}:{ListResultAnalysis.__name__}"
+
+    tc_match = TreeCondition(
+        analysis_type=module_path,
+        details_match={"query_results.message_id_seen": re.compile(r"^0$")},
+    )
+    assert tc_match.evaluate(target, root) is True
+
+    tc_no_match = TreeCondition(
+        analysis_type=module_path,
+        details_match={"query_results.message_id_seen": re.compile(r"^99$")},
+    )
+    assert tc_no_match.evaluate(target, root) is False
 
 
 @pytest.mark.unit
