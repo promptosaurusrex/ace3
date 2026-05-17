@@ -21,13 +21,15 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import timedelta
-from typing import BinaryIO, Iterator, Optional, Type, Union
+from typing import BinaryIO, Iterable, Iterator, Optional, Type, Union
 
 from pydantic import BaseModel
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from saq.configuration.config import get_config
@@ -45,6 +47,69 @@ REFERRER_KIND_ANALYSIS_DETAILS = 'analysis_details'
 
 class BlobNotFound(Exception):
     pass
+
+
+# how many sha256 values to fold into a single blob_refs lookup
+_MAINTENANCE_BATCH = 500
+
+
+@dataclass
+class GlobalMaintenanceStats:
+    """Result of a maintain_global (durable-tier GC) pass."""
+    blobs_scanned: int = 0
+    blobs_deleted: int = 0
+    bytes_reclaimed: int = 0
+    skipped_referenced: int = 0
+    skipped_within_grace: int = 0
+    errors: int = 0
+
+
+@dataclass
+class LocalMaintenanceStats:
+    """Result of a maintain_local (node cache eviction) pass."""
+    cache_entries_scanned: int = 0
+    cache_entries_evicted: int = 0
+    bytes_reclaimed: int = 0
+    skipped_unflushed: int = 0   # local blob not yet confirmed in the durable tier
+    errors: int = 0
+
+
+@dataclass(frozen=True)
+class LocalCacheBudget:
+    """Eviction budget for a node's local blob cache tier.
+
+    ``max_bytes`` caps the total cache footprint (oldest-first eviction when
+    exceeded); ``max_age`` evicts any blob older than the given age. Either may
+    be None to disable that dimension.
+    """
+    max_bytes: Optional[int] = None
+    max_age: Optional[timedelta] = None
+
+
+def _is_hex(value: str) -> bool:
+    try:
+        int(value, 16)
+        return True
+    except ValueError:
+        return False
+
+
+def query_referenced_shas(shas: Iterable[str]) -> set[str]:
+    """Return the subset of ``shas`` that have at least one row in blob_refs.
+
+    Used by maintain_global implementations to decide which blobs are still
+    referenced. Batched to keep the IN-list bounded.
+    """
+    shas = list(shas)
+    referenced: set[str] = set()
+    for i in range(0, len(shas), _MAINTENANCE_BATCH):
+        batch = shas[i:i + _MAINTENANCE_BATCH]
+        referenced.update(
+            get_db().scalars(select(BlobRef.sha256).where(BlobRef.sha256.in_(batch))).all()
+        )
+    # release the read transaction so we don't hold it across the delete loop
+    get_db().commit()
+    return referenced
 
 
 class BlobStoreConfig(BaseModel):
@@ -102,11 +167,25 @@ class BlobStore(ABC):
         """Drop the dependency. Safe to call when the ref doesn't exist."""
 
     @abstractmethod
-    def gc(self, grace_period: timedelta) -> int:
-        """Delete blobs with zero references older than ``grace_period``.
+    def maintain_global(self, grace_period: timedelta, dry_run: bool = False) -> GlobalMaintenanceStats:
+        """Garbage-collect the DURABLE tier.
 
-        Deferred to Phase 2b — not scheduled in Phase 2 because nothing spills
-        to the blob store until cacheable modules opt in (Phase 3).
+        Delete blobs that have zero rows in blob_refs and whose durable-tier
+        object is older than ``grace_period``. The grace period guards the
+        window between blob_store.put() and the blob_refs row being committed.
+
+        MUST run on exactly one node (the primary) — it mutates global durable
+        state. When ``dry_run`` is True, count what would be deleted without
+        deleting anything.
+        """
+
+    @abstractmethod
+    def maintain_local(self, budget: LocalCacheBudget, dry_run: bool = False) -> LocalMaintenanceStats:
+        """Evict entries from THIS node's local cache tier.
+
+        Safe to run on every analysis node — anything evicted is re-fetchable
+        from the durable tier. Backends with no separate cache tier (the pure
+        local store) return an empty stats object.
         """
 
     @abstractmethod
@@ -150,6 +229,25 @@ class LocalHardlinkBlobStore(BlobStore):
     def path_for(self, sha256: str) -> str:
         """Return the on-disk path where the blob is (or would be) stored."""
         return self._path_for(sha256)
+
+    def iter_blobs(self) -> Iterator[tuple[str, str]]:
+        """Yield ``(sha256, absolute_path)`` for every blob currently on disk.
+
+        Names that are not a valid sharded sha256 (e.g. tempfiles left by an
+        interrupted put()) are skipped.
+        """
+        if not os.path.isdir(self.root_dir):
+            return
+        for shard in os.listdir(self.root_dir):
+            if len(shard) != self.SHARD_LEN:
+                continue
+            shard_dir = os.path.join(self.root_dir, shard)
+            if not os.path.isdir(shard_dir):
+                continue
+            for name in os.listdir(shard_dir):
+                if len(name) != 64 or not _is_hex(name) or name[:self.SHARD_LEN] != shard:
+                    continue
+                yield name, os.path.join(shard_dir, name)
 
     def put(self, data: Union[bytes, BinaryIO]) -> str:
         h = hashlib.sha256()
@@ -221,12 +319,54 @@ class LocalHardlinkBlobStore(BlobStore):
         )
         get_db().commit()
 
-    def gc(self, grace_period: timedelta) -> int:
-        # TODO (Phase 2b): walk blobs with zero refs older than grace_period
-        # and unlink them. Deferred because Phase 2 is plumbing-only and no
-        # blobs accumulate until cacheable modules opt in.
-        logging.debug("LocalHardlinkBlobStore.gc is a no-op until Phase 2b")
-        return 0
+    def maintain_global(self, grace_period: timedelta, dry_run: bool = False) -> GlobalMaintenanceStats:
+        # for the local hardlink store the filesystem IS the durable tier, so
+        # this is the real GC: walk the shard tree, drop blobs with zero
+        # blob_refs rows whose file mtime is older than the grace period.
+        stats = GlobalMaintenanceStats()
+        cutoff = time.time() - grace_period.total_seconds()
+        candidates: list[tuple[str, str, int]] = []  # (sha256, path, size)
+        for sha256, path in self.iter_blobs():
+            stats.blobs_scanned += 1
+            try:
+                st = os.stat(path)
+            except FileNotFoundError:
+                continue
+            # a blob freshly put() but not yet referenced has a recent mtime —
+            # the grace period keeps us from deleting it before the blob_refs
+            # row is committed
+            if st.st_mtime > cutoff:
+                stats.skipped_within_grace += 1
+                continue
+            candidates.append((sha256, path, st.st_size))
+
+        for i in range(0, len(candidates), _MAINTENANCE_BATCH):
+            batch = candidates[i:i + _MAINTENANCE_BATCH]
+            referenced = query_referenced_shas(c[0] for c in batch)
+            for sha256, path, size in batch:
+                if sha256 in referenced:
+                    stats.skipped_referenced += 1
+                    continue
+                if dry_run:
+                    stats.blobs_deleted += 1
+                    stats.bytes_reclaimed += size
+                    continue
+                try:
+                    os.unlink(path)
+                    stats.blobs_deleted += 1
+                    stats.bytes_reclaimed += size
+                except FileNotFoundError:
+                    pass
+                except OSError as e:
+                    logging.warning("failed to unlink blob %s: %s", path, e)
+                    stats.errors += 1
+        return stats
+
+    def maintain_local(self, budget: LocalCacheBudget, dry_run: bool = False) -> LocalMaintenanceStats:
+        # the local hardlink store IS the durable tier — there is no separate
+        # cache to evict, and removing files here would destroy the only copy
+        logging.debug("LocalHardlinkBlobStore.maintain_local is a no-op (store is the durable tier)")
+        return LocalMaintenanceStats()
 
     def materialize(self, sha256: str, dest_path: str) -> None:
         src = self._path_for(sha256)

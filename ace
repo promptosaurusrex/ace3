@@ -1838,17 +1838,48 @@ cleanup_alerts_parsers.add_argument('--ignore-days-old', type=int, required=Fals
     #help='force delete fp alerts instead of archiving them')
 cleanup_alerts_parsers.set_defaults(func=cleanup_alerts)
 
-def prune_analysis_cache(args):
-    """Deletes expired rows from the analysis_result_cache table. Meant to be called from cron."""
-    from saq.util.maintenance import prune_analysis_result_cache
-    prune_analysis_result_cache(dry_run=args.dry_run)
+def analysis_cache_prune(args):
+    """Deletes expired rows from the analysis_result_cache table (primary node only). Meant to be called from cron."""
+    from saq.util.maintenance import prune_expired_cache_rows
+    prune_expired_cache_rows(dry_run=args.dry_run)
     sys.exit(0)
 
+def analysis_cache_gc(args):
+    """Garbage-collects the durable analysis cache blob store tier (primary node only). Meant to be called from cron."""
+    from saq.util.maintenance import gc_durable_blobs
+    gc_durable_blobs(dry_run=args.dry_run)
+    sys.exit(0)
+
+def analysis_cache_local_maintenance(args):
+    """Evicts stale/excess blobs from this node's local blob cache tier. Meant to be called from cron on every node."""
+    from saq.util.maintenance import maintain_local_cache
+    maintain_local_cache(dry_run=args.dry_run)
+    sys.exit(0)
+
+analysis_cache_prune_parser = get_cli_subparsers().add_parser('analysis-cache-prune',
+    help="Deletes expired rows from the analysis result cache (primary node only).")
+analysis_cache_prune_parser.add_argument('--dry-run', required=False, dest='dry_run', default=False, action='store_true',
+    help="Just report how many rows would be deleted.")
+analysis_cache_prune_parser.set_defaults(func=analysis_cache_prune)
+
+# deprecated alias of analysis-cache-prune, kept so existing cron/automation keeps working
 prune_analysis_cache_parser = get_cli_subparsers().add_parser('prune-analysis-cache',
-    help="Deletes expired rows from the analysis result cache.")
+    help="Deprecated alias of analysis-cache-prune.")
 prune_analysis_cache_parser.add_argument('--dry-run', required=False, dest='dry_run', default=False, action='store_true',
     help="Just report how many rows would be deleted.")
-prune_analysis_cache_parser.set_defaults(func=prune_analysis_cache)
+prune_analysis_cache_parser.set_defaults(func=analysis_cache_prune)
+
+analysis_cache_gc_parser = get_cli_subparsers().add_parser('analysis-cache-gc',
+    help="Garbage-collects the durable analysis cache blob store tier (primary node only).")
+analysis_cache_gc_parser.add_argument('--dry-run', required=False, dest='dry_run', default=False, action='store_true',
+    help="Just report what would be garbage-collected.")
+analysis_cache_gc_parser.set_defaults(func=analysis_cache_gc)
+
+analysis_cache_local_maintenance_parser = get_cli_subparsers().add_parser('analysis-cache-local-maintenance',
+    help="Evicts stale/excess blobs from this node's local blob cache tier.")
+analysis_cache_local_maintenance_parser.add_argument('--dry-run', required=False, dest='dry_run', default=False, action='store_true',
+    help="Just report what would be evicted.")
+analysis_cache_local_maintenance_parser.set_defaults(func=analysis_cache_local_maintenance)
 
 cleanup_alerts_parsers = alert_sp.add_parser('cleanup',
     help="Removes alerts dispositioned as ignore or false positive and older than some amount of time.")
