@@ -112,6 +112,9 @@ class RabbitMQConfig(BaseModel):
     host: str = Field(..., description="rabbitmq host")
     port: int = Field(..., description="rabbitmq port")
 
+class PhishkitConfig(BaseModel):
+    max_file_age_days: int = Field(default=3, description="age in days after which phishkit input/output job directories are deleted")
+
 class StorageConfig(BaseModel):
     target: str = Field(default="local", description="storage target: local or s3")
     base_dir: str = Field(default="data/storage", description="base directory for local storage (relative to SAQ_HOME)")
@@ -502,6 +505,7 @@ class ACEConfig(BaseModel):
     llm: Optional[LLMConfig] = None
     monitor: Optional[MonitorConfig] = None
     rabbitmq: Optional[RabbitMQConfig] = None
+    phishkit: PhishkitConfig = Field(default_factory=PhishkitConfig, description="phishkit subsystem configuration")
     storage: Optional[StorageConfig] = None
     s3: Optional[S3Config] = None
     redis: Optional[RedisConfig] = None

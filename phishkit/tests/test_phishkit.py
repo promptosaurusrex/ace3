@@ -988,3 +988,85 @@ class TestScanFile:
         run_call = mock_run.call_args
         assert "--file" in run_call.kwargs["target_args"]
         assert result == "/phishkit/output/job-1"
+
+
+# ---------------------------------------------------------------------------
+# maintain_files / _delete_aged_dirs
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteAgedDirs:
+
+    @pytest.mark.unit
+    def test_removes_only_aged_dirs(self, tmp_path):
+        import time
+        from phishkit import _delete_aged_dirs
+
+        old_dir = tmp_path / "old-job"
+        new_dir = tmp_path / "new-job"
+        old_dir.mkdir()
+        new_dir.mkdir()
+        (old_dir / "result.json").write_text("{}")
+
+        now = time.time()
+        # backdate old_dir to 10 days ago
+        os.utime(old_dir, (now - 10 * 86400, now - 10 * 86400))
+
+        # cutoff is 3 days ago
+        removed = _delete_aged_dirs(str(tmp_path), now - 3 * 86400)
+
+        assert removed == [str(old_dir)]
+        assert not old_dir.exists()
+        assert new_dir.exists()
+
+    @pytest.mark.unit
+    def test_ignores_files_in_directory(self, tmp_path):
+        import time
+        from phishkit import _delete_aged_dirs
+
+        loose_file = tmp_path / "loose.txt"
+        loose_file.write_text("data")
+        os.utime(loose_file, (0, 0))
+
+        removed = _delete_aged_dirs(str(tmp_path), time.time())
+
+        assert removed == []
+        assert loose_file.exists()
+
+    @pytest.mark.unit
+    def test_missing_directory_returns_empty(self):
+        import time
+        from phishkit import _delete_aged_dirs
+
+        assert _delete_aged_dirs("/phishkit/does-not-exist", time.time()) == []
+
+
+class TestMaintainFiles:
+
+    @pytest.mark.unit
+    def test_maintain_files_sweeps_data_dirs(self, tmp_path):
+        import time
+        import phishkit as phishkit_mod
+        from phishkit import maintain_files
+
+        input_dir = tmp_path / "input"
+        output_dir = tmp_path / "output"
+        input_dir.mkdir()
+        output_dir.mkdir()
+
+        old_job = input_dir / "old-job"
+        new_job = output_dir / "new-job"
+        old_job.mkdir()
+        new_job.mkdir()
+
+        now = time.time()
+        os.utime(old_job, (now - 10 * 86400, now - 10 * 86400))
+
+        with patch.object(phishkit_mod, "PHISHKIT_DATA_DIRS",
+                           (str(input_dir), str(output_dir))):
+            result = maintain_files(3)
+
+        assert result[str(input_dir)] == [str(old_job)]
+        assert result[str(output_dir)] == []
+        assert not old_job.exists()
+        assert new_job.exists()
