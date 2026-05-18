@@ -16,7 +16,7 @@ from saq.remediation.external.worker import ExternalRemediationCheckWorker
 from tests.saq.remediation.external.conftest import FakeProbe
 
 
-def _work_item_from(check, max_retries=3):
+def _work_item_from(check, max_retries=3, context=None):
     return CheckWorkItem(
         id=check.id,
         probe_name=check.probe_name,
@@ -26,6 +26,7 @@ def _work_item_from(check, max_retries=3):
         retry_count=check.retry_count,
         max_retries=max_retries,
         deadline=check.deadline,
+        context=context,
     )
 
 
@@ -157,6 +158,22 @@ def test_worker_expired_does_not_call_probe(make_check):
     assert probe.calls == []
     history = _history_for(check.id)
     assert history[0].result == HistoryResult.EXPIRED.value
+
+
+@pytest.mark.integration
+def test_worker_forwards_context_to_probe(make_check):
+    """Context attached to the work item must reach the probe so daemon-side
+    re-polls see the same enrichment the sync analyzer provided."""
+    probe = FakeProbe(outcome_factory=lambda t: ProbeOutcome(pending=True))
+    worker = ExternalRemediationCheckWorker(probe)
+
+    check = make_check()
+    context = {"recipient": "alice@example.com",
+               "received_time": "2026-05-18T16:06:04+00:00"}
+    worker.process(_work_item_from(check, context=context))
+
+    assert len(probe.calls) == 1
+    assert probe.calls[0].context == context
 
 
 @pytest.mark.integration

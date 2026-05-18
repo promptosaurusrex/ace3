@@ -3,7 +3,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from saq.database.pool import get_db
-from saq.remediation.external.collector import ExternalRemediationCheckCollector
+from saq.remediation.external.collector import (
+    ExternalRemediationCheckCollector,
+    build_work_item,
+)
 from saq.remediation.external.types import CheckStatus
 
 
@@ -109,3 +112,50 @@ def test_collect_includes_past_deadline_for_finalization(make_check, collector_w
 
     items = collector.collect_work_items()
     assert [w.id for w in items] == [expired.id]
+
+
+@pytest.mark.integration
+def test_build_work_item_decodes_context(make_check):
+    row = make_check(
+        context_json='{"recipient": "alice@example.com", "received_time": "2026-05-18T16:06:04+00:00"}',
+    )
+
+    work = build_work_item(row)
+
+    assert work.context == {
+        "recipient": "alice@example.com",
+        "received_time": "2026-05-18T16:06:04+00:00",
+    }
+
+
+@pytest.mark.integration
+def test_build_work_item_handles_null_context(make_check):
+    """Legacy rows queued before context_json existed must not crash dispatch."""
+    row = make_check(context_json=None)
+
+    work = build_work_item(row)
+
+    assert work.context is None
+
+
+@pytest.mark.integration
+def test_build_work_item_handles_malformed_context(make_check, caplog):
+    """One row with bad context_json must not poison the queue."""
+    row = make_check(context_json="not-json")
+
+    with caplog.at_level("WARNING"):
+        work = build_work_item(row)
+
+    assert work.context is None
+    assert any("unparseable context_json" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.integration
+def test_build_work_item_handles_non_dict_context(make_check, caplog):
+    row = make_check(context_json='["recipient", "alice@example.com"]')
+
+    with caplog.at_level("WARNING"):
+        work = build_work_item(row)
+
+    assert work.context is None
+    assert any("context_json is not a dict" in rec.message for rec in caplog.records)

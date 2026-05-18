@@ -59,10 +59,12 @@ class ProbeTarget(BaseModel):
     context: Optional[dict] = Field(
         default=None,
         description=(
-            "Optional in-memory enrichment passed by callers that have richer "
-            "knowledge than the daemon (e.g. an analysis module that walked "
-            "the alert tree for recipient / received_time). Not persisted; "
-            "background re-polls run with context=None."
+            "Optional enrichment passed by callers that have richer knowledge "
+            "than the daemon (e.g. an analysis module that walked the alert "
+            "tree for recipient / received_time). Frozen at queue time on "
+            "``external_remediation_check.context_json`` and rehydrated by the "
+            "collector, so background re-polls see the same context as the "
+            "original synchronous-first call."
         ),
     )
 
@@ -129,3 +131,4 @@ class CheckWorkItem(BaseModel):
     retry_count: int
     max_retries: int
     deadline: datetime
+    context: Optional[dict] = None

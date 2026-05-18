@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -50,6 +51,75 @@ def test_queue_requires_alert_uuid():
             alert_uuid="",
             max_retries=1,
             deadline_seconds=60,
+        )
+
+
+@pytest.mark.integration
+def test_queue_persists_context(db_alert):
+    received = datetime(2026, 5, 18, 16, 6, 4, tzinfo=timezone.utc)
+    check_id = queue_external_check(
+        probe_name="fake_probe",
+        observable_type="email_delivery",
+        observable_value="<id-ctx>|alice@example.com",
+        alert_uuid=db_alert.uuid,
+        max_retries=10,
+        deadline_seconds=3600,
+        context={"recipient": "alice@example.com", "received_time": received},
+    )
+
+    row = get_external_check(check_id)
+    assert row.context_json is not None
+    payload = json.loads(row.context_json)
+    assert payload["recipient"] == "alice@example.com"
+    # Datetimes are serialized to ISO strings on write.
+    assert payload["received_time"] == "2026-05-18T16:06:04+00:00"
+
+
+@pytest.mark.integration
+def test_queue_without_context_leaves_column_null(db_alert):
+    check_id = queue_external_check(
+        probe_name="fake_probe",
+        observable_type="email_delivery",
+        observable_value="<id-noctx>|alice@example.com",
+        alert_uuid=db_alert.uuid,
+        max_retries=10,
+        deadline_seconds=3600,
+    )
+
+    row = get_external_check(check_id)
+    assert row.context_json is None
+
+
+@pytest.mark.integration
+def test_queue_empty_context_leaves_column_null(db_alert):
+    check_id = queue_external_check(
+        probe_name="fake_probe",
+        observable_type="email_delivery",
+        observable_value="<id-emptyctx>|alice@example.com",
+        alert_uuid=db_alert.uuid,
+        max_retries=10,
+        deadline_seconds=3600,
+        context={},
+    )
+
+    row = get_external_check(check_id)
+    assert row.context_json is None
+
+
+@pytest.mark.unit
+def test_queue_unserializable_context_raises(db_alert):
+    class NotSerializable:
+        pass
+
+    with pytest.raises(TypeError, match="unserializable context value"):
+        queue_external_check(
+            probe_name="fake_probe",
+            observable_type="email_delivery",
+            observable_value="<id-bad>|alice@example.com",
+            alert_uuid=db_alert.uuid,
+            max_retries=1,
+            deadline_seconds=60,
+            context={"weird": NotSerializable()},
         )
 
 
