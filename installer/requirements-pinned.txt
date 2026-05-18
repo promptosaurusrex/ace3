@@ -60,6 +60,7 @@ pytest-randomly==4.1.0
 python-dateutil==2.9.0.post0
 python-magic==0.4.27
 python-whois==0.9.6
+whoisit==4.0.3
 pytz==2026.2
 PyYAML==6.0.3
 rarfile==4.2

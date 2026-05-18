@@ -66,13 +66,13 @@ def test_extras_appear_as_top_level_fields():
         total_rows=121,
         expired_rows=0,
         modules=1,
-        module_name="whois_analyzer",
+        module_name="rdap_analyzer",
     )
     data = formatter.format(record)
     assert data["total_rows"] == 121
     assert data["expired_rows"] == 0
     assert data["modules"] == 1
-    assert data["module_name"] == "whois_analyzer"
+    assert data["module_name"] == "rdap_analyzer"
 
 
 @pytest.mark.unit
@@ -125,7 +125,7 @@ def test_via_logging_call_extra_flows_through():
         "insert",
         extra={
             "op": "insert",
-            "module_name": "whois_analyzer",
+            "module_name": "rdap_analyzer",
             "compressed_bytes": 187,
         },
     )
@@ -134,5 +134,5 @@ def test_via_logging_call_extra_flows_through():
     rec = captured[0]
     assert rec["message"].startswith("wrote analysis cache entry op=insert")
     assert rec["op"] == "insert"
-    assert rec["module_name"] == "whois_analyzer"
+    assert rec["module_name"] == "rdap_analyzer"
     assert rec["compressed_bytes"] == 187

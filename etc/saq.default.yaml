@@ -1222,10 +1222,10 @@ analysis_module_dns_analyzer:
   # use this if you are in AWS and your target is inside target network
   ssh_host: ""
 
-analysis_module_whois_analyzer:
-  name: whois_analyzer
-  python_module: saq.modules.whois
-  python_class: WhoisAnalyzer
+analysis_module_rdap_analyzer:
+  name: rdap_analyzer
+  python_module: saq.modules.rdap
+  python_class: RdapAnalyzer
   enabled: true
   cache_ttl: 604800  # 7 days
 
@@ -2072,10 +2072,10 @@ module_group_correlation:
     - parse_url
     - pcap_conversation_extraction
     - phishkit_analyzer
+    - rdap_analyzer
     - snort_signature_analysis_v1
     - url_email_pivot_analyzer
     - user_analyzer
-    - whois_analyzer
 
 module_group_yara:
   name: yara
