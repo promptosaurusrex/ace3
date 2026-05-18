@@ -220,6 +220,8 @@ class ModuleExecutionSnapshot:
                         initial_tags=list(obs.tags),
                         initial_directives=list(obs._directives),
                         initial_detections=[_serialize_detection(d) for d in obs.detections],
+                        initial_excluded_analysis=list(obs._excluded_analysis),
+                        initial_limited_analysis=list(obs._limited_analysis),
                     ))
 
         # Root-level diff

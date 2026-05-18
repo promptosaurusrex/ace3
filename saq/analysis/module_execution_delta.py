@@ -143,6 +143,8 @@ class ObservableSpec:
     initial_tags: list[str] = field(default_factory=list)
     initial_directives: list[str] = field(default_factory=list)
     initial_detections: list[dict] = field(default_factory=list)
+    initial_excluded_analysis: list[str] = field(default_factory=list)
+    initial_limited_analysis: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         result = {
@@ -158,6 +160,10 @@ class ObservableSpec:
             result["initial_directives"] = self.initial_directives
         if self.initial_detections:
             result["initial_detections"] = self.initial_detections
+        if self.initial_excluded_analysis:
+            result["initial_excluded_analysis"] = self.initial_excluded_analysis
+        if self.initial_limited_analysis:
+            result["initial_limited_analysis"] = self.initial_limited_analysis
         return result
 
     @classmethod
@@ -170,6 +176,8 @@ class ObservableSpec:
             initial_tags=data.get("initial_tags", []),
             initial_directives=data.get("initial_directives", []),
             initial_detections=data.get("initial_detections", []),
+            initial_excluded_analysis=data.get("initial_excluded_analysis", []),
+            initial_limited_analysis=data.get("initial_limited_analysis", []),
         )
 
 
