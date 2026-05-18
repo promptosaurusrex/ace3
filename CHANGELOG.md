@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.52] - 2026-05-17
+
+- [Implement phishkit file maintenance feature](https://github.com/ACE-Collective/ace3/pull/244)
+- [Allows observable modifier details_match to work on lists](https://github.com/ACE-Collective/ace3/pull/243)
+- [Updates how caching metrics are calculated and logged](https://github.com/ACE-Collective/ace3/pull/242)
+
 ## [3.0.51] - 2026-05-16
 
 - [Several Phishkit anti-bot improvements](https://github.com/ACE-Collective/ace3/pull/236)
