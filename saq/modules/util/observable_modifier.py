@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Generator, Optional, Type, override
 
@@ -409,6 +410,10 @@ class ObservableModifierAnalyzer(AnalysisModule):
         super().__init__(*args, **kwargs)
         self._initialized = False
         self._rules: list[Rule] = []
+        # per-root, per-rule evaluation cost accumulator
+        # outer key = root.uuid, inner key = rule.uuid, value =
+        # {"name": str, "count": int, "total_seconds": float, "max_seconds": float}
+        self._rule_eval_stats: dict[str, dict[str, dict]] = {}
 
     @classmethod
     def get_config_class(cls) -> Type[AnalysisModuleConfig]:
@@ -615,6 +620,41 @@ class ObservableModifierAnalyzer(AnalysisModule):
             for rule in self._rules
         )
 
+    def _evaluate_rule(self, rule: "Rule", observable: Observable, root: RootAnalysis) -> bool:
+        """Evaluate a rule's conditions, recording the elapsed time as a cost metric.
+
+        The timing is captured in a finally block so the cost is recorded even
+        when evaluate() raises. Recording is itself guarded so a metrics failure
+        can never break analysis.
+        """
+        start = time.perf_counter()
+        try:
+            return rule.conditions.evaluate(observable, root)
+        finally:
+            elapsed = time.perf_counter() - start
+            try:
+                self._record_rule_eval(root, rule, elapsed)
+            except Exception as e:
+                logging.warning("failed to record observable modifier rule eval cost: %s", e)
+
+    def _record_rule_eval(self, root: RootAnalysis, rule: "Rule", elapsed: float) -> None:
+        """Accumulate one rule evaluation into the per-root cost stats.
+
+        Note: execute_analysis re-runs for the same pre-phase observable as the
+        analysis tree grows, so a pre-phase rule's count legitimately counts
+        every evaluate() call -- this is total evaluation cost, not distinct
+        observables evaluated.
+        """
+        root_stats = self._rule_eval_stats.setdefault(root.uuid, {})
+        rule_stats = root_stats.get(rule.uuid)
+        if rule_stats is None:
+            rule_stats = {"name": rule.name, "count": 0, "total_seconds": 0.0, "max_seconds": 0.0}
+            root_stats[rule.uuid] = rule_stats
+        rule_stats["count"] += 1
+        rule_stats["total_seconds"] += elapsed
+        if elapsed > rule_stats["max_seconds"]:
+            rule_stats["max_seconds"] = elapsed
+
     def execute_analysis(self, observable: Observable) -> AnalysisExecutionResult:
         self._ensure_initialized()
 
@@ -632,7 +672,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
             if rule.phase != "pre":
                 continue
 
-            if rule.conditions.evaluate(observable, root):
+            if self._evaluate_rule(rule, observable, root):
                 applied = rule.actions.apply(observable)
                 matched_rules.append({
                     "name": rule.name,
@@ -701,7 +741,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
             if rule.phase != "post":
                 continue
 
-            if rule.conditions.evaluate(observable, root):
+            if self._evaluate_rule(rule, observable, root):
                 applied = rule.actions.apply(observable)
                 matched_rules.append({
                     "name": rule.name,
@@ -727,6 +767,30 @@ class ObservableModifierAnalyzer(AnalysisModule):
     def continue_analysis(self, observable: Observable, analysis: Analysis) -> AnalysisExecutionResult:
         logging.warning("observable modifier continue_analysis called, but this module never calls delay_analysis()")
         return AnalysisExecutionResult.INCOMPLETE
+
+    def execute_post_analysis(self) -> AnalysisExecutionResult:
+        """Emit accumulated per-rule evaluation cost metrics for this root.
+
+        Called once per root after all analysis completes. Pops the root's
+        stats so the accumulator stays bounded and a stray re-call is a no-op.
+        The whole body is guarded so metrics emission can never fail the root.
+        """
+        try:
+            root = self.get_root()
+            stats = self._rule_eval_stats.pop(root.uuid, {})
+            for rule_uuid, s in stats.items():
+                count = s["count"]
+                avg = s["total_seconds"] / count if count else 0.0
+                logging.info(
+                    "observable_modifier rule cost root=%s rule_uuid=%s count=%d "
+                    "total_seconds=%.4f avg_seconds=%.6f max_seconds=%.4f rule_name=%s",
+                    root.uuid, rule_uuid, count,
+                    s["total_seconds"], avg, s["max_seconds"], s["name"],
+                )
+        except Exception as e:
+            logging.warning("failed to emit observable modifier rule cost metrics: %s", e)
+
+        return AnalysisExecutionResult.COMPLETED
 
     def _apply_ignore(self, rule: "Rule", observable: Observable, root: RootAnalysis) -> None:
         """Apply a matched rule's ``ignore`` action: surgically remove the
