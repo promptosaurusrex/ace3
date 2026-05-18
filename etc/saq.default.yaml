@@ -1234,6 +1234,7 @@ analysis_module_nrd_analyzer:
   python_module: saq.modules.nrd
   python_class: NRDAnalyzer
   enabled: true
+  cache_ttl: 86400  # 24 hours - aligned with the daily refresh; extended_version drives invalidation when the DB rotates ahead of TTL
 
 analysis_module_active_directory_analyzer:
   name: active_directory_analyzer

@@ -1,5 +1,6 @@
 """Unit tests for ``saq.modules.nrd``."""
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -214,3 +215,90 @@ def test_analyzer_idn_input_matches_punycode_row(nrd_db, test_context):
     analysis = observable.get_analysis(NRDAnalysis)
     assert analysis is not None
     assert analysis.is_nrd is True
+
+
+# ---------------------------------------------------------------------------
+# extended_version (cache-key invalidation tied to the NRD database)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_extended_version_returns_db_version_string(nrd_db, test_context):
+    nrd_db(["seed.example"])
+
+    analyzer = NRDAnalyzer(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_NRD_ANALYZER),
+    )
+
+    ev = analyzer.extended_version
+    assert set(ev) == {"nrd_db_version"}
+    # Format: "<mtime_ns>-<size>" — both positive integers.
+    mtime_str, _, size_str = ev["nrd_db_version"].partition("-")
+    assert int(mtime_str) > 0
+    assert int(size_str) > 0
+
+
+@pytest.mark.unit
+def test_extended_version_empty_when_db_missing(tmp_path, monkeypatch, test_context):
+    monkeypatch.setattr(nrd_util, "get_database_path", lambda: tmp_path / "no-such.db")
+
+    analyzer = NRDAnalyzer(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_NRD_ANALYZER),
+    )
+
+    assert analyzer.extended_version == {}
+
+
+@pytest.mark.unit
+def test_extended_version_changes_when_db_rotated(nrd_db, test_context):
+    """An atomic-swap-style file replacement must produce a new version string."""
+    db_path = nrd_db(["before.example"])
+
+    analyzer = NRDAnalyzer(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_NRD_ANALYZER),
+    )
+
+    before = analyzer.extended_version["nrd_db_version"]
+
+    # Rebuild with different content. Force mtime forward by 1s so the version
+    # string changes deterministically — small SQLite DBs fit in one 4KB page
+    # and may share size; rapid rebuilds may share mtime tick on some FS.
+    nrd_db(["before.example", "after.example", "another.example"])
+    st = os.stat(db_path)
+    os.utime(db_path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+
+    after = analyzer.extended_version["nrd_db_version"]
+    assert before != after
+
+
+@pytest.mark.unit
+def test_extended_version_feeds_cache_key(nrd_db, test_context):
+    """End-to-end: two DB snapshots must produce different cache keys for the same observable."""
+    from datetime import timedelta
+    from saq.analysis.cache import generate_cache_key
+    from saq.observables.network.dns import FQDNObservable
+
+    nrd_db(["target.example"])
+    analyzer = NRDAnalyzer(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_NRD_ANALYZER),
+    )
+    # Force cache_ttl regardless of YAML state under test so generate_cache_key emits a key.
+    analyzer.config.cache_ttl = timedelta(seconds=86400)
+
+    observable = FQDNObservable("target.example")
+
+    key_before = generate_cache_key(observable, analyzer)
+
+    db_path = nrd_util.get_database_path()
+    nrd_db(["target.example", "extra.example"])
+    st = os.stat(db_path)
+    os.utime(db_path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    key_after = generate_cache_key(observable, analyzer)
+
+    assert key_before is not None
+    assert key_after is not None
+    assert key_before != key_after
