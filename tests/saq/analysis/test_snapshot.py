@@ -167,6 +167,30 @@ class TestNarrowSnapshot:
         assert "crawl" in delta.new_observables[0].initial_directives
 
     @pytest.mark.unit
+    def test_diff_new_observable_captures_excluded_analysis(self, tmp_path):
+        """Modules that add a child and immediately call .exclude_analysis(...)
+        on it must have that exclusion captured in the ObservableSpec — without
+        this, cache replay loses the exclusion and the module re-runs against
+        its own children."""
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        module = _make_mock_module()
+
+        before = ModuleExecutionSnapshot.narrow(root, obs, module)
+
+        new_obs = root.add_observable_by_spec(F_FQDN, "evil.com")
+        new_obs._excluded_analysis.append("UserLookupAnalyzer")
+        new_obs._limited_analysis.append("LimitedAnalyzer")
+
+        after = ModuleExecutionSnapshot.narrow(root, obs, module)
+        delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
+
+        assert len(delta.new_observables) == 1
+        spec = delta.new_observables[0]
+        assert "UserLookupAnalyzer" in spec.initial_excluded_analysis
+        assert "LimitedAnalyzer" in spec.initial_limited_analysis
+
+    @pytest.mark.unit
     def test_diff_remove_tag(self, tmp_path):
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")

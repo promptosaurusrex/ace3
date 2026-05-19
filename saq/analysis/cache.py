@@ -796,6 +796,12 @@ def _apply_observable_spec(parent_analysis, spec) -> None:
         description = det_dict.get("description")
         if description:
             new_obs.add_detection_point(description, det_dict.get("details"))
+    for name in spec.initial_excluded_analysis:
+        if name not in new_obs._excluded_analysis:
+            new_obs._excluded_analysis.append(name)
+    for name in spec.initial_limited_analysis:
+        if name not in new_obs._limited_analysis:
+            new_obs._limited_analysis.append(name)
 
 
 def _apply_observable_diff(observable, diff, root) -> None:

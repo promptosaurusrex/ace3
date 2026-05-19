@@ -104,6 +104,8 @@ class TestObservableSpec:
             initial_tags=["suspicious"],
             initial_directives=["sandbox"],
             initial_detections=[{"description": "match", "details": None}],
+            initial_excluded_analysis=["MyAnalyzer", "OtherAnalyzer"],
+            initial_limited_analysis=["LimitedAnalyzer"],
         )
         d = spec.to_dict()
         restored = ObservableSpec.from_dict(d)
@@ -114,6 +116,22 @@ class TestObservableSpec:
         assert restored.initial_tags == spec.initial_tags
         assert restored.initial_directives == spec.initial_directives
         assert restored.initial_detections == spec.initial_detections
+        assert restored.initial_excluded_analysis == spec.initial_excluded_analysis
+        assert restored.initial_limited_analysis == spec.initial_limited_analysis
+
+    @pytest.mark.unit
+    def test_from_dict_backward_compat_missing_exclude_fields(self):
+        """Cache rows written before initial_excluded_analysis existed must
+        still load cleanly. Old shape → empty lists for the new fields."""
+        old_shape = {
+            "uuid": "u3",
+            "type": "user",
+            "value": "Usr123",
+            "initial_tags": ["from-old-cache"],
+        }
+        restored = ObservableSpec.from_dict(old_shape)
+        assert restored.initial_excluded_analysis == []
+        assert restored.initial_limited_analysis == []
 
 
 class TestRootDiff:

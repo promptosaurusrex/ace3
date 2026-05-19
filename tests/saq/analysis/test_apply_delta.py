@@ -12,7 +12,7 @@ from saq.analysis.module_execution_delta import (
     RootDiff,
 )
 from saq.analysis.root import RootAnalysis
-from saq.constants import F_FILE, F_FQDN, F_IPV4, F_URL, R_IS_HASH_OF
+from saq.constants import F_EMAIL_ADDRESS, F_FILE, F_FQDN, F_IPV4, F_URL, F_USER, R_IS_HASH_OF
 from saq.modules.rdap import RdapAnalysis
 
 
@@ -169,6 +169,30 @@ class TestApplyDeltaNewObservables:
         assert len(urls) == 1
         assert "from_replay" in urls[0].tags
         assert urls[0].has_directive("sandbox")
+
+    @pytest.mark.unit
+    def test_new_observable_carries_excluded_analysis_on_replay(self, tmp_path):
+        """Some analysis modules add a child observable and
+        immediately call .exclude_analysis(self) on it so the module won't
+        recurse. On cache replay that exclusion must be re-applied —
+        otherwise the cached module runs against its own children.
+        """
+        root = _make_root(tmp_path)
+        target = root.add_observable_by_spec(F_EMAIL_ADDRESS, "user@company.com")
+        spec = ObservableSpec(
+            uuid="33333333-3333-3333-3333-333333333333",
+            type=F_USER,
+            value="Usr123",
+            initial_excluded_analysis=["UserLookupAnalyzer"],
+            initial_limited_analysis=["LimitedAnalyzer"],
+        )
+        delta = _empty_delta(target, new_observables=[spec])
+        apply_delta(root, target, delta)
+
+        users = [o for o in root.all_observables if o.type == F_USER]
+        assert len(users) == 1
+        assert "UserLookupAnalyzer" in users[0]._excluded_analysis
+        assert "LimitedAnalyzer" in users[0]._limited_analysis
 
     @pytest.mark.unit
     def test_new_observable_dedup_on_replay(self, tmp_path):
