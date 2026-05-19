@@ -1121,6 +1121,97 @@ def test_validate_hunt_execution_logs_collected(test_client, auth_headers):
         assert "Test log message from hunt execution" in log_messages
 
 
+@pytest.mark.integration
+def test_validate_hunt_logs_suppressed_from_production_handlers(test_client, auth_headers):
+    """Logs generated during a /hunt/validate call must not reach the production
+    root-logger handlers (which carry the ThreadSuppressionFilter), while the caller
+    still receives them in the response."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+    from saq.logging import ThreadSuppressionFilter
+    import logging
+
+    marker = "SUPPRESSED_MARKER_validate_hunt_xyz"
+    received = []
+
+    class ProbeHandler(logging.Handler):
+        def emit(self, record):
+            received.append(record.getMessage())
+
+    # the probe stands in for a production sink: it carries the ThreadSuppressionFilter
+    # exactly as initialize_logging installs it on the real root handlers
+    probe = ProbeHandler()
+    probe.addFilter(ThreadSuppressionFilter())
+    root_logger = logging.getLogger()
+    root_logger.addHandler(probe)
+
+    try:
+        with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+            mock_manager = Mock()
+            mock_hunt = Mock(spec=QueryHunt)
+
+            def execute_with_logging(**kwargs):
+                logging.error("%s from hunt execution", marker)
+                return []
+
+            mock_hunt.execute.side_effect = execute_with_logging
+            mock_manager.load_hunt_from_config.return_value = mock_hunt
+            mock_instance = mock_hunter_service.return_value
+            mock_instance.hunt_managers = {"test": mock_manager}
+            mock_instance.load_hunt_managers = Mock()
+
+            payload = _make_compiled_payload(VALID_HUNT_YAML)
+            payload["execution_arguments"] = {
+                "start_time": "01/15/2025:10:00:00",
+                "end_time": "01/15/2025:12:00:00",
+            }
+
+            result = test_client.post(HUNT_VALIDATE_URL, json=payload, headers=auth_headers)
+
+        assert result.status_code == 200
+        data = result.get_json()
+        assert data["valid"] is True
+        # the caller still receives the log line
+        assert any(marker in line for line in data["logs"])
+        # ... but the production-style handler did not
+        assert not any(marker in m for m in received)
+
+        # negative control: a log emitted outside the suppression context still
+        # reaches the production-style handler (suppression is not a global silence)
+        logging.error("%s outside validation", marker)
+        assert any(marker in m for m in received)
+    finally:
+        root_logger.removeHandler(probe)
+
+
+@pytest.mark.integration
+def test_validate_hunt_load_phase_logs_suppressed(test_client, auth_headers):
+    """Log records emitted during the load phase of a /hunt/validate call (before hunt
+    execution) must also be kept off the production handlers."""
+    from saq.logging import ThreadSuppressionFilter
+    import logging
+
+    received = []
+
+    class ProbeHandler(logging.Handler):
+        def emit(self, record):
+            received.append(record.getMessage())
+
+    probe = ProbeHandler()
+    probe.setLevel(logging.DEBUG)
+    probe.addFilter(ThreadSuppressionFilter())
+    root_logger = logging.getLogger()
+    root_logger.addHandler(probe)
+
+    try:
+        payload = _make_compiled_payload(VALID_HUNT_YAML)
+        result = test_client.post(HUNT_VALIDATE_URL, json=payload, headers=auth_headers)
+        assert result.status_code in (200, 400)
+        # the "loading compiled hunt" debug line is emitted during the wrapped call
+        assert not any("loading compiled hunt" in m for m in received)
+    finally:
+        root_logger.removeHandler(probe)
+
+
 # =============================================================================
 # Integration Tests for /hunt/validate Endpoint - Original (pre-correlation) Events
 # =============================================================================
