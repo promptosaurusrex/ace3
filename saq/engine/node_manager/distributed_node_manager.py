@@ -1,17 +1,17 @@
 from datetime import datetime, timedelta
 import logging
-import os
 import socket
 from typing import Optional
 
 from saq.configuration.config import get_config, get_engine_config
-from saq.constants import ENV_ACE_IS_PRIMARY_NODE
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
 from saq.database.util.locking import clear_expired_locks
 from saq.database.util.node import (
     assign_node_analysis_modes,
     initialize_node,
+    is_primary_node,
+    warn_if_blob_store_not_multi_node_safe,
 )
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
@@ -86,7 +86,7 @@ class DistributedNodeManager(NodeManagerInterface):
         self.hostname = socket.gethostname()
 
         # determine if this node is the primary node from the environment variable
-        self.is_primary_node = os.environ.get(ENV_ACE_IS_PRIMARY_NODE, "1") == "1"
+        self.is_primary_node = is_primary_node()
 
     @property
     def target_nodes(self) -> list[str]:
@@ -162,6 +162,9 @@ class DistributedNodeManager(NodeManagerInterface):
             logging.info("node %s is configured as the primary node", get_global_runtime_settings().saq_node)
         else:
             logging.info("node %s is configured as a non-primary node", get_global_runtime_settings().saq_node)
+
+        # warn if a multi-node cluster is running a node-local blob store
+        warn_if_blob_store_not_multi_node_safe()
 
     def execute_primary_node_routines(self):
         """Executes primary node routines if this node is configured as the primary node via the ACE_IS_PRIMARY_NODE environment variable."""

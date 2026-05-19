@@ -16,19 +16,24 @@ filesystem link counts, because the S3 backend won't have them.
 """
 
 import hashlib
+import importlib
 import logging
 import os
 import shutil
 import tempfile
+import time
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import timedelta
-from typing import BinaryIO, Iterator, Optional, Union
+from typing import BinaryIO, Iterable, Iterator, Optional, Type, Union
 
-from sqlalchemy import delete
+from pydantic import BaseModel
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from saq.configuration.config import get_config
+from saq.configuration.schema import BlobStoreSpec
 from saq.database.model import BlobRef
 from saq.database.pool import get_db
 from saq.environment import get_base_dir
@@ -44,7 +49,99 @@ class BlobNotFound(Exception):
     pass
 
 
+# how many sha256 values to fold into a single blob_refs lookup
+_MAINTENANCE_BATCH = 500
+
+
+@dataclass
+class GlobalMaintenanceStats:
+    """Result of a maintain_global (durable-tier GC) pass."""
+    blobs_scanned: int = 0
+    blobs_deleted: int = 0
+    bytes_reclaimed: int = 0
+    skipped_referenced: int = 0
+    skipped_within_grace: int = 0
+    errors: int = 0
+
+
+@dataclass
+class LocalMaintenanceStats:
+    """Result of a maintain_local (node cache eviction) pass."""
+    cache_entries_scanned: int = 0
+    cache_entries_evicted: int = 0
+    bytes_reclaimed: int = 0
+    skipped_unflushed: int = 0   # local blob not yet confirmed in the durable tier
+    errors: int = 0
+
+
+@dataclass(frozen=True)
+class LocalCacheBudget:
+    """Eviction budget for a node's local blob cache tier.
+
+    ``max_bytes`` caps the total cache footprint (oldest-first eviction when
+    exceeded); ``max_age`` evicts any blob older than the given age. Either may
+    be None to disable that dimension.
+    """
+    max_bytes: Optional[int] = None
+    max_age: Optional[timedelta] = None
+
+
+def _is_hex(value: str) -> bool:
+    try:
+        int(value, 16)
+        return True
+    except ValueError:
+        return False
+
+
+def query_referenced_shas(shas: Iterable[str]) -> set[str]:
+    """Return the subset of ``shas`` that have at least one row in blob_refs.
+
+    Used by maintain_global implementations to decide which blobs are still
+    referenced. Batched to keep the IN-list bounded.
+    """
+    shas = list(shas)
+    referenced: set[str] = set()
+    for i in range(0, len(shas), _MAINTENANCE_BATCH):
+        batch = shas[i:i + _MAINTENANCE_BATCH]
+        referenced.update(
+            get_db().scalars(select(BlobRef.sha256).where(BlobRef.sha256.in_(batch))).all()
+        )
+    # release the read transaction so we don't hold it across the delete loop
+    get_db().commit()
+    return referenced
+
+
+class BlobStoreConfig(BaseModel):
+    """Base Pydantic config for blob store backends.
+
+    Backend implementations subclass this to declare their own config fields and
+    return the subclass from BlobStore.get_config_class().
+    """
+
+
+def resolve_blob_store_dir(configured: Optional[str]) -> str:
+    """Resolve a configured blob store root directory to an absolute path.
+
+    Absolute paths are used as-is; relative paths resolve against SAQ_HOME; an unset
+    value defaults to ``<data_dir>/blob_store``.
+    """
+    from saq.environment import get_data_dir
+    if configured:
+        return configured if os.path.isabs(configured) else os.path.join(get_base_dir(), configured)
+    return os.path.join(get_data_dir(), 'blob_store')
+
+
 class BlobStore(ABC):
+
+    @classmethod
+    def get_config_class(cls) -> Type[BlobStoreConfig]:
+        """Return the Pydantic config class used to validate this backend's config.
+
+        Mirrors AnalysisModule.get_config_class(). Backends with their own config
+        fields override this to return their BlobStoreConfig subclass.
+        """
+        return BlobStoreConfig
 
     @abstractmethod
     def put(self, data: Union[bytes, BinaryIO]) -> str:
@@ -70,11 +167,25 @@ class BlobStore(ABC):
         """Drop the dependency. Safe to call when the ref doesn't exist."""
 
     @abstractmethod
-    def gc(self, grace_period: timedelta) -> int:
-        """Delete blobs with zero references older than ``grace_period``.
+    def maintain_global(self, grace_period: timedelta, dry_run: bool = False) -> GlobalMaintenanceStats:
+        """Garbage-collect the DURABLE tier.
 
-        Deferred to Phase 2b — not scheduled in Phase 2 because nothing spills
-        to the blob store until cacheable modules opt in (Phase 3).
+        Delete blobs that have zero rows in blob_refs and whose durable-tier
+        object is older than ``grace_period``. The grace period guards the
+        window between blob_store.put() and the blob_refs row being committed.
+
+        MUST run on exactly one node (the primary) — it mutates global durable
+        state. When ``dry_run`` is True, count what would be deleted without
+        deleting anything.
+        """
+
+    @abstractmethod
+    def maintain_local(self, budget: LocalCacheBudget, dry_run: bool = False) -> LocalMaintenanceStats:
+        """Evict entries from THIS node's local cache tier.
+
+        Safe to run on every analysis node — anything evicted is re-fetchable
+        from the durable tier. Backends with no separate cache tier (the pure
+        local store) return an empty stats object.
         """
 
     @abstractmethod
@@ -84,6 +195,11 @@ class BlobStore(ABC):
         Local backend hardlinks when same-FS, falls back to copy. The S3
         backend (future) downloads to the dest path.
         """
+
+
+class LocalHardlinkBlobStoreConfig(BlobStoreConfig):
+    """Config for the local filesystem blob store backend."""
+    root_dir: Optional[str] = None
 
 
 class LocalHardlinkBlobStore(BlobStore):
@@ -97,13 +213,41 @@ class LocalHardlinkBlobStore(BlobStore):
 
     SHARD_LEN = 3
 
-    def __init__(self, root_dir: str):
-        self.root_dir = root_dir
+    @classmethod
+    def get_config_class(cls) -> Type[BlobStoreConfig]:
+        return LocalHardlinkBlobStoreConfig
+
+    def __init__(self, config: LocalHardlinkBlobStoreConfig):
+        self.config = config
+        self.root_dir = resolve_blob_store_dir(config.root_dir)
 
     def _path_for(self, sha256: str) -> str:
         if len(sha256) != 64:
             raise ValueError(f"expected 64-char sha256, got {len(sha256)} chars")
         return os.path.join(self.root_dir, sha256[:self.SHARD_LEN], sha256)
+
+    def path_for(self, sha256: str) -> str:
+        """Return the on-disk path where the blob is (or would be) stored."""
+        return self._path_for(sha256)
+
+    def iter_blobs(self) -> Iterator[tuple[str, str]]:
+        """Yield ``(sha256, absolute_path)`` for every blob currently on disk.
+
+        Names that are not a valid sharded sha256 (e.g. tempfiles left by an
+        interrupted put()) are skipped.
+        """
+        if not os.path.isdir(self.root_dir):
+            return
+        for shard in os.listdir(self.root_dir):
+            if len(shard) != self.SHARD_LEN:
+                continue
+            shard_dir = os.path.join(self.root_dir, shard)
+            if not os.path.isdir(shard_dir):
+                continue
+            for name in os.listdir(shard_dir):
+                if len(name) != 64 or not _is_hex(name) or name[:self.SHARD_LEN] != shard:
+                    continue
+                yield name, os.path.join(shard_dir, name)
 
     def put(self, data: Union[bytes, BinaryIO]) -> str:
         h = hashlib.sha256()
@@ -175,12 +319,54 @@ class LocalHardlinkBlobStore(BlobStore):
         )
         get_db().commit()
 
-    def gc(self, grace_period: timedelta) -> int:
-        # TODO (Phase 2b): walk blobs with zero refs older than grace_period
-        # and unlink them. Deferred because Phase 2 is plumbing-only and no
-        # blobs accumulate until cacheable modules opt in.
-        logging.debug("LocalHardlinkBlobStore.gc is a no-op until Phase 2b")
-        return 0
+    def maintain_global(self, grace_period: timedelta, dry_run: bool = False) -> GlobalMaintenanceStats:
+        # for the local hardlink store the filesystem IS the durable tier, so
+        # this is the real GC: walk the shard tree, drop blobs with zero
+        # blob_refs rows whose file mtime is older than the grace period.
+        stats = GlobalMaintenanceStats()
+        cutoff = time.time() - grace_period.total_seconds()
+        candidates: list[tuple[str, str, int]] = []  # (sha256, path, size)
+        for sha256, path in self.iter_blobs():
+            stats.blobs_scanned += 1
+            try:
+                st = os.stat(path)
+            except FileNotFoundError:
+                continue
+            # a blob freshly put() but not yet referenced has a recent mtime —
+            # the grace period keeps us from deleting it before the blob_refs
+            # row is committed
+            if st.st_mtime > cutoff:
+                stats.skipped_within_grace += 1
+                continue
+            candidates.append((sha256, path, st.st_size))
+
+        for i in range(0, len(candidates), _MAINTENANCE_BATCH):
+            batch = candidates[i:i + _MAINTENANCE_BATCH]
+            referenced = query_referenced_shas(c[0] for c in batch)
+            for sha256, path, size in batch:
+                if sha256 in referenced:
+                    stats.skipped_referenced += 1
+                    continue
+                if dry_run:
+                    stats.blobs_deleted += 1
+                    stats.bytes_reclaimed += size
+                    continue
+                try:
+                    os.unlink(path)
+                    stats.blobs_deleted += 1
+                    stats.bytes_reclaimed += size
+                except FileNotFoundError:
+                    pass
+                except OSError as e:
+                    logging.warning("failed to unlink blob %s: %s", path, e)
+                    stats.errors += 1
+        return stats
+
+    def maintain_local(self, budget: LocalCacheBudget, dry_run: bool = False) -> LocalMaintenanceStats:
+        # the local hardlink store IS the durable tier — there is no separate
+        # cache to evict, and removing files here would destroy the only copy
+        logging.debug("LocalHardlinkBlobStore.maintain_local is a no-op (store is the durable tier)")
+        return LocalMaintenanceStats()
 
     def materialize(self, sha256: str, dest_path: str) -> None:
         src = self._path_for(sha256)
@@ -197,21 +383,32 @@ class LocalHardlinkBlobStore(BlobStore):
 _blob_store_singleton: Optional[BlobStore] = None
 
 
+def _load_blob_store(spec: BlobStoreSpec) -> BlobStore:
+    """Load a pluggable blob store backend from its config spec."""
+    module = importlib.import_module(spec.python_module)
+    cls = getattr(module, spec.python_class)
+    config = cls.get_config_class().model_validate(spec.config)
+    return cls(config)
+
+
 def get_blob_store() -> BlobStore:
     """Return the process-wide blob store singleton.
 
-    Lazy-initialized on first call — reads ``analysis_cache.blob_store_dir``
-    from config. Defaults to ``<data_dir>/blob_store`` when unset.
+    Lazy-initialized on first call. When ``analysis_cache.blob_store`` is set, the
+    configured pluggable backend is loaded; otherwise the local hardlink store is
+    used, rooted at ``analysis_cache.blob_store_dir`` (defaulting to
+    ``<data_dir>/blob_store``).
     """
     global _blob_store_singleton
     if _blob_store_singleton is None:
-        from saq.environment import get_data_dir
-        configured = get_config().analysis_cache.blob_store_dir
-        if configured:
-            root = configured if os.path.isabs(configured) else os.path.join(get_base_dir(), configured)
+        spec = get_config().analysis_cache.blob_store
+        if spec is not None:
+            _blob_store_singleton = _load_blob_store(spec)
         else:
-            root = os.path.join(get_data_dir(), 'blob_store')
-        _blob_store_singleton = LocalHardlinkBlobStore(root)
+            configured = get_config().analysis_cache.blob_store_dir
+            _blob_store_singleton = LocalHardlinkBlobStore(
+                LocalHardlinkBlobStoreConfig(root_dir=configured)
+            )
     return _blob_store_singleton
 
 

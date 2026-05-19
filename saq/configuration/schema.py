@@ -481,14 +481,30 @@ class ObservableTypesConfig(BaseModel):
     reload_check_interval_seconds: float = Field(default=60.0, description="how often (in seconds) accessors stat the YAML and reload if mtime changed; set to 0 (or negative) to disable runtime reload entirely")
 
 
+class BlobStoreSpec(BaseModel):
+    """Selects and configures a pluggable blob store backend.
+
+    The backend class is loaded dynamically from python_module/python_class and the
+    config dict is validated against that class's get_config_class() Pydantic model —
+    the same pattern used for analysis modules.
+    """
+    python_module: str = Field(..., description="Python module containing the blob store class")
+    python_class: str = Field(..., description="blob store class name within that module")
+    config: dict = Field(default_factory=dict, description="backend-specific config, validated against the class's get_config_class()")
+
+
 class AnalysisCacheConfig(BaseModel):
     """Configuration for the analysis result cache write path and its content-addressed blob store."""
     enabled: bool = Field(default=True, description="Global kill switch for the analysis result cache write path. When false, no deltas are persisted regardless of per-module cache_ttl settings.")
     blob_store_dir: Optional[str] = Field(default=None, description="Root directory for the content-addressed blob store. If unset, defaults to <data_dir>/blob_store. Relative paths are resolved against SAQ_HOME.")
+    blob_store: Optional[BlobStoreSpec] = Field(default=None, description="pluggable blob store backend; when unset, defaults to the local hardlink store rooted at blob_store_dir")
     zstd_level: int = Field(default=3, description="zstd compression level used when serializing cached analysis deltas. Valid range 1-22; level 3 is the default for the near-optimal size/CPU tradeoff on our payload shape.")
     details_spill_bytes: int = Field(default=16 * 1024, description="Uncompressed serialized size (bytes) above which a cached analysis delta's analysis.details dict is spilled to the blob store instead of stored inline.")
     max_compressed_bytes: int = Field(default=1 * 1024 * 1024, description="Compressed size (bytes) above which a cached analysis delta is refused outright. Intended as a safety net against pathological module outputs; raise if a legitimate module needs more room.")
     prune_batch_size: int = Field(default=1000, description="Max rows the analysis_result_cache prune sweep deletes per transaction. Keeps lock windows short; lower this if prune contention becomes visible.")
+    blob_gc_grace_seconds: int = Field(default=24 * 3600, description="Durable-tier blob GC grace period (seconds). A blob with zero blob_refs rows is only deleted once its durable-tier object is older than this. Guards the window between blob_store.put() and the blob_refs row being committed.")
+    local_cache_max_age_seconds: int = Field(default=7 * 24 * 3600, description="Max age (seconds) of a blob in a node's local cache tier before local maintenance evicts it. Only meaningful for two-tier backends (e.g. S3); ignored by the pure-local backend whose store is the durable tier.")
+    local_cache_max_bytes: Optional[int] = Field(default=None, description="Optional size cap (bytes) on a node's local cache tier. When set, local maintenance evicts oldest-first until the tier is under budget. None means age-based eviction only.")
 
 
 class NRDConfig(BaseModel):
