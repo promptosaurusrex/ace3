@@ -9,11 +9,13 @@ email to an alert is the job of a separate observable modifier rule (see
 ``docs/design/newly_registered_domains.md``).
 """
 
+import os
 from datetime import datetime, timezone
 
 from saq.analysis import Analysis
 from saq.constants import F_FQDN, F_URL, AnalysisExecutionResult
 from saq.modules import AnalysisModule
+from saq.nrd import util as nrd_util
 from saq.nrd.util import is_newly_registered
 
 
@@ -72,6 +74,29 @@ class NRDAnalyzer(AnalysisModule):
     @property
     def valid_observable_types(self):
         return [F_FQDN, F_URL]
+
+    @property
+    def extended_version(self) -> dict[str, str]:
+        """Mix the NRD database's file identity into the cache key.
+
+        The NRD analyzer's output depends entirely on what's in the SQLite
+        database, which the daily refresh script *atomically swaps* (a new
+        file replaces the old — never an in-place edit). That makes
+        ``(st_mtime_ns, st_size)`` a sufficient version fingerprint: any
+        content change goes through a file replacement that moves mtime
+        forward. A content hash would be more defensive but costs hundreds
+        of ms on a multi-hundred-MB database and gains us nothing given
+        the refresh script's invariants.
+
+        Returns ``{}`` when the database file is missing — fresh-deploy /
+        pre-first-refresh state, where the analyzer also produces no
+        analysis, so the empty delta wouldn't be cached anyway.
+        """
+        try:
+            st = os.stat(nrd_util.get_database_path())
+        except FileNotFoundError:
+            return {}
+        return {"nrd_db_version": f"{st.st_mtime_ns}-{st.st_size}"}
 
     def execute_analysis(self, observable) -> AnalysisExecutionResult:
         if not is_newly_registered(observable.value):
