@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.53] - 2026-05-19
+
+- [Enhance blob store functionality with Pydantic integration](https://github.com/ACE-Collective/ace3/pull/245)
+- [use unique file name for temporary file](https://github.com/ACE-Collective/ace3/pull/248)
+- [Enhance logging suppression in hunt validation](https://github.com/ACE-Collective/ace3/pull/249)
+- [Prefers RDAP over WHOIS](https://github.com/ACE-Collective/ace3/pull/250)
+- [Opts NRD analysis module into caching](https://github.com/ACE-Collective/ace3/pull/251)
+- [Opts site tagger into cache](https://github.com/ACE-Collective/ace3/pull/252)
+- [Captures limited and excluded analysis in cache](https://github.com/ACE-Collective/ace3/pull/253)
+- [Add rule evaluation cost metrics to ObservableModifierAnalyzer](https://github.com/ACE-Collective/ace3/pull/254)
+- [Fixes race condition issue with external remediation probes](https://github.com/ACE-Collective/ace3/pull/255)
+- [Show correlated hunt time ranges in UI](https://github.com/ACE-Collective/ace3/pull/256)
+
 ## [3.0.52] - 2026-05-17
 
 - [Implement phishkit file maintenance feature](https://github.com/ACE-Collective/ace3/pull/244)
