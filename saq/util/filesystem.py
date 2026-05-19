@@ -1,4 +1,5 @@
 import fcntl
+import hashlib
 import logging
 import os
 import re
@@ -7,6 +8,9 @@ import shutil
 import tempfile
 
 from saq.environment import get_base_dir, get_temp_dir
+
+# Per-component byte limit on ext4/xfs and most Linux filesystems.
+NAME_MAX_BYTES = 255
 
 def delete_file(path: str) -> bool:
     try:
@@ -144,6 +148,30 @@ def map_mimetype_to_file_ext(target_mime_type: str, default="bin") -> str:
             return file_extensions[0]
 
     return default
+
+def shorten_basename_for_suffix(basename: str, suffix: str, max_bytes: int = NAME_MAX_BYTES) -> str:
+    """Return ``basename + suffix``, truncating ``basename`` so the result fits within
+    ``max_bytes`` when UTF-8 encoded.
+
+    When truncation is needed, an 8-char sha1 of the original basename is interpolated
+    before the suffix so distinct inputs that share a truncated prefix do not collide.
+    Output is deterministic — the same input always produces the same output, so callers
+    that retry analysis hit the same path."""
+    assert os.sep not in basename, "shorten_basename_for_suffix expects a bare basename"
+
+    combined = basename + suffix
+    if len(combined.encode("utf-8")) <= max_bytes:
+        return combined
+
+    digest = hashlib.sha1(basename.encode("utf-8")).hexdigest()[:8]
+    tail = f".{digest}{suffix}"
+    available = max_bytes - len(tail.encode("utf-8"))
+    if available < 0:
+        available = 0
+
+    truncated_bytes = basename.encode("utf-8")[:available]
+    truncated_stem = truncated_bytes.decode("utf-8", errors="ignore")
+    return f"{truncated_stem}{tail}"
 
 def safe_filename(s):
 

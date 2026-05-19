@@ -707,6 +707,56 @@ def test_basic_email_parsing(root_analysis, datadir):
             assert file_observable.has_directive(DIRECTIVE_EXTRACT_URLS)
 
 @pytest.mark.integration
+def test_long_filename_does_not_crash_analyzer(root_analysis, datadir):
+    """Regression: a 247-byte .eml basename used to crash analyze_rfc822 with ENAMETOOLONG
+    when it tried to write '<basename>.headers' (256 bytes). The analyzer must now shorten
+    the derived basenames so analysis completes successfully."""
+
+    # Reproduce the production-observed SharePoint sharing notification filename (255 bytes —
+    # exactly at the per-component limit, with no headroom for the .headers / .combined
+    # suffixes the analyzer derives).
+    long_basename = (
+        "_Share-d37b5d9a-8ba2-41f8-aa8a-47304bdbac75;rcid_f42515a2-50c3-d000-114c-7f4917c156a9;"
+        "wiid_f95a6d38-13fc-4ae5-b60b-28d6590de67b-ioe_1-tid_7a53b4fc-e87d-4c46-9972-0570ac271b27-"
+        "rh_cac_notifyp-aid_928ab984-e2fc-480a-9b28-91d1c5dfa667@odspnotify__glw5mcs4.eml"
+    )
+    assert len(long_basename.encode("utf-8")) == 255
+
+    src = str(datadir / 'emails/splunk_logging.email.rfc822')
+    dst = str(datadir / 'emails' / long_basename)
+    shutil.copy(src, dst)
+
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(dst)
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    file_observable = root_analysis.get_observable(file_observable.uuid)
+    assert file_observable
+    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    assert isinstance(email_analysis, EmailAnalysis)
+    assert email_analysis.parsing_error is None
+
+    file_observables = email_analysis.get_observables_by_type(F_FILE)
+    file_names = [_.file_name for _ in file_observables]
+
+    # Every derived file must fit within the per-component limit.
+    for name in file_names:
+        assert len(name.encode("utf-8")) <= 255, f"{name!r} exceeds NAME_MAX"
+
+    # Headers and combined files should still be produced (under shortened names).
+    assert any(name.endswith(".headers") for name in file_names), file_names
+    assert any(name.endswith(".combined") for name in file_names), file_names
+
+@pytest.mark.integration
 def test_multi_recipient_to_cc_observables(root_analysis, datadir):
     """A single To: header with multiple addresses, plus a CC: with mixed local/external recipients,
     should produce one F_EMAIL_TO per To: address and one F_EMAIL_CC per CC: address.
