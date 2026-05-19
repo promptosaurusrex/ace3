@@ -8,8 +8,10 @@ offset, and (b) we don't need a per-row alert lookup since the work item
 doesn't carry a storage_dir.
 """
 from datetime import UTC, datetime
+import json
 import logging
 from threading import Event, Thread
+from typing import Optional
 from uuid import uuid4
 
 from sqlalchemy import or_, text
@@ -23,6 +25,33 @@ from saq.remediation.external.types import CheckStatus, CheckWorkItem
 from saq.util.time import calculate_backoff_delay
 
 
+def _decode_context(row: ExternalRemediationCheck) -> Optional[dict]:
+    """Deserialize ``context_json`` into a dict, defensively.
+
+    NULL → None (the common case for legacy rows and probes that don't use
+    context). Malformed JSON or a non-dict payload is logged and treated as
+    None so one bad row can't poison the queue.
+    """
+    raw = row.context_json
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        logging.warning(
+            "external_remediation_check.id=%d has unparseable context_json: %s",
+            row.id, exc,
+        )
+        return None
+    if not isinstance(value, dict):
+        logging.warning(
+            "external_remediation_check.id=%d context_json is not a dict (got %s)",
+            row.id, type(value).__name__,
+        )
+        return None
+    return value
+
+
 def build_work_item(row: ExternalRemediationCheck) -> CheckWorkItem:
     return CheckWorkItem(
         id=row.id,
@@ -33,6 +62,7 @@ def build_work_item(row: ExternalRemediationCheck) -> CheckWorkItem:
         retry_count=row.retry_count,
         max_retries=row.max_retries,
         deadline=row.deadline,
+        context=_decode_context(row),
     )
 
 

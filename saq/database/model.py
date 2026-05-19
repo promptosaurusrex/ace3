@@ -2156,6 +2156,12 @@ class ExternalRemediationCheck(Base):
     # vendor history.
     events_json: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True)
 
+    # Opaque JSON dict frozen at queue time. Surfaced back to the probe as
+    # ``ProbeTarget.context`` on every attempt, including background re-polls
+    # by the daemon worker. Probes own their own context contract — the
+    # persistence layer treats the payload as a passthrough.
+    context_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     @property

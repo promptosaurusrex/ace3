@@ -118,6 +118,7 @@ class ExternalRemediationCheckWorker(CheckListener):
             deadline=work.deadline,
             retry_count=work.retry_count,
             max_retries=work.max_retries,
+            context=work.context,
         )
 
         logging.info(

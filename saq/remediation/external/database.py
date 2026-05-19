@@ -6,13 +6,25 @@ ORM models. Higher-level lifecycle (locking, dispatch) lives in
 :mod:`saq.remediation.external.collector` and :mod:`.worker`.
 """
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+import json
+from typing import Any, Optional
 
 from sqlalchemy import func
 
 from saq.database.model import ExternalRemediationCheck, ExternalRemediationCheckHistory
 from saq.database.pool import get_db
 from saq.remediation.external.types import CheckResult, CheckStatus
+
+
+def _json_default(value: Any) -> str:
+    """JSON encoder fallback that converts datetimes to ISO strings.
+
+    Anything else unserializable raises ``TypeError`` — loud failure beats
+    silently dropping probe context.
+    """
+    if isinstance(value, datetime):
+        return value.isoformat()
+    raise TypeError(f"unserializable context value of type {type(value).__name__}")
 
 
 def queue_external_check(
@@ -22,10 +34,17 @@ def queue_external_check(
     alert_uuid: str,
     max_retries: int,
     deadline_seconds: int,
+    context: Optional[dict] = None,
 ) -> int:
     """Create a NEW check row, returning its id. Dedup is the caller's job —
     use :func:`get_pending_external_check_by_observable` first to avoid stacking
-    duplicate active checks for the same (probe, observable, alert) tuple."""
+    duplicate active checks for the same (probe, observable, alert) tuple.
+
+    ``context`` is an opaque JSON-serializable dict frozen on the row at queue
+    time and rehydrated as :attr:`ProbeTarget.context` on every later attempt,
+    including background re-polls by the daemon. Each probe owns the contract
+    for the keys it cares about — the persistence layer does not introspect.
+    """
     if not alert_uuid:
         raise ValueError("alert_uuid is required for external remediation check")
 
@@ -37,6 +56,7 @@ def queue_external_check(
         alert_uuid=alert_uuid,
         max_retries=max_retries,
         deadline=deadline,
+        context_json=json.dumps(context, default=_json_default) if context else None,
     )
     get_db().add(check)
     get_db().flush()
