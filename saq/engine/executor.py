@@ -252,7 +252,18 @@ class AnalysisExecutionContext:
                     "root_uuid": self.root.uuid,
                     "exec_count": self.total_exec_count.get(key, 0),
                     "alert_type": self.root.alert_type,
-                    "is_alert": bool(self.root.alert_type),
+                    # The promotion-to-alert signal in ACE is the
+                    # analysis_mode transitioning to CORRELATION (see
+                    # analysis_orchestrator._convert_to_alert), which is
+                    # what causes the row to be inserted into the alerts
+                    # table that the GUI reads.
+                    # CAVEAT: for the FIRST execution context of a freshly
+                    # promoted root, this fires before the mode change /
+                    # _convert_to_alert have happened, so is_alert will be
+                    # false here. Subsequent correlation-mode contexts will
+                    # be true; Splunk `max(is_alert) by root_uuid` surfaces
+                    # the correct aggregate per root.
+                    "is_alert": self.root.analysis_mode == ANALYSIS_MODE_CORRELATION,
                     "queue": self.root.queue,
                 }
 
