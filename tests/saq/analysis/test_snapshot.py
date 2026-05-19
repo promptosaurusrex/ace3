@@ -7,7 +7,7 @@ from saq.analysis.analysis import Analysis, SummaryDetail
 from saq.analysis.root import RootAnalysis
 from saq.analysis.snapshot import ModuleExecutionSnapshot, _ObservableState
 from saq.constants import F_IPV4, F_FQDN, F_EMAIL_ADDRESS, R_IS_HASH_OF
-from saq.modules.whois import WhoisAnalysis
+from saq.modules.rdap import RdapAnalysis
 
 
 def _make_root(tmp_path):
@@ -561,11 +561,11 @@ class TestAnalysisDetailsCapture:
         # observable._analysis) — the snapshot's _get_module_path falls
         # back to config.name when the mock fails the MODULE_PATH
         # isinstance assertion.
-        module = _make_mock_module(name="saq.modules.whois:WhoisAnalysis")
+        module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
-        # Simulate a module run: install a WhoisAnalysis with details.
-        analysis = WhoisAnalysis()
+        # Simulate a module run: install a RdapAnalysis with details.
+        analysis = RdapAnalysis()
         analysis.details = {"registrar": "Test", "domain_name": "example.com"}
         obs.analysis_tree_manager.add_analysis(obs, analysis)
         after = ModuleExecutionSnapshot.narrow(root, obs, module)
@@ -587,10 +587,10 @@ class TestAnalysisDetailsCapture:
 
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
-        module = _make_mock_module(name="saq.modules.whois:WhoisAnalysis")
+        module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
-        analysis = WhoisAnalysis()
+        analysis = RdapAnalysis()
         analysis.summary_details.append(
             SummaryDetail(header="Registrar", content="Test Registrar")
         )
@@ -630,10 +630,10 @@ class TestDelayedAnalysisTransitions:
 
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
-        module = _make_mock_module(name="saq.modules.whois:WhoisAnalysis")
+        module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
-        analysis = WhoisAnalysis()
+        analysis = RdapAnalysis()
         analysis.delayed = True
         obs.analysis_tree_manager.add_analysis(obs, analysis)
         after = ModuleExecutionSnapshot.narrow(root, obs, module)
@@ -652,10 +652,10 @@ class TestDelayedAnalysisTransitions:
 
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
-        module = _make_mock_module(name="saq.modules.whois:WhoisAnalysis")
+        module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
 
         # First call: delayed analysis already in slot.
-        analysis = WhoisAnalysis()
+        analysis = RdapAnalysis()
         analysis.delayed = True
         obs.analysis_tree_manager.add_analysis(obs, analysis)
 
@@ -684,9 +684,9 @@ class TestDelayedAnalysisTransitions:
 
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
-        module = _make_mock_module(name="saq.modules.whois:WhoisAnalysis")
+        module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
 
-        analysis = WhoisAnalysis()
+        analysis = RdapAnalysis()
         analysis.delayed = True
         obs.analysis_tree_manager.add_analysis(obs, analysis)
 
@@ -707,9 +707,9 @@ class TestDelayedAnalysisTransitions:
 
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
-        module = _make_mock_module(name="saq.modules.whois:WhoisAnalysis")
+        module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
 
-        analysis = WhoisAnalysis()
+        analysis = RdapAnalysis()
         analysis.delayed = False  # synchronous module — already complete
         obs.analysis_tree_manager.add_analysis(obs, analysis)
 

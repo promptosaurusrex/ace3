@@ -19,19 +19,21 @@ Two-layer enforcement:
    (with external dependencies mocked) and asserts ``not
    delta.has_removals and not delta.has_file_observables``.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable
 
 import pytest
 import yaml
 
-from saq.analysis.root import RootAnalysis
 from saq.analysis.snapshot import ModuleExecutionSnapshot
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import (
-    ANALYSIS_MODULE_WHOIS_ANALYZER,
+    ANALYSIS_MODULE_SITE_TAGGER,
+    ANALYSIS_MODULE_NRD_ANALYZER,
+    ANALYSIS_MODULE_RDAP_ANALYZER,
     AnalysisExecutionResult,
     F_FQDN,
+    F_IPV4,
 )
 from tests.saq.helpers import create_root_analysis
 
@@ -40,40 +42,135 @@ from tests.saq.helpers import create_root_analysis
 # Per-module contract runners
 # ----------------------------------------------------------------------
 
-def _check_whois_analyzer(test_context, monkeypatch):
-    """Runs WhoisAnalyzer with a mocked whois.whois() and returns the
-    delta produced. Mirrors the mock pattern in test_whois.py.
+def _check_rdap_analyzer(test_context, monkeypatch):
+    """Runs RdapAnalyzer with a mocked ``whoisit.domain()`` (and a
+    failing ``whois.whois()`` to guard against the fallback firing).
+    Returns the delta produced. Mirrors the mock pattern in
+    test_rdap.py.
     """
-    from saq.modules.whois import WhoisAnalyzer
+    from saq.modules.rdap import RdapAnalyzer
 
-    class MockWhoisResult:
-        def __init__(self, data):
-            self.data = data
-            self.text = data.get("text", "mock whois text")
-
-        def get(self, key, default=None):
-            return self.data.get(key, default)
-
-    fake_data = {
-        "domain_name": "EXAMPLE.COM",
-        "registrar": "Test Registrar",
-        "name_servers": ["NS1.EXAMPLE.COM"],
-        "creation_date": datetime(2000, 1, 1),
-        "updated_date": datetime(2024, 1, 1),
-        "text": "mock whois response body",
+    fake_rdap = {
+        "name": "EXAMPLE.COM",
+        "url": "https://rdap.example.test/com/v1/domain/EXAMPLE.COM",
+        "nameservers": ["NS1.EXAMPLE.COM"],
+        "registration_date": datetime(2000, 1, 1, tzinfo=timezone.utc),
+        "last_changed_date": datetime(2024, 1, 1, tzinfo=timezone.utc),
+        "expiration_date": datetime(2026, 1, 1, tzinfo=timezone.utc),
+        "entities": {
+            "registrar": [{"name": "Test Registrar", "email": "noc@example.test"}],
+        },
+        "raw": {"objectClassName": "domain"},
     }
-    monkeypatch.setattr(
-        "saq.modules.whois.whois.whois",
-        lambda _domain: MockWhoisResult(fake_data),
-    )
+    monkeypatch.setattr("saq.modules.rdap.whoisit.is_bootstrapped", lambda: True)
+    monkeypatch.setattr("saq.modules.rdap.whoisit.bootstrap", lambda: True)
+    monkeypatch.setattr("saq.modules.rdap.whoisit.domain", lambda _d, **_kw: fake_rdap)
+
+    def _whois_must_not_be_called(_domain):
+        raise AssertionError(
+            "whois.whois must not be called when RDAP succeeds"
+        )
+
+    monkeypatch.setattr("saq.modules.rdap.whois.whois", _whois_must_not_be_called)
 
     root = create_root_analysis()
     root.initialize_storage()
     obs = root.add_observable_by_spec(F_FQDN, "example.com")
 
-    analyzer = WhoisAnalyzer(
+    analyzer = RdapAnalyzer(
         context=test_context,
-        config=get_analysis_module_config(ANALYSIS_MODULE_WHOIS_ANALYZER),
+        config=get_analysis_module_config(ANALYSIS_MODULE_RDAP_ANALYZER),
+    )
+    analyzer.root = root
+
+    before = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+    result = analyzer.execute_analysis(obs)
+    after = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    return ModuleExecutionSnapshot.diff(before, after, analyzer, obs)
+
+
+def _check_nrd_analyzer(test_context, monkeypatch):
+    """Runs NRDAnalyzer against a real on-disk SQLite NRD DB containing
+    a single hit row. Mirrors the ``nrd_db`` fixture in test_nrd.py.
+    """
+    import sqlite3
+    import tempfile
+    from pathlib import Path
+
+    from saq.modules.nrd import NRDAnalyzer
+    from saq.nrd import util as nrd_util
+    from saq.nrd.util import _reset_connection_for_tests
+
+    tmp_dir = Path(tempfile.mkdtemp())
+    db_path = tmp_dir / "nrd_index.db"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE nrd (domain TEXT PRIMARY KEY) WITHOUT ROWID;
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
+            """
+        )
+        with conn:
+            conn.execute("INSERT INTO nrd (domain) VALUES ('example.com')")
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(nrd_util, "get_database_path", lambda: db_path)
+    _reset_connection_for_tests()
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    obs = root.add_observable_by_spec(F_FQDN, "example.com")
+
+    analyzer = NRDAnalyzer(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_NRD_ANALYZER),
+    )
+    analyzer.root = root
+
+    before = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+    result = analyzer.execute_analysis(obs)
+    after = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+
+    _reset_connection_for_tests()
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    return ModuleExecutionSnapshot.diff(before, after, analyzer, obs)
+
+
+def _check_site_tagger(test_context, monkeypatch):
+    """Runs SiteTagAnalyzer against a temp CSV containing one CIDR rule
+    that matches an F_IPV4 observable. Verifies the live analyzer's
+    delta is contract-clean — single tag added to the target observable,
+    no children, no removals, no file observables.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from saq.modules.tag import SiteTagAnalyzer
+
+    tmp_dir = Path(tempfile.mkdtemp())
+    csv_path = tmp_dir / "site_tags.csv"
+    csv_path.write_text("ipv4,cidr,false,10.0.0.0/8,internal-network\n")
+
+    # Override the CSV path via the analyzer's csv_file property so we don't
+    # touch the real shipped file.
+    monkeypatch.setattr(
+        SiteTagAnalyzer,
+        "csv_file",
+        property(lambda _self: str(csv_path)),
+    )
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    obs = root.add_observable_by_spec(F_IPV4, "10.1.2.3")
+
+    analyzer = SiteTagAnalyzer(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_SITE_TAGGER),
     )
     analyzer.root = root
 
@@ -90,10 +187,12 @@ def _check_whois_analyzer(test_context, monkeypatch):
 # without registering it here fails
 # ``test_yaml_cache_ttl_modules_have_contract_check``.
 #
-# Key: YAML config block name (e.g. ``analysis_module_whois_analyzer``).
+# Key: YAML config block name (e.g. ``analysis_module_rdap_analyzer``).
 # Value: callable(test_context, monkeypatch) -> ModuleExecutionDelta.
 CONTRACT_CHECKERS: dict[str, Callable] = {
-    "analysis_module_whois_analyzer": _check_whois_analyzer,
+    "analysis_module_site_tagger": _check_site_tagger,
+    "analysis_module_nrd_analyzer": _check_nrd_analyzer,
+    "analysis_module_rdap_analyzer": _check_rdap_analyzer,
 }
 
 

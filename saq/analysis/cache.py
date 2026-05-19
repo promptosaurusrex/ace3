@@ -342,7 +342,7 @@ def prune(blob_store: BlobStore, batch_size: Optional[int] = None) -> int:
 
     The backend's ``unreference`` is called *after* each batch commits for any
     housekeeping it needs — for the local backend this is a no-op (actual blob
-    deletion lives in ``blob_store.gc()``).
+    deletion lives in ``blob_store.maintain_global()``).
 
     ``batch_size`` defaults to ``analysis_cache.prune_batch_size``;
     tests may override it for finer-grained control.

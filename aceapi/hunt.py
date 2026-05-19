@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 from typing import List, Optional
 
 import pytz
@@ -23,6 +24,7 @@ from saq.constants import ANALYSIS_MODE_CORRELATION, QUEUE_DEFAULT
 from saq.error.remote import RemoteApiError
 from saq.database.util.alert import ALERT
 from saq.environment import get_data_dir
+from saq.logging import suppress_external_logging
 from saq.util.uuid import storage_dir_from_uuid
 
 
@@ -39,15 +41,22 @@ def get_compiled_hunt_dir() -> str:
 
 
 class ListLogHandler(logging.Handler):
-    """A logging handler that collects log records into a list."""
+    """A logging handler that collects log records into a list.
+
+    Only records emitted on the thread that constructed the handler are
+    collected, so concurrent requests in the multi-threaded API process do not
+    leak their log records into each other's collected list.
+    """
     def __init__(self, log_list: List[logging.LogRecord]):
         super().__init__()
         self.log_list = log_list
+        self.thread_id = threading.get_ident()
         self.setLevel(logging.INFO)
 
     def emit(self, record: logging.LogRecord):
-        """Append the log record to the list."""
-        self.log_list.append(record)
+        """Append the log record to the list if it was emitted on our thread."""
+        if record.thread == self.thread_id:
+            self.log_list.append(record)
 
 
 class ExecutionArguments(BaseModel):
@@ -232,31 +241,32 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
 @hunt_bp.route('/validate', methods=['POST'])
 @api_auth_check("hunt", "write")
 def validate_hunt():
-    if not request.json:
-        return jsonify({"valid": False, "error": "request body must be JSON"}), 400
+    with suppress_external_logging():
+        if not request.json:
+            return jsonify({"valid": False, "error": "request body must be JSON"}), 400
 
-    if "compiled_hunt" not in request.json:
-        return jsonify({"valid": False, "error": "missing 'compiled_hunt' field"}), 400
+        if "compiled_hunt" not in request.json:
+            return jsonify({"valid": False, "error": "missing 'compiled_hunt' field"}), 400
 
-    try:
-        compiled = CompiledHunt.model_validate(request.json["compiled_hunt"])
-    except ValidationError as e:
-        return jsonify({"valid": False, "error": f"invalid compiled_hunt: {e}"}), 400
-
-    temp_dir = tempfile.mkdtemp(dir=get_compiled_hunt_dir())
-
-    try:
         try:
-            logging.debug(
-                "loading compiled hunt version=%s package_root=%s assets=%s",
-                compiled.version,
-                compiled.package_root,
-                len(compiled.assets),
-            )
-            target_file_path = load_compiled_hunt(compiled, temp_dir)
-        except Exception as e:
-            return jsonify({"valid": False, "error": f"error loading compiled hunt: {e}"}), 400
+            compiled = CompiledHunt.model_validate(request.json["compiled_hunt"])
+        except ValidationError as e:
+            return jsonify({"valid": False, "error": f"invalid compiled_hunt: {e}"}), 400
 
-        return _validate_and_execute(target_file_path, request.json)
-    finally:
-        shutil.rmtree(temp_dir)
+        temp_dir = tempfile.mkdtemp(dir=get_compiled_hunt_dir())
+
+        try:
+            try:
+                logging.debug(
+                    "loading compiled hunt version=%s package_root=%s assets=%s",
+                    compiled.version,
+                    compiled.package_root,
+                    len(compiled.assets),
+                )
+                target_file_path = load_compiled_hunt(compiled, temp_dir)
+            except Exception as e:
+                return jsonify({"valid": False, "error": f"error loading compiled hunt: {e}"}), 400
+
+            return _validate_and_execute(target_file_path, request.json)
+        finally:
+            shutil.rmtree(temp_dir)

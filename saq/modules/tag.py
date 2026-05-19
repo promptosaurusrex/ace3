@@ -133,9 +133,24 @@ class UserDefinedTaggingAnalyzer(AnalysisModule):
 
         return AnalysisExecutionResult.COMPLETED
 
+KEY_SITE_TAGS_ADDED = "tags_added"
+
+
 class SiteTagAnalysis(Analysis):
     """Tags observables defined in etc/tags.csv"""
-    pass
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.details = {KEY_SITE_TAGS_ADDED: []}
+
+    @property
+    def tags_added(self) -> list[str]:
+        return self.details[KEY_SITE_TAGS_ADDED]
+
+    def generate_summary(self) -> Optional[str]:
+        if not self.tags_added:
+            return None
+        return f"Site Tags: {', '.join(self.tags_added)}"
 
 class _tag_mapping:
 
@@ -221,7 +236,7 @@ class SiteTagAnalyzer(AnalysisModule):
         pass
 
     def is_excluded(self, observable):
-        return False 
+        return False
 
     def verify_environment(self):
         self.verify_path_exists(self.csv_file)
@@ -242,12 +257,37 @@ class SiteTagAnalyzer(AnalysisModule):
     def valid_observable_types(self):
         return None
 
+    @property
+    def extended_version(self) -> dict[str, str]:
+        """Mix the tag-rules CSV's file identity into the cache key.
+
+        The analyst-editable ``site_tags.csv`` is reloaded in-process via
+        ``watch_file`` whenever the file changes (see __init__). For
+        caching to stay correct across edits, the cache key must also
+        invalidate — same ``(mtime_ns, size)`` shape as NRD, just against
+        a small CSV instead of a multi-MB SQLite DB.
+
+        Returns ``{}`` when the CSV is missing — fresh-deploy state where
+        ``tag_mapping`` is empty so the analyzer produces no analysis
+        anyway, and the resulting empty delta wouldn't be cached.
+        """
+        try:
+            st = os.stat(self.csv_file)
+        except FileNotFoundError:
+            return {}
+        return {"site_tags_version": f"{st.st_mtime_ns}-{st.st_size}"}
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.tag_mapping = {} # key = type, value = [_tag_mapping]
         self.watch_file(self.csv_file, self.load_csv_file)
 
     def load_csv_file(self):
+        # Reset the mapping before reloading — watch_file fires this callback
+        # on every detected mtime change for the lifetime of the analyzer
+        # instance. Without the clear, each reload appends every rule again,
+        # producing duplicate matches in execute_analysis.
+        self.tag_mapping.clear()
         # load the configuration
         with open(self.csv_file, 'r') as fp:
             for row in csv.reader(fp):
@@ -275,13 +315,20 @@ class SiteTagAnalyzer(AnalysisModule):
         if observable.type not in self.tag_mapping:
             return AnalysisExecutionResult.COMPLETED
 
-        analysis = self.create_analysis(observable)
+        # Defer create_analysis until a rule actually matches — otherwise
+        # every observable whose type has any mapper produces an empty
+        # SiteTagAnalysis with no body. That clutters root.json and (under
+        # caching) forces a cache row per no-match observable.
+        analysis = None
 
         for mapper in self.tag_mapping[observable.type]:
             if mapper.matches(observable.value):
                 logging.debug("{} matches {}".format(observable, mapper))
+                if analysis is None:
+                    analysis = self.create_analysis(observable)
                 for tag in mapper.tags:
                     observable.add_tag(tag)
+                    analysis.tags_added.append(tag)
 
         return AnalysisExecutionResult.COMPLETED
 

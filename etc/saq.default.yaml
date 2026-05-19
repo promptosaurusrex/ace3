@@ -1222,10 +1222,10 @@ analysis_module_dns_analyzer:
   # use this if you are in AWS and your target is inside target network
   ssh_host: ""
 
-analysis_module_whois_analyzer:
-  name: whois_analyzer
-  python_module: saq.modules.whois
-  python_class: WhoisAnalyzer
+analysis_module_rdap_analyzer:
+  name: rdap_analyzer
+  python_module: saq.modules.rdap
+  python_class: RdapAnalyzer
   enabled: true
   cache_ttl: 604800  # 7 days
 
@@ -1234,6 +1234,7 @@ analysis_module_nrd_analyzer:
   python_module: saq.modules.nrd
   python_class: NRDAnalyzer
   enabled: true
+  cache_ttl: 86400  # 24 hours - aligned with the daily refresh; extended_version drives invalidation when the DB rotates ahead of TTL
 
 analysis_module_active_directory_analyzer:
   name: active_directory_analyzer
@@ -1900,6 +1901,7 @@ analysis_module_site_tagger:
   # value: the value to match against
   # tags: list of tags separated by | (pipe)
   csv_file: data/etc/site_tags.csv
+  cache_ttl: 2592000  # 30 days — analyst edits to the CSV file invalidate the cache key via extended_version (mtime+size), so this TTL is just the upper bound for stable rules
 
 analysis_module_zip_encryption_analyzer:
   name: zip_encryption_analyzer
@@ -2072,10 +2074,10 @@ module_group_correlation:
     - parse_url
     - pcap_conversation_extraction
     - phishkit_analyzer
+    - rdap_analyzer
     - snort_signature_analysis_v1
     - url_email_pivot_analyzer
     - user_analyzer
-    - whois_analyzer
 
 module_group_yara:
   name: yara

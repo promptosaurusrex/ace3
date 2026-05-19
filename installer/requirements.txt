@@ -60,6 +60,7 @@ pytest-randomly
 python-dateutil
 python-magic
 python-whois
+whoisit
 pytz
 PyYAML
 rarfile
