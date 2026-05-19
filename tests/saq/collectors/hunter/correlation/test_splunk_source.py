@@ -129,3 +129,37 @@ class TestSplunkSourceMetadata:
                 source_options={"some_key": "some_value"},
             )
             assert results == []
+
+
+@pytest.mark.unit
+class TestSplunkSourceTimespecFormatting:
+    """Correlation Trace UI displays the time bounds in source-native syntax so
+    analysts can paste them back into the data source. For Splunk that means
+    `earliest=MM/DD/YYYY:HH:MM:SS latest=…` rendered in the configured TZ."""
+
+    def test_format_timespec_uses_configured_timezone(self):
+        # UTC 12:26-12:31 → EDT (UTC-4) 08:26-08:31 on 2026-05-18
+        start = datetime.datetime(2026, 5, 18, 12, 26, 32, tzinfo=datetime.timezone.utc)
+        end = datetime.datetime(2026, 5, 18, 12, 31, 32, tzinfo=datetime.timezone.utc)
+        mock_config = MagicMock(timezone="America/New_York")
+        with patch(
+            "saq.collectors.hunter.correlation.sources.splunk.get_splunk_config",
+            return_value=mock_config,
+        ):
+            source = SplunkQuerySource("default")
+            assert source.format_timespec_for_display(start, end) == (
+                "earliest=05/18/2026:08:26:32 latest=05/18/2026:08:31:32"
+            )
+
+    def test_format_timespec_in_utc_config(self):
+        start = datetime.datetime(2026, 5, 18, 12, 26, 32, tzinfo=datetime.timezone.utc)
+        end = datetime.datetime(2026, 5, 18, 12, 31, 32, tzinfo=datetime.timezone.utc)
+        mock_config = MagicMock(timezone="UTC")
+        with patch(
+            "saq.collectors.hunter.correlation.sources.splunk.get_splunk_config",
+            return_value=mock_config,
+        ):
+            source = SplunkQuerySource("utc_splunk")
+            assert source.format_timespec_for_display(start, end) == (
+                "earliest=05/18/2026:12:26:32 latest=05/18/2026:12:31:32"
+            )

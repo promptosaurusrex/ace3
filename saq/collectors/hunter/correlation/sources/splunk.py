@@ -2,7 +2,10 @@ import datetime
 import logging
 from typing import Optional
 
+import pytz
+
 from saq.collectors.hunter.correlation.registry import QuerySource
+from saq.configuration.config import get_splunk_config
 
 
 class SplunkQuerySource(QuerySource):
@@ -33,3 +36,18 @@ class SplunkQuerySource(QuerySource):
             end=end_time,
             timeout=timeout,
         )
+
+    def format_timespec_for_display(
+        self,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+    ) -> str:
+        # Correlation queries currently execute against event time (SplunkClient
+        # default `use_index_time=False`), so the display uses `earliest=/latest=`
+        # rather than the index-time prefix. Timezone matches the original-query
+        # rendering in saq/modules/splunk.py:fill_target_query_timespec so analysts
+        # see one consistent TZ across the alert UI.
+        tz = pytz.timezone(get_splunk_config(self.config_name).timezone)
+        earliest = start_time.astimezone(tz).strftime("%m/%d/%Y:%H:%M:%S")
+        latest = end_time.astimezone(tz).strftime("%m/%d/%Y:%H:%M:%S")
+        return f"earliest={earliest} latest={latest}"

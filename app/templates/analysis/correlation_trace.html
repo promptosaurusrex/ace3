@@ -139,7 +139,13 @@
         </div>
         {% if trans.rendered_command %}
             <div class="collapse" id="ct_cmd_{{ uid }}">
-                <pre class="ct-cmd">{{ trans.rendered_command }}</pre>
+                {% if not trans.query_time_spec and trans.query_start_time and trans.query_end_time %}
+                    <div class="ct-timespec text-muted small mb-1">
+                        <i class="bi bi-clock-history"></i>
+                        Time range: <code>{{ trans.query_start_time }}</code> → <code>{{ trans.query_end_time }}</code>
+                    </div>
+                {% endif %}
+                <pre class="ct-cmd">{%- if trans.query_time_spec %}{{ trans.query_time_spec }} {% endif -%}{{ trans.rendered_command }}</pre>
             </div>
         {% endif %}
         {% if trans.error %}
@@ -387,8 +393,14 @@
             {{ render_transform_full_value_pane(step_wrapper, uid, event_full) }}
             {% if step.rendered_command or step.error %}
                 <div class="collapse ct-pl-details" id="ct_cmd_{{ uid }}">
+                    {% if step.rendered_command and not step.query_time_spec and step.query_start_time and step.query_end_time %}
+                        <div class="ct-timespec text-muted small mb-1">
+                            <i class="bi bi-clock-history"></i>
+                            Time range: <code>{{ step.query_start_time }}</code> → <code>{{ step.query_end_time }}</code>
+                        </div>
+                    {% endif %}
                     {% if step.rendered_command %}
-                        <pre class="ct-cmd">{{ step.rendered_command }}</pre>
+                        <pre class="ct-cmd">{%- if step.query_time_spec %}{{ step.query_time_spec }} {% endif -%}{{ step.rendered_command }}</pre>
                     {% endif %}
                     {% if step.error %}
                         <div class="alert alert-danger ct-error py-1 px-2 mb-1">

@@ -7,10 +7,11 @@ from typing import Optional
 from jinja2.sandbox import SandboxedEnvironment
 
 from saq.collectors.hunter.correlation.actions import ActionResult, execute_action
-from saq.collectors.hunter.correlation.commands import execute_command
+from saq.collectors.hunter.correlation.commands import _resolve_time_range, execute_command
 from saq.configuration.config import get_config
 from saq.configuration.encryption import export_encrypted_passwords
 from saq.collectors.hunter.correlation.expressions import build_jinja_context, evaluate_expression_traced
+from saq.collectors.hunter.correlation.registry import get_query_source
 from saq.collectors.hunter.correlation.schema import (
     ActionConfig,
     CommandConfig,
@@ -398,6 +399,29 @@ class CorrelationEngine:
             self._secrets,
         )
 
+        # Capture the resolved query window for tracing. _resolve_time_range will
+        # run again inside execute_command; calling it here is cheap and lets us
+        # record the bounds even if a later failure prevents execute_command from
+        # completing. Failures here are non-fatal — the real execution path will
+        # surface them as _StepError.
+        effective_query_command = self._effective_query_command(transform.command)
+        if effective_query_command is not None:
+            try:
+                q_start, q_end = _resolve_time_range(
+                    effective_query_command, event, transform.type,
+                    self.hunt_start_time, self.hunt_end_time, self._current_source,
+                )
+                transform_trace.query_start_time = q_start
+                transform_trace.query_end_time = q_end
+                try:
+                    source = get_query_source(effective_query_command.source)
+                except ValueError:
+                    source = None
+                if source is not None:
+                    transform_trace.query_time_spec = source.format_timespec_for_display(q_start, q_end)
+            except Exception:
+                pass
+
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
                 output = execute_command(
@@ -490,6 +514,17 @@ class CorrelationEngine:
             for predef in self.predefined_commands:
                 if predef.name == command.name and predef.type == "query":
                     return predef.source
+        return None
+
+    def _effective_query_command(self, command: CommandConfig) -> Optional[CommandConfig]:
+        """Return the CommandConfig that will actually execute against a QuerySource,
+        resolving `defined` indirection. Returns None for non-query commands."""
+        if command.type == "query":
+            return command
+        if command.type == "defined" and command.name:
+            for predef in self.predefined_commands:
+                if predef.name == command.name and predef.type == "query":
+                    return predef.to_command_config(command.arguments)
         return None
 
     def _render_command_summary(

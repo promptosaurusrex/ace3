@@ -1,3 +1,4 @@
+import datetime
 from typing import Literal, Optional, Union
 
 from pydantic import BaseModel, Field
@@ -61,6 +62,9 @@ class TransformTrace(BaseModel):
     property_value: Optional[str] = Field(default=None, description="For property transforms: truncated repr of value set")
     result_count: Optional[int] = Field(default=None, description="Number of result rows from command output")
     merge_dropped: Optional[int] = Field(default=None, description="For merge transforms: count of incoming events dropped for a missing/unparseable timestamp")
+    query_start_time: Optional[datetime.datetime] = Field(default=None, description="Resolved earliest bound for the executed query. None for non-query commands or when resolution failed before execution.")
+    query_end_time: Optional[datetime.datetime] = Field(default=None, description="Resolved latest bound for the executed query. None for non-query commands or when resolution failed before execution.")
+    query_time_spec: Optional[str] = Field(default=None, description="Source-native display string for the query's time bounds (e.g. Splunk's `earliest=…/latest=…`). Built by QuerySource.format_timespec_for_display. None for non-query commands.")
     error: Optional[str] = Field(default=None, description="Error message if command failed")
 
 
