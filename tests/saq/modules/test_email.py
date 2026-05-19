@@ -708,18 +708,11 @@ def test_basic_email_parsing(root_analysis, datadir):
 
 @pytest.mark.integration
 def test_long_filename_does_not_crash_analyzer(root_analysis, datadir):
-    """Regression: a 247-byte .eml basename used to crash analyze_rfc822 with ENAMETOOLONG
-    when it tried to write '<basename>.headers' (256 bytes). The analyzer must now shorten
-    the derived basenames so analysis completes successfully."""
+    """Regression: a .eml basename at the 255-byte per-component limit used to crash
+    analyze_rfc822 with ENAMETOOLONG when it tried to write '<basename>.headers'
+    (263 bytes). The analyzer must now shorten the derived basenames."""
 
-    # Reproduce the production-observed SharePoint sharing notification filename (255 bytes —
-    # exactly at the per-component limit, with no headroom for the .headers / .combined
-    # suffixes the analyzer derives).
-    long_basename = (
-        "_Share-d37b5d9a-8ba2-41f8-aa8a-47304bdbac75;rcid_f42515a2-50c3-d000-114c-7f4917c156a9;"
-        "wiid_f95a6d38-13fc-4ae5-b60b-28d6590de67b-ioe_1-tid_7a53b4fc-e87d-4c46-9972-0570ac271b27-"
-        "rh_cac_notifyp-aid_928ab984-e2fc-480a-9b28-91d1c5dfa667@odspnotify__glw5mcs4.eml"
-    )
+    long_basename = "a" * 251 + ".eml"
     assert len(long_basename.encode("utf-8")) == 255
 
     src = str(datadir / 'emails/splunk_logging.email.rfc822')
