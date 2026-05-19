@@ -1,13 +1,11 @@
 """Unit tests for saq.analysis.cache.apply_delta (Phase 3 Step 3.5)."""
 import logging
 from datetime import datetime, timezone
-from uuid import uuid4
 
 import pytest
 
 from saq.analysis.cache import apply_delta
 from saq.analysis.module_execution_delta import (
-    AnalysisChildrenDiff,
     ModuleExecutionDelta,
     ObservableDiff,
     ObservableSpec,
@@ -15,7 +13,7 @@ from saq.analysis.module_execution_delta import (
 )
 from saq.analysis.root import RootAnalysis
 from saq.constants import F_FILE, F_FQDN, F_IPV4, F_URL, R_IS_HASH_OF
-from saq.modules.whois import WhoisAnalysis
+from saq.modules.rdap import RdapAnalysis
 
 
 def _make_root(tmp_path):
@@ -207,7 +205,7 @@ class TestApplyDeltaRehydration:
         root = _make_root(tmp_path)
         target = root.add_observable_by_spec(F_FQDN, "example.com")
         analysis_dict = {
-            "module_path": "saq.modules.whois:WhoisAnalysis",
+            "module_path": "saq.modules.rdap:RdapAnalysis",
             "details": {"registrar": "Test Registrar"},
             "summary": "whois ok",
             "completed": True,
@@ -216,9 +214,9 @@ class TestApplyDeltaRehydration:
         delta = _empty_delta(target, analysis=analysis_dict)
         apply_delta(root, target, delta)
 
-        rehydrated = target.get_analysis(WhoisAnalysis)
+        rehydrated = target.get_analysis(RdapAnalysis)
         assert rehydrated is not None
-        assert isinstance(rehydrated, WhoisAnalysis)
+        assert isinstance(rehydrated, RdapAnalysis)
         assert rehydrated.details == {"registrar": "Test Registrar"}
 
     @pytest.mark.unit
@@ -231,7 +229,7 @@ class TestApplyDeltaRehydration:
         root = _make_root(tmp_path)
         target = root.add_observable_by_spec(F_FQDN, "example.com")
         analysis_dict = {
-            "module_path": "saq.modules.whois:WhoisAnalysis",
+            "module_path": "saq.modules.rdap:RdapAnalysis",
             "details": {"x": 1},
             "external_details_path": "/some/source/alert/path/whois_xxx.json",
             "completed": True,
@@ -240,7 +238,7 @@ class TestApplyDeltaRehydration:
         delta = _empty_delta(target, analysis=analysis_dict)
         apply_delta(root, target, delta)
 
-        rehydrated = target.get_analysis(WhoisAnalysis)
+        rehydrated = target.get_analysis(RdapAnalysis)
         assert rehydrated.external_details_path is None
 
     @pytest.mark.unit
@@ -254,12 +252,12 @@ class TestApplyDeltaRehydration:
         target = root.add_observable_by_spec(F_FQDN, "example.com")
 
         # Pre-install an existing analysis at the slot.
-        existing = WhoisAnalysis()
+        existing = RdapAnalysis()
         existing.details = {"sentinel": "preexisting"}
         target.analysis_tree_manager.add_analysis(target, existing)
 
         analysis_dict = {
-            "module_path": "saq.modules.whois:WhoisAnalysis",
+            "module_path": "saq.modules.rdap:RdapAnalysis",
             "details": {"sentinel": "from_cache"},
             "completed": True,
             "delayed": False,
@@ -272,7 +270,7 @@ class TestApplyDeltaRehydration:
         apply_delta(root, target, delta)
 
         # Existing analysis preserved (sentinel unchanged).
-        kept = target.get_analysis(WhoisAnalysis)
+        kept = target.get_analysis(RdapAnalysis)
         assert kept is existing
         assert kept.details == {"sentinel": "preexisting"}
         # Diffs still applied.
@@ -288,7 +286,7 @@ class TestApplyDeltaRehydration:
         root = _make_root(tmp_path)
         target = root.add_observable_by_spec(F_FQDN, "example.com")
         analysis_dict = {
-            "module_path": "saq.modules.whois:WhoisAnalysis",
+            "module_path": "saq.modules.rdap:RdapAnalysis",
             "details": {"x": 1},
             "completed": True,
             "delayed": False,
@@ -303,7 +301,7 @@ class TestApplyDeltaRehydration:
         apply_delta(root, target, delta)
 
         assert target.tags.count("once") == 1
-        assert isinstance(target.get_analysis(WhoisAnalysis), WhoisAnalysis)
+        assert isinstance(target.get_analysis(RdapAnalysis), RdapAnalysis)
 
 
 class TestApplyDeltaContractEnforcement:

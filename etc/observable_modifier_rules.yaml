@@ -78,7 +78,7 @@
 #     "no-analysis" sentinel a target module records after it evaluates and bails;
 #     in pre the target hasn't evaluated yet, so there is no sentinel to clear.
 #   - A tree condition's `details_match` gates on slow/deferred fields (e.g.
-#     `WhoisAnalysis` age lookups, sandbox results, modules with long backoff) →
+#     `RdapAnalysis` age lookups, sandbox results, modules with long backoff) →
 #     use `post`. Pre-phase rules don't get a final pass, so a condition that only
 #     becomes true after engine drain will be missed in pre.
 # Otherwise `pre` is preferable, especially when the rule installs directives

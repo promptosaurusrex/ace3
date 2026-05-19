@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 import zstandard
 
-from saq.analysis.blob_store import LocalHardlinkBlobStore
+from saq.analysis.blob_store import LocalHardlinkBlobStore, LocalHardlinkBlobStoreConfig
 from saq.analysis.cache import (
     generate_cache_key,
     get_cached_delta,
@@ -26,7 +26,9 @@ from saq.database.pool import get_db_connection
 
 @pytest.fixture
 def blob_store(tmp_path):
-    return LocalHardlinkBlobStore(str(tmp_path / "blob_store"))
+    return LocalHardlinkBlobStore(
+        LocalHardlinkBlobStoreConfig(root_dir=str(tmp_path / "blob_store"))
+    )
 
 
 def _make_module(name=None, ttl=timedelta(hours=1), version=1, extended=None):

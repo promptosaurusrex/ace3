@@ -1,9 +1,48 @@
 import logging
+import os
 import sys
 from typing import Optional
+from saq.constants import ENV_ACE_IS_PRIMARY_NODE
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
 from saq.environment import get_global_runtime_settings
+
+
+def is_primary_node() -> bool:
+    """Return True when this container is configured as the primary node.
+
+    Driven by the ENV_ACE_IS_PRIMARY_NODE environment variable, defaulting to
+    the primary ("1") so single-node installs behave as before. Primary-only
+    maintenance routines (e.g. global blob store GC) gate on this.
+    """
+    return os.environ.get(ENV_ACE_IS_PRIMARY_NODE, "1") == "1"
+
+
+def warn_if_blob_store_not_multi_node_safe():
+    """Log a warning when a multi-node cluster uses a node-local blob store.
+
+    The pure-local LocalHardlinkBlobStore keeps spilled analysis-cache blobs on
+    the node's own filesystem, so a blob written on one node is invisible to
+    the others. Multi-node deployments need a global backend (e.g. S3)
+    configured via analysis_cache.blob_store.
+    """
+    from saq.configuration.config import get_config
+    if get_config().analysis_cache.blob_store is not None:
+        return  # a pluggable (global) backend is configured
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM nodes")
+        row = cursor.fetchone()
+        node_count = row[0] if row else 0
+
+    if node_count > 1:
+        logging.warning(
+            "analysis cache blob store is node-local (LocalHardlinkBlobStore) but %s "
+            "nodes are registered; multi-node deployments need a global blob store "
+            "backend configured via analysis_cache.blob_store (e.g. S3)",
+            node_count,
+        )
 
 
 def initialize_node():

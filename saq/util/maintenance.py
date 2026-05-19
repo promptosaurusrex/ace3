@@ -7,13 +7,19 @@ import shutil
 from typing import Optional
 
 from ace_api import upload
-from saq.analysis.blob_store import get_blob_store
+from saq.analysis.blob_store import (
+    GlobalMaintenanceStats,
+    LocalCacheBudget,
+    LocalMaintenanceStats,
+    get_blob_store,
+)
 from saq.analysis.cache import collect_stats as collect_cache_stats
 from saq.analysis.cache import prune as prune_cache_rows
 from saq.configuration.config import get_config
 from saq.constants import DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE
 from saq.database import Alert, get_db, retry_sql_on_deadlock
 from saq.database.pool import get_db_connection
+from saq.database.util.node import is_primary_node
 from saq.environment import get_base_dir, get_global_runtime_settings
 from saq.error import report_exception
 
@@ -196,16 +202,22 @@ def distribute_old_alerts(days: int, dry_run: bool, distribution_target: str, ma
     return success_count
 
 
-def prune_analysis_result_cache(dry_run: bool = False) -> int:
+def prune_expired_cache_rows(dry_run: bool = False) -> int:
     """Delete expired rows from the analysis_result_cache table.
 
-    Scheduled via yacron (see etc/cron.yaml). On each run, deletes rows whose
-    expires_at is in the past, drops their blob_refs in the same transaction,
-    and notifies the blob store so it can do any backend-specific housekeeping.
+    GLOBAL maintenance — runs only on the primary node, since it mutates the
+    shared analysis_result_cache and blob_refs tables. Scheduled via cron (see
+    etc/cron.yaml). On each run, deletes rows whose expires_at is in the past,
+    drops their blob_refs in the same transaction, and notifies the blob store
+    so it can do any backend-specific housekeeping.
 
     Returns the number of rows deleted. When ``dry_run`` is True, only reports
     how many rows *would* be deleted and does not modify state.
     """
+    if not is_primary_node():
+        logging.info("skipping analysis cache prune - not the primary node")
+        return 0
+
     if dry_run:
         with get_db_connection() as db:
             cursor = db.cursor()
@@ -266,3 +278,89 @@ def prune_analysis_result_cache(dry_run: bool = False) -> int:
         logging.warning(f"failed to collect cache_stats: {e}")
 
     return deleted
+
+
+# backwards-compatible alias — prune_analysis_result_cache predates the
+# global/local maintenance split
+prune_analysis_result_cache = prune_expired_cache_rows
+
+
+def gc_durable_blobs(dry_run: bool = False) -> GlobalMaintenanceStats:
+    """Garbage-collect the durable tier of the analysis cache blob store.
+
+    GLOBAL maintenance — runs only on the primary node. Deletes blobs with zero
+    blob_refs rows whose durable-tier object is older than
+    analysis_cache.blob_gc_grace_seconds. For the pure-local blob store this
+    unlinks orphaned files; for the S3 backend it reclaims bucket objects (only
+    when that backend has S3 GC enabled). Scheduled via cron.
+    """
+    stats = GlobalMaintenanceStats()
+    if not is_primary_node():
+        logging.info("skipping durable blob gc - not the primary node")
+        return stats
+
+    grace = datetime.timedelta(seconds=get_config().analysis_cache.blob_gc_grace_seconds)
+    started = datetime.datetime.now()
+    try:
+        stats = get_blob_store().maintain_global(grace, dry_run=dry_run)
+    except Exception as e:
+        logging.error(f"error running durable blob gc: {e}")
+        report_exception()
+        return stats
+
+    elapsed_ms = int((datetime.datetime.now() - started).total_seconds() * 1000)
+    logging.info(
+        "blob_gc blobs_scanned=%d blobs_deleted=%d bytes_reclaimed=%d "
+        "skipped_referenced=%d skipped_within_grace=%d errors=%d dry_run=%s in %dms",
+        stats.blobs_scanned, stats.blobs_deleted, stats.bytes_reclaimed,
+        stats.skipped_referenced, stats.skipped_within_grace, stats.errors,
+        dry_run, elapsed_ms,
+        extra={
+            "blobs_scanned": stats.blobs_scanned,
+            "blobs_deleted": stats.blobs_deleted,
+            "bytes_reclaimed": stats.bytes_reclaimed,
+            "skipped_referenced": stats.skipped_referenced,
+            "skipped_within_grace": stats.skipped_within_grace,
+            "errors": stats.errors,
+        },
+    )
+    return stats
+
+
+def maintain_local_cache(dry_run: bool = False) -> LocalMaintenanceStats:
+    """Evict stale or excess blobs from this node's local blob cache tier.
+
+    LOCAL maintenance — runs on every analysis node, primary included. Anything
+    evicted is re-fetchable from the durable tier, so this is safe to run
+    everywhere. For the pure-local blob store this is a no-op (the store is
+    itself the durable tier). Scheduled via cron.
+    """
+    cache_config = get_config().analysis_cache
+    budget = LocalCacheBudget(
+        max_bytes=cache_config.local_cache_max_bytes,
+        max_age=datetime.timedelta(seconds=cache_config.local_cache_max_age_seconds),
+    )
+    started = datetime.datetime.now()
+    try:
+        stats = get_blob_store().maintain_local(budget, dry_run=dry_run)
+    except Exception as e:
+        logging.error(f"error running local blob cache maintenance: {e}")
+        report_exception()
+        return LocalMaintenanceStats()
+
+    elapsed_ms = int((datetime.datetime.now() - started).total_seconds() * 1000)
+    logging.info(
+        "local_cache_maintenance entries_scanned=%d entries_evicted=%d "
+        "bytes_reclaimed=%d skipped_unflushed=%d errors=%d dry_run=%s in %dms",
+        stats.cache_entries_scanned, stats.cache_entries_evicted,
+        stats.bytes_reclaimed, stats.skipped_unflushed, stats.errors,
+        dry_run, elapsed_ms,
+        extra={
+            "entries_scanned": stats.cache_entries_scanned,
+            "entries_evicted": stats.cache_entries_evicted,
+            "bytes_reclaimed": stats.bytes_reclaimed,
+            "skipped_unflushed": stats.skipped_unflushed,
+            "errors": stats.errors,
+        },
+    )
+    return stats

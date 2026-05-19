@@ -29,6 +29,7 @@ import os.path
 import pickle
 import shutil
 import threading
+import uuid
 from typing import TYPE_CHECKING, Optional
 
 import pytz
@@ -109,7 +110,7 @@ def write_persistence_data(hunt_type: str, hunt_name: str, value_name: str, valu
     hunt_state_dir = get_hunt_state_dir(hunt_type, hunt_name)
     os.makedirs(hunt_state_dir, exist_ok=True)
     # two step process in case it dies in the middle of this
-    temp_path = os.path.join(hunt_state_dir, f'{value_name}.tmp')
+    temp_path = os.path.join(hunt_state_dir, f"{value_name}.{uuid.uuid4().hex}.tmp")
     with open(temp_path, 'wb') as fp:
         pickle.dump(value, fp)
 

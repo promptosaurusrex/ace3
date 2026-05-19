@@ -106,6 +106,24 @@ def test_distribute_old_alerts(days, target, insert_alert, alert_age_days, add_t
         assert storage_dir.isdir() == alert_still_exists
 
 
+@pytest.mark.unit
+def test_prune_skips_when_not_primary(monkeypatch):
+    """Cache-row prune is global maintenance — non-primary nodes must skip it."""
+    import saq.util.maintenance as maintenance
+    monkeypatch.setattr(maintenance, "is_primary_node", lambda: False)
+    assert maintenance.prune_expired_cache_rows() == 0
+
+
+@pytest.mark.unit
+def test_gc_durable_blobs_skips_when_not_primary(monkeypatch):
+    """Durable blob GC is global maintenance — non-primary nodes must skip it."""
+    import saq.util.maintenance as maintenance
+    monkeypatch.setattr(maintenance, "is_primary_node", lambda: False)
+    stats = maintenance.gc_durable_blobs()
+    assert stats.blobs_scanned == 0
+    assert stats.blobs_deleted == 0
+
+
 @pytest.mark.integration
 def test_prune_analysis_result_cache_emits_cache_stats(caplog):
     """Each prune run should emit a cache_stats heartbeat for Splunk."""

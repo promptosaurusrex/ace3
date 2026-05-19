@@ -3422,15 +3422,15 @@ def test_tree_condition_descendants_scope_match():
 
     child_fqdn = parse_url_analysis.add_observable_by_spec(F_FQDN, "newdomain.example")
 
-    class WhoisAnalysisStub(Analysis):
+    class RdapAnalysisStub(Analysis):
         pass
 
-    whois_analysis = WhoisAnalysisStub()
-    whois_analysis.details = {"age_created_in_days": "3"}
-    whois_analysis.details_modified = True
-    child_fqdn.add_analysis(whois_analysis)
+    rdap_analysis = RdapAnalysisStub()
+    rdap_analysis.details = {"age_created_in_days": "3"}
+    rdap_analysis.details_modified = True
+    child_fqdn.add_analysis(rdap_analysis)
 
-    module_path = f"{WhoisAnalysisStub.__module__}:{WhoisAnalysisStub.__name__}"
+    module_path = f"{RdapAnalysisStub.__module__}:{RdapAnalysisStub.__name__}"
     tc = TreeCondition(
         analysis_type=module_path,
         scope="descendants",
@@ -3457,15 +3457,15 @@ def test_tree_condition_descendants_scope_no_match_details():
 
     child_fqdn = parse_url_analysis.add_observable_by_spec(F_FQDN, "olddomain.example")
 
-    class WhoisAnalysisStub2(Analysis):
+    class RdapAnalysisStub2(Analysis):
         pass
 
-    whois_analysis = WhoisAnalysisStub2()
-    whois_analysis.details = {"age_created_in_days": "500"}
-    whois_analysis.details_modified = True
-    child_fqdn.add_analysis(whois_analysis)
+    rdap_analysis = RdapAnalysisStub2()
+    rdap_analysis.details = {"age_created_in_days": "500"}
+    rdap_analysis.details_modified = True
+    child_fqdn.add_analysis(rdap_analysis)
 
-    module_path = f"{WhoisAnalysisStub2.__module__}:{WhoisAnalysisStub2.__name__}"
+    module_path = f"{RdapAnalysisStub2.__module__}:{RdapAnalysisStub2.__name__}"
     tc = TreeCondition(
         analysis_type=module_path,
         scope="descendants",

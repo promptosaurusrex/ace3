@@ -22,7 +22,7 @@ from saq.analysis.module_execution_delta import (
 from saq.analysis.root import RootAnalysis
 from saq.constants import F_FILE, F_FQDN, F_URL
 from saq.engine.executor import AnalysisExecutionContext, AnalysisExecutor
-from saq.modules.whois import WhoisAnalysis
+from saq.modules.rdap import RdapAnalysis
 
 
 def _make_executor() -> AnalysisExecutor:
@@ -51,7 +51,7 @@ def _make_context(root) -> AnalysisExecutionContext:
     return AnalysisExecutionContext(root)
 
 
-def _make_module(name="whois_analyzer"):
+def _make_module(name="rdap_analyzer"):
     """Stub module — only the attributes _apply_cached_delta touches."""
     return SimpleNamespace(config=SimpleNamespace(name=name))
 
@@ -73,13 +73,13 @@ def _make_delta_for(observable, *, with_analysis=True):
     analysis = None
     if with_analysis:
         analysis = {
-            "module_path": "saq.modules.whois:WhoisAnalysis",
+            "module_path": "saq.modules.rdap:RdapAnalysis",
             "details": {"registrar": "Test Registrar"},
             "completed": True,
             "delayed": False,
         }
     delta = ModuleExecutionDelta(
-        module_path="saq.modules.whois:WhoisAnalysis",
+        module_path="saq.modules.rdap:RdapAnalysis",
         module_instance=None,
         module_version=1,
         observable_uuid=SOURCE_OBSERVABLE_UUID,
@@ -205,7 +205,7 @@ class TestApplyCachedDelta:
         # Diff additions applied.
         assert "replayed" in obs.tags
         # Analysis rehydrated.
-        rehydrated = obs.get_analysis(WhoisAnalysis)
+        rehydrated = obs.get_analysis(RdapAnalysis)
         assert rehydrated is not None
         assert rehydrated.details == {"registrar": "Test Registrar"}
 

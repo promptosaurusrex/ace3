@@ -6,15 +6,30 @@ they require the blob_refs table.
 import hashlib
 import io
 import os
+import time
+from datetime import timedelta
 
 import pytest
 
-from saq.analysis.blob_store import BlobNotFound, LocalHardlinkBlobStore
+from saq.analysis.blob_store import (
+    BlobNotFound,
+    LocalCacheBudget,
+    LocalHardlinkBlobStore,
+    LocalHardlinkBlobStoreConfig,
+)
+
+
+def _backdate(path, seconds):
+    """Set a file's mtime to ``seconds`` in the past."""
+    past = time.time() - seconds
+    os.utime(path, (past, past))
 
 
 @pytest.fixture
 def blob_store(tmp_path):
-    return LocalHardlinkBlobStore(str(tmp_path / "blob_store"))
+    return LocalHardlinkBlobStore(
+        LocalHardlinkBlobStoreConfig(root_dir=str(tmp_path / "blob_store"))
+    )
 
 
 class TestPut:
@@ -96,3 +111,84 @@ class TestPathValidation:
     def test_path_for_rejects_wrong_length(self, blob_store):
         with pytest.raises(ValueError):
             blob_store._path_for("short")
+
+
+class TestIterBlobs:
+
+    @pytest.mark.unit
+    def test_ignores_non_sha_names(self, blob_store):
+        sha = blob_store.put(b"real blob")
+        # drop a tempfile-like artifact in the same shard dir
+        shard_dir = os.path.dirname(blob_store._path_for(sha))
+        with open(os.path.join(shard_dir, "tmpABCD.junk"), "wb") as f:
+            f.write(b"junk")
+        found = dict(blob_store.iter_blobs())
+        assert sha in found
+        assert len(found) == 1
+
+    @pytest.mark.unit
+    def test_empty_store(self, blob_store):
+        assert list(blob_store.iter_blobs()) == []
+
+
+class TestMaintainGlobal:
+
+    @pytest.mark.unit
+    def test_deletes_unreferenced_old_blobs(self, blob_store, monkeypatch):
+        monkeypatch.setattr(
+            "saq.analysis.blob_store.query_referenced_shas", lambda shas: set()
+        )
+        sha = blob_store.put(b"orphan blob")
+        _backdate(blob_store._path_for(sha), 3600)
+        stats = blob_store.maintain_global(timedelta(minutes=5))
+        assert stats.blobs_deleted == 1
+        assert stats.bytes_reclaimed == len(b"orphan blob")
+        assert not blob_store.exists(sha)
+
+    @pytest.mark.unit
+    def test_keeps_referenced_blobs(self, blob_store, monkeypatch):
+        sha = blob_store.put(b"referenced blob")
+        _backdate(blob_store._path_for(sha), 3600)
+        monkeypatch.setattr(
+            "saq.analysis.blob_store.query_referenced_shas", lambda shas: {sha}
+        )
+        stats = blob_store.maintain_global(timedelta(minutes=5))
+        assert stats.blobs_deleted == 0
+        assert stats.skipped_referenced == 1
+        assert blob_store.exists(sha)
+
+    @pytest.mark.unit
+    def test_grace_period_protects_fresh_blobs(self, blob_store, monkeypatch):
+        monkeypatch.setattr(
+            "saq.analysis.blob_store.query_referenced_shas", lambda shas: set()
+        )
+        sha = blob_store.put(b"fresh orphan")  # mtime = now
+        stats = blob_store.maintain_global(timedelta(hours=1))
+        assert stats.skipped_within_grace == 1
+        assert stats.blobs_deleted == 0
+        assert blob_store.exists(sha)
+
+    @pytest.mark.unit
+    def test_dry_run_does_not_delete(self, blob_store, monkeypatch):
+        monkeypatch.setattr(
+            "saq.analysis.blob_store.query_referenced_shas", lambda shas: set()
+        )
+        sha = blob_store.put(b"orphan blob")
+        _backdate(blob_store._path_for(sha), 3600)
+        stats = blob_store.maintain_global(timedelta(minutes=5), dry_run=True)
+        assert stats.blobs_deleted == 1
+        assert blob_store.exists(sha)
+
+
+class TestMaintainLocal:
+
+    @pytest.mark.unit
+    def test_is_noop_even_with_stale_blobs(self, blob_store):
+        # the local hardlink store is the durable tier — nothing is evicted
+        sha = blob_store.put(b"data")
+        _backdate(blob_store._path_for(sha), 99999)
+        stats = blob_store.maintain_local(
+            LocalCacheBudget(max_age=timedelta(seconds=1), max_bytes=1)
+        )
+        assert stats.cache_entries_evicted == 0
+        assert blob_store.exists(sha)
