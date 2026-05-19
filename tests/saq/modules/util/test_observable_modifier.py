@@ -4286,3 +4286,169 @@ def test_crawl_ical_rule_does_not_match_non_ical_ancestor():
     result = adapter.analyze(target_url, final_analysis=True)
     assert result == AnalysisExecutionResult.COMPLETED
     assert not target_url.has_directive("crawl")
+
+
+# ============================================================
+# Rule evaluation cost metrics tests
+# ============================================================
+
+
+def _cost_rules(*uuids, enabled=True):
+    """Build simple url-matching post-phase rules with explicit uuids."""
+    return [
+        {
+            "name": f"cost rule {u}",
+            "uuid": u,
+            "enabled": enabled,
+            "conditions": {"observable_types": ["url"]},
+            "actions": {"add_directives": ["extract_iocs"]},
+        }
+        for u in uuids
+    ]
+
+
+@pytest.mark.unit
+def test_rule_eval_cost_accumulates():
+    """A rule that is evaluated records count and timing in the accumulator."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    adapter = _create_analyzer_with_rules(root, _cost_rules("cost-uuid-1"))
+
+    adapter.execute_analysis(observable)
+    adapter.analyze(observable, final_analysis=True)
+
+    stats = adapter.wrapped_module._rule_eval_stats
+    assert root.uuid in stats
+    rule_stats = stats[root.uuid]["cost-uuid-1"]
+    assert rule_stats["count"] >= 1
+    assert rule_stats["total_seconds"] >= 0.0
+    assert rule_stats["max_seconds"] >= 0.0
+    assert rule_stats["name"] == "cost rule cost-uuid-1"
+
+
+@pytest.mark.unit
+def test_rule_eval_cost_emitted_on_post_analysis(caplog):
+    """execute_post_analysis emits one cost log line per evaluated rule."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    adapter = _create_analyzer_with_rules(root, _cost_rules("cost-uuid-1"))
+
+    adapter.execute_analysis(observable)
+    adapter.analyze(observable, final_analysis=True)
+
+    with caplog.at_level(logging.INFO):
+        result = adapter.execute_post_analysis()
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    cost_lines = [
+        r.getMessage() for r in caplog.records
+        if "observable_modifier rule cost" in r.getMessage()
+    ]
+    assert len(cost_lines) == 1
+    assert "rule_uuid=cost-uuid-1" in cost_lines[0]
+    assert f"root={root.uuid}" in cost_lines[0]
+    assert "count=" in cost_lines[0]
+    assert "total_seconds=" in cost_lines[0]
+
+
+@pytest.mark.unit
+def test_rule_eval_cost_dict_popped_after_emit():
+    """The root's accumulator entry is removed once metrics are emitted."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    adapter = _create_analyzer_with_rules(root, _cost_rules("cost-uuid-1"))
+
+    adapter.execute_analysis(observable)
+    adapter.analyze(observable, final_analysis=True)
+    assert root.uuid in adapter.wrapped_module._rule_eval_stats
+
+    adapter.execute_post_analysis()
+    assert root.uuid not in adapter.wrapped_module._rule_eval_stats
+
+
+@pytest.mark.unit
+def test_rule_eval_cost_post_analysis_idempotent(caplog):
+    """A second execute_post_analysis call emits nothing and does not raise."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    adapter = _create_analyzer_with_rules(root, _cost_rules("cost-uuid-1"))
+
+    adapter.execute_analysis(observable)
+    adapter.analyze(observable, final_analysis=True)
+
+    with caplog.at_level(logging.INFO):
+        adapter.execute_post_analysis()
+        caplog.clear()
+        result = adapter.execute_post_analysis()
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert not [
+        r for r in caplog.records
+        if "observable_modifier rule cost" in r.getMessage()
+    ]
+
+
+@pytest.mark.unit
+def test_rule_eval_cost_counts_per_rule(caplog):
+    """Each evaluated rule gets its own accumulator entry and log line."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    adapter = _create_analyzer_with_rules(root, _cost_rules("cost-uuid-1", "cost-uuid-2"))
+
+    adapter.execute_analysis(observable)
+    adapter.analyze(observable, final_analysis=True)
+
+    root_stats = adapter.wrapped_module._rule_eval_stats[root.uuid]
+    assert set(root_stats) == {"cost-uuid-1", "cost-uuid-2"}
+
+    with caplog.at_level(logging.INFO):
+        adapter.execute_post_analysis()
+
+    cost_lines = [
+        r.getMessage() for r in caplog.records
+        if "observable_modifier rule cost" in r.getMessage()
+    ]
+    assert len(cost_lines) == 2
+
+
+@pytest.mark.unit
+def test_rule_eval_cost_disabled_rule_not_counted():
+    """A disabled rule is skipped before evaluation and is not counted."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = _cost_rules("enabled-uuid") + _cost_rules("disabled-uuid", enabled=False)
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(observable)
+    adapter.analyze(observable, final_analysis=True)
+
+    root_stats = adapter.wrapped_module._rule_eval_stats[root.uuid]
+    assert "enabled-uuid" in root_stats
+    assert "disabled-uuid" not in root_stats
+
+
+@pytest.mark.unit
+def test_rule_eval_cost_no_rules_no_emission(caplog):
+    """With no rules, execute_post_analysis emits no cost lines."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    adapter = _create_analyzer_with_rules(root, [])
+
+    adapter.execute_analysis(observable)
+    adapter.analyze(observable, final_analysis=True)
+
+    with caplog.at_level(logging.INFO):
+        result = adapter.execute_post_analysis()
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert not [
+        r for r in caplog.records
+        if "observable_modifier rule cost" in r.getMessage()
+    ]
