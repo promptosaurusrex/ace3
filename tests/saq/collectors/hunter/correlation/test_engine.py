@@ -476,3 +476,124 @@ class TestSourceAwareTimeDefaults:
         engine.predefined_commands = [exec_predef]
         defined_exec = CommandConfig(type="defined", name="ext")
         assert engine._resolve_command_source(defined_exec) is None
+
+
+@pytest.mark.unit
+class TestTransformTraceQueryTimespec:
+    """The Correlation Trace UI needs to display the time window each query ran
+    against, so analysts can rerun the same query in the underlying data source.
+    These tests verify the engine captures resolved bounds and a source-native
+    display string on each TransformTrace."""
+
+    def test_event_query_captures_event_anchored_time_range(self, _clean_registry, tmpdir):
+        splunk = _RecordingSource(results=[])
+        register_query_source("splunk", splunk)
+
+        config = _make_config([
+            {
+                "transform": {
+                    "type": "event",
+                    "method": "property",
+                    "property_name": "lookup",
+                    "command": {
+                        "type": "query",
+                        "source": "splunk",
+                        "query": "search index=main",
+                        "time_range": {"before": "30d", "after": "0s"},
+                    },
+                },
+            },
+        ])
+        hunt_time = datetime.datetime(2026, 5, 18, 12, 31, 32, tzinfo=datetime.timezone.utc)
+        engine = CorrelationEngine(config, [], hunt_time, hunt_source_type="splunk")
+        event_time = datetime.datetime(2026, 5, 18, 12, 31, 32, tzinfo=datetime.timezone.utc)
+        result = engine.execute([{"_time": event_time.isoformat()}])
+
+        et = result.trace.event_traces[0]
+        transform = et.steps[0].step
+        assert transform.query_start_time == event_time - datetime.timedelta(days=30)
+        assert transform.query_end_time == event_time
+        # _RecordingSource doesn't override format_timespec_for_display, so the
+        # ABC default applies (None) — the UI will fall back to a separate
+        # decorative block built from the raw query_start_time/query_end_time.
+        assert transform.query_time_spec is None
+
+    def test_stream_query_captures_hunt_window_anchored_time_range(self, _clean_registry, tmpdir):
+        splunk = _RecordingSource(results=[])
+        register_query_source("splunk", splunk)
+
+        config = _make_config([
+            {
+                "transform": {
+                    "type": "stream",
+                    "method": "mutate",
+                    "command": {
+                        "type": "query",
+                        "source": "splunk",
+                        "query": "search index=main",
+                        "time_range": {"before": "3h", "after": "1h"},
+                    },
+                },
+            },
+        ])
+        hunt_start = datetime.datetime(2026, 5, 4, 0, 0, tzinfo=datetime.timezone.utc)
+        hunt_end = datetime.datetime(2026, 5, 5, 0, 0, tzinfo=datetime.timezone.utc)
+        engine = CorrelationEngine(config, [], hunt_start, hunt_end, hunt_source_type="splunk")
+        result = engine.execute([{"_time": "2099-01-01T00:00:00+00:00"}])
+
+        # the trace surviving a stream_reset belongs to the triggering event
+        transform = result.trace.event_traces[0].steps[0].step
+        assert transform.query_start_time == hunt_start - datetime.timedelta(hours=3)
+        assert transform.query_end_time == hunt_end + datetime.timedelta(hours=1)
+        # _RecordingSource uses the ABC default → None (no inline-prefix syntax).
+        assert transform.query_time_spec is None
+
+    def test_executable_transform_has_no_query_timespec(self, _clean_registry, tmpdir):
+        """Executables don't run against a QuerySource — the timespec fields stay None."""
+        config = _make_config([
+            {
+                "transform": {
+                    "type": "event",
+                    "method": "property",
+                    "property_name": "enriched",
+                    "property_type": "str",
+                    "command": {"type": "executable", "path": "/bin/echo", "args": ["x"]},
+                },
+            },
+        ])
+        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
+        result = engine.execute([{"id": 1}])
+
+        transform = result.trace.event_traces[0].steps[0].step
+        assert transform.query_start_time is None
+        assert transform.query_end_time is None
+        assert transform.query_time_spec is None
+
+    def test_defined_query_command_captures_time_range(self, _clean_registry, tmpdir):
+        """A `defined` command that resolves to a query gets the same trace fields
+        as a direct query — the engine follows the predef indirection."""
+        splunk = _RecordingSource(results=[])
+        register_query_source("splunk", splunk)
+
+        predef = PredefinedCommandConfig(
+            name="splunk_lookup", type="query", source="splunk",
+            query="search index=main", time_range={"before": "1h"},
+        )
+        config = _make_config([
+            {
+                "transform": {
+                    "type": "event",
+                    "method": "property",
+                    "property_name": "lookup",
+                    "command": {"type": "defined", "name": "splunk_lookup"},
+                },
+            },
+        ])
+        hunt_time = datetime.datetime(2026, 5, 18, 12, 0, tzinfo=datetime.timezone.utc)
+        engine = CorrelationEngine(config, [predef], hunt_time, hunt_source_type="splunk")
+        event_time = datetime.datetime(2026, 5, 18, 11, 30, tzinfo=datetime.timezone.utc)
+        result = engine.execute([{"_time": event_time.isoformat()}])
+
+        transform = result.trace.event_traces[0].steps[0].step
+        assert transform.query_start_time == event_time - datetime.timedelta(hours=1)
+        assert transform.query_end_time == event_time

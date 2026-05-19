@@ -415,6 +415,25 @@ class TestEngineTrace:
         assert restored.merge_dropped == 2
         assert restored.result_count == 5
 
+    def test_transform_trace_query_timespec_round_trips(self):
+        """The query_start_time / query_end_time / query_time_spec fields survive a
+        model_dump/model_validate cycle so the time-range UI block renders correctly
+        from a persisted alert. Pydantic serializes datetimes to ISO 8601 strings."""
+        start = datetime.datetime(2026, 5, 18, 12, 26, 32, tzinfo=datetime.timezone.utc)
+        end = datetime.datetime(2026, 5, 18, 12, 31, 32, tzinfo=datetime.timezone.utc)
+        original = TransformTrace(
+            transform_type="event",
+            method="property",
+            command_type="query",
+            query_start_time=start,
+            query_end_time=end,
+            query_time_spec="earliest=05/18/2026:12:26:32 latest=05/18/2026:12:31:32",
+        )
+        restored = TransformTrace.model_validate(original.model_dump())
+        assert restored.query_start_time == start
+        assert restored.query_end_time == end
+        assert restored.query_time_spec == "earliest=05/18/2026:12:26:32 latest=05/18/2026:12:31:32"
+
     def test_transform_error_short_circuits_to_alert(self):
         """A failing transform stops step processing for the event and alerts it."""
         config = _make_config([

@@ -35,6 +35,25 @@ class QuerySource(ABC):
         """
         raise NotImplementedError()
 
+    def format_timespec_for_display(
+        self,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+    ) -> Optional[str]:
+        """Return a query-language-valid prefix for the resolved time bounds, in
+        this source's native syntax. The Correlation Trace UI inlines the result
+        at the front of the rendered query so analysts can copy/paste the whole
+        thing into the data source.
+
+        Return None if this source can't represent its time bounds as a literal
+        query-language prefix — e.g. LogScale and Rapid7 take time bounds as API
+        parameters rather than as query terms, so prepending anything to the
+        query body would break the syntax. In that case the UI falls back to a
+        separate decorative "Time range" block built from the raw datetimes
+        stored on the trace.
+        """
+        return None
+
 
 def register_query_source(name: str, source: QuerySource):
     """Register a query source by name."""
