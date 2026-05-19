@@ -19,7 +19,7 @@ Two-layer enforcement:
    (with external dependencies mocked) and asserts ``not
    delta.has_removals and not delta.has_file_observables``.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable
 
 import pytest
@@ -29,7 +29,7 @@ from saq.analysis.snapshot import ModuleExecutionSnapshot
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import (
     ANALYSIS_MODULE_NRD_ANALYZER,
-    ANALYSIS_MODULE_WHOIS_ANALYZER,
+    ANALYSIS_MODULE_RDAP_ANALYZER,
     AnalysisExecutionResult,
     F_FQDN,
 )
@@ -40,40 +40,44 @@ from tests.saq.helpers import create_root_analysis
 # Per-module contract runners
 # ----------------------------------------------------------------------
 
-def _check_whois_analyzer(test_context, monkeypatch):
-    """Runs WhoisAnalyzer with a mocked whois.whois() and returns the
-    delta produced. Mirrors the mock pattern in test_whois.py.
+def _check_rdap_analyzer(test_context, monkeypatch):
+    """Runs RdapAnalyzer with a mocked ``whoisit.domain()`` (and a
+    failing ``whois.whois()`` to guard against the fallback firing).
+    Returns the delta produced. Mirrors the mock pattern in
+    test_rdap.py.
     """
-    from saq.modules.whois import WhoisAnalyzer
+    from saq.modules.rdap import RdapAnalyzer
 
-    class MockWhoisResult:
-        def __init__(self, data):
-            self.data = data
-            self.text = data.get("text", "mock whois text")
-
-        def get(self, key, default=None):
-            return self.data.get(key, default)
-
-    fake_data = {
-        "domain_name": "EXAMPLE.COM",
-        "registrar": "Test Registrar",
-        "name_servers": ["NS1.EXAMPLE.COM"],
-        "creation_date": datetime(2000, 1, 1),
-        "updated_date": datetime(2024, 1, 1),
-        "text": "mock whois response body",
+    fake_rdap = {
+        "name": "EXAMPLE.COM",
+        "url": "https://rdap.example.test/com/v1/domain/EXAMPLE.COM",
+        "nameservers": ["NS1.EXAMPLE.COM"],
+        "registration_date": datetime(2000, 1, 1, tzinfo=timezone.utc),
+        "last_changed_date": datetime(2024, 1, 1, tzinfo=timezone.utc),
+        "expiration_date": datetime(2026, 1, 1, tzinfo=timezone.utc),
+        "entities": {
+            "registrar": [{"name": "Test Registrar", "email": "noc@example.test"}],
+        },
+        "raw": {"objectClassName": "domain"},
     }
-    monkeypatch.setattr(
-        "saq.modules.whois.whois.whois",
-        lambda _domain: MockWhoisResult(fake_data),
-    )
+    monkeypatch.setattr("saq.modules.rdap.whoisit.is_bootstrapped", lambda: True)
+    monkeypatch.setattr("saq.modules.rdap.whoisit.bootstrap", lambda: True)
+    monkeypatch.setattr("saq.modules.rdap.whoisit.domain", lambda _d, **_kw: fake_rdap)
+
+    def _whois_must_not_be_called(_domain):
+        raise AssertionError(
+            "whois.whois must not be called when RDAP succeeds"
+        )
+
+    monkeypatch.setattr("saq.modules.rdap.whois.whois", _whois_must_not_be_called)
 
     root = create_root_analysis()
     root.initialize_storage()
     obs = root.add_observable_by_spec(F_FQDN, "example.com")
 
-    analyzer = WhoisAnalyzer(
+    analyzer = RdapAnalyzer(
         context=test_context,
-        config=get_analysis_module_config(ANALYSIS_MODULE_WHOIS_ANALYZER),
+        config=get_analysis_module_config(ANALYSIS_MODULE_RDAP_ANALYZER),
     )
     analyzer.root = root
 
@@ -140,11 +144,11 @@ def _check_nrd_analyzer(test_context, monkeypatch):
 # without registering it here fails
 # ``test_yaml_cache_ttl_modules_have_contract_check``.
 #
-# Key: YAML config block name (e.g. ``analysis_module_whois_analyzer``).
+# Key: YAML config block name (e.g. ``analysis_module_rdap_analyzer``).
 # Value: callable(test_context, monkeypatch) -> ModuleExecutionDelta.
 CONTRACT_CHECKERS: dict[str, Callable] = {
-    "analysis_module_whois_analyzer": _check_whois_analyzer,
     "analysis_module_nrd_analyzer": _check_nrd_analyzer,
+    "analysis_module_rdap_analyzer": _check_rdap_analyzer,
 }
 
 

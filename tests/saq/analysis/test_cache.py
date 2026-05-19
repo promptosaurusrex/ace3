@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 import zstandard
 
-from saq.analysis.blob_store import LocalHardlinkBlobStore
+from saq.analysis.blob_store import LocalHardlinkBlobStore, LocalHardlinkBlobStoreConfig
 from saq.analysis.cache import (
     collect_stats,
     delete_for_module,
@@ -29,7 +29,9 @@ from saq.database.pool import get_db, get_db_connection
 
 @pytest.fixture
 def blob_store(tmp_path):
-    return LocalHardlinkBlobStore(str(tmp_path / "blob_store"))
+    return LocalHardlinkBlobStore(
+        LocalHardlinkBlobStoreConfig(root_dir=str(tmp_path / "blob_store"))
+    )
 
 
 def _make_module(name=None, ttl=timedelta(hours=1), version=1, extended=None):
@@ -365,6 +367,56 @@ class TestPrune:
 
             assert _row_count(delta.cache_key) == 0
             assert _blob_ref_count(delta.cache_key) == 0
+        finally:
+            _delete_cache_row(delta.cache_key)
+
+
+class TestMaintainGlobal:
+
+    @pytest.mark.integration
+    def test_deletes_orphan_blobs_after_prune(self, blob_store):
+        """maintain_global keeps referenced blobs and reclaims orphans (real blob_refs)."""
+        import os
+        import time
+
+        module = _make_module()
+        # 32 KiB reliably triggers the blob-store spill path
+        big_details = {"payload": "x" * (32 * 1024)}
+        analysis = {
+            "type": "saq.modules.test:Dummy",
+            "summary": "big",
+            "details": big_details,
+        }
+        delta = _make_delta(module, analysis=analysis)
+        try:
+            put_cached_delta(delta, module, blob_store)
+            assert _blob_ref_count(delta.cache_key) == 1
+
+            # backdate every blob so the GC grace period doesn't protect them
+            for _sha, _path in blob_store.iter_blobs():
+                past = time.time() - 3600
+                os.utime(_path, (past, past))
+
+            # the blob is still referenced — maintain_global must not delete it
+            stats = blob_store.maintain_global(timedelta(minutes=5))
+            assert stats.blobs_deleted == 0
+            assert stats.skipped_referenced == 1
+
+            # expire and prune the cache row, dropping the blob_ref
+            with get_db_connection() as db:
+                cursor = db.cursor()
+                cursor.execute(
+                    "UPDATE analysis_result_cache SET expires_at = DATE_SUB(NOW(), INTERVAL 1 HOUR) "
+                    "WHERE cache_key = %s",
+                    (delta.cache_key,),
+                )
+                db.commit()
+            prune(blob_store)
+            assert _blob_ref_count(delta.cache_key) == 0
+
+            # now the blob is an orphan — maintain_global reclaims it
+            stats = blob_store.maintain_global(timedelta(minutes=5))
+            assert stats.blobs_deleted == 1
         finally:
             _delete_cache_row(delta.cache_key)
 

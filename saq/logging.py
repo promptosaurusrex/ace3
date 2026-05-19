@@ -1,9 +1,11 @@
 
+import contextlib
 from datetime import datetime
 import logging
 import logging.config
 import os
 import sys
+import threading
 from typing import Optional
 import yaml
 
@@ -105,6 +107,51 @@ class CustomFileHandler(logging.StreamHandler):
         finally:
             self.release()
 
+# thread-local flag indicating the current thread is running inside a context
+# where logs must not reach the production root-logger handlers (fluent / console
+# / file).
+_suppression_state = threading.local()
+
+
+def _external_logging_suppressed() -> bool:
+    """return True if the calling thread is inside a suppress_external_logging context"""
+    return getattr(_suppression_state, "suppressed", False)
+
+
+@contextlib.contextmanager
+def suppress_external_logging():
+    """While active on the calling thread, log records are dropped by the production
+    handlers attached to the root logger. Handlers added to the root logger after
+    initialize_logging() ran (e.g. the per-request ListLogHandler used by /hunt/validate)
+    are not affected, so a caller-facing capture handler still receives every record.
+
+    re-entrant safe: nesting restores the prior value rather than always clearing it"""
+    previous = getattr(_suppression_state, "suppressed", False)
+    _suppression_state.suppressed = True
+    try:
+        yield
+    finally:
+        _suppression_state.suppressed = previous
+
+
+class ThreadSuppressionFilter(logging.Filter):
+    """logging filter that drops records when the calling thread is inside a
+    suppress_external_logging context. installed on the production root handlers
+    by initialize_logging()"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not _external_logging_suppressed()
+
+
+def _install_suppression_filter():
+    """install a ThreadSuppressionFilter on every handler currently attached to the
+    root logger. idempotent: a handler that already has the filter is skipped"""
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        if not any(isinstance(f, ThreadSuppressionFilter) for f in handler.filters):
+            handler.addFilter(ThreadSuppressionFilter())
+
+
 # base configuration for logging
 LOGGING_BASE_CONFIG = {
     'version': 1,
@@ -157,3 +204,6 @@ def initialize_logging(logging_config_path: str, log_sql: Optional[bool]=False, 
 
     # disable the verbose logging in the requests module
     logging.getLogger("requests").setLevel(logging.WARNING)
+
+    # support supression filtering for production logging
+    _install_suppression_filter()
