@@ -1901,6 +1901,7 @@ analysis_module_site_tagger:
   # value: the value to match against
   # tags: list of tags separated by | (pipe)
   csv_file: data/etc/site_tags.csv
+  cache_ttl: 2592000  # 30 days — analyst edits to the CSV file invalidate the cache key via extended_version (mtime+size), so this TTL is just the upper bound for stable rules
 
 analysis_module_zip_encryption_analyzer:
   name: zip_encryption_analyzer

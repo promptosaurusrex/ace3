@@ -28,10 +28,12 @@ import yaml
 from saq.analysis.snapshot import ModuleExecutionSnapshot
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import (
+    ANALYSIS_MODULE_SITE_TAGGER,
     ANALYSIS_MODULE_NRD_ANALYZER,
     ANALYSIS_MODULE_RDAP_ANALYZER,
     AnalysisExecutionResult,
     F_FQDN,
+    F_IPV4,
 )
 from tests.saq.helpers import create_root_analysis
 
@@ -139,6 +141,47 @@ def _check_nrd_analyzer(test_context, monkeypatch):
     return ModuleExecutionSnapshot.diff(before, after, analyzer, obs)
 
 
+def _check_site_tagger(test_context, monkeypatch):
+    """Runs SiteTagAnalyzer against a temp CSV containing one CIDR rule
+    that matches an F_IPV4 observable. Verifies the live analyzer's
+    delta is contract-clean — single tag added to the target observable,
+    no children, no removals, no file observables.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from saq.modules.tag import SiteTagAnalyzer
+
+    tmp_dir = Path(tempfile.mkdtemp())
+    csv_path = tmp_dir / "site_tags.csv"
+    csv_path.write_text("ipv4,cidr,false,10.0.0.0/8,internal-network\n")
+
+    # Override the CSV path via the analyzer's csv_file property so we don't
+    # touch the real shipped file.
+    monkeypatch.setattr(
+        SiteTagAnalyzer,
+        "csv_file",
+        property(lambda _self: str(csv_path)),
+    )
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    obs = root.add_observable_by_spec(F_IPV4, "10.1.2.3")
+
+    analyzer = SiteTagAnalyzer(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_SITE_TAGGER),
+    )
+    analyzer.root = root
+
+    before = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+    result = analyzer.execute_analysis(obs)
+    after = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    return ModuleExecutionSnapshot.diff(before, after, analyzer, obs)
+
+
 # Registry of contract checkers — one entry per module with cache_ttl
 # set in any deployed YAML. Adding a new ``cache_ttl`` to a module
 # without registering it here fails
@@ -147,6 +190,7 @@ def _check_nrd_analyzer(test_context, monkeypatch):
 # Key: YAML config block name (e.g. ``analysis_module_rdap_analyzer``).
 # Value: callable(test_context, monkeypatch) -> ModuleExecutionDelta.
 CONTRACT_CHECKERS: dict[str, Callable] = {
+    "analysis_module_site_tagger": _check_site_tagger,
     "analysis_module_nrd_analyzer": _check_nrd_analyzer,
     "analysis_module_rdap_analyzer": _check_rdap_analyzer,
 }
