@@ -664,12 +664,28 @@ class ObservableModifierAnalyzer(AnalysisModule):
         if not self._any_rule_could_match(observable, root):
             return AnalysisExecutionResult.COMPLETED
 
-        matched_rules = []
+        # Recover matches already recorded on this observable. execute_analysis
+        # is re-invoked as the tree grows, and the module also re-runs when the
+        # analysis mode changes, so we accumulate into the existing list rather
+        # than rebuilding it -- this preserves post-phase matches recorded by
+        # execute_final_analysis in an earlier mode.
+        existing = observable.get_and_load_analysis(ObservableModifierAnalysis)
+        if existing:
+            matched_rules = list(existing.details.get("matched_rules", []))
+            emitted_uuids: set[str] = {m["uuid"] for m in matched_rules if m.get("uuid")}
+        else:
+            matched_rules = []
+            emitted_uuids = set()
 
         for rule in self._rules:
             if not rule.enabled:
                 continue
             if rule.phase != "pre":
+                continue
+            # Skip rules already matched (this mode or an earlier one): their
+            # actions are already applied, and re-applying is not always
+            # idempotent (exclude_analysis / limit_analysis append).
+            if rule.uuid in emitted_uuids:
                 continue
 
             if self._evaluate_rule(rule, observable, root):
@@ -694,17 +710,17 @@ class ObservableModifierAnalyzer(AnalysisModule):
                     self._apply_ignore(rule, observable, root)
 
         if matched_rules:
-            # Persist pre-phase matches in the analysis itself rather than
-            # in-memory module state, so the post-phase pass survives a
-            # worker hand-off (root saved to disk and resumed by a different
-            # worker process whose module instance has no in-memory carryover).
+            # Persist matches in the analysis itself rather than in-memory
+            # module state, so they survive a worker hand-off (root saved to
+            # disk and resumed by a different worker process whose module
+            # instance has no in-memory carryover).
             #
             # completed=False is critical: Analysis objects are born completed,
             # and AnalysisModule.accepts() refuses to re-run a module whose
             # analysis is already completed. Leaving it True here would block
             # execute_final_analysis from ever running for this observable, so
             # no post-phase rule would be evaluated.
-            self._persist_matches(observable, matched_rules, emitted_uuids=set(), completed=False)
+            self._persist_matches(observable, matched_rules, emitted_uuids, completed=False)
 
         # Return INCOMPLETE so execute_final_analysis runs later
         # for post-phase rules.
@@ -740,6 +756,11 @@ class ObservableModifierAnalyzer(AnalysisModule):
                 continue
             if rule.phase != "post":
                 continue
+            # Skip post rules already matched in an earlier pass or mode, so a
+            # re-run does not duplicate matched_rules entries, re-emit
+            # signature_id observables, or re-append exclude/limit analysis.
+            if rule.uuid in emitted_uuids:
+                continue
 
             if self._evaluate_rule(rule, observable, root):
                 applied = rule.actions.apply(observable)
@@ -758,11 +779,22 @@ class ObservableModifierAnalyzer(AnalysisModule):
             self._apply_ignore(rule, observable, root)
 
         if matched_rules:
-            # completed=True: the post phase is the module's final pass for
-            # this observable, so the analysis is genuinely done.
-            self._persist_matches(observable, matched_rules, emitted_uuids, completed=True)
+            # completed=False: a post rule may depend, via a tree_condition, on
+            # an analysis that only appears in a later analysis mode -- e.g. a
+            # delayed analysis triggered by a directive a rule added here, when
+            # the module that produces it belongs to a later mode's module
+            # group. Sealing the analysis completed would make
+            # AnalysisModule.accepts() refuse to re-run this module in that
+            # later mode, so the post rule would never see the analysis it
+            # waits for. Keeping it re-evaluable is safe: the
+            # rule.uuid-in-emitted_uuids skips above make re-runs idempotent.
+            self._persist_matches(observable, matched_rules, emitted_uuids, completed=False)
 
-        return AnalysisExecutionResult.COMPLETED
+        # Return INCOMPLETE (not COMPLETED) so the engine does not seal the
+        # ObservableModifierAnalysis as completed (see the comment above). The
+        # engine re-invokes execute_final_analysis when the analysis mode
+        # changes, letting post rules react to later-mode analysis.
+        return AnalysisExecutionResult.INCOMPLETE
 
     def continue_analysis(self, observable: Observable, analysis: Analysis) -> AnalysisExecutionResult:
         logging.warning("observable modifier continue_analysis called, but this module never calls delay_analysis()")
@@ -847,9 +879,11 @@ class ObservableModifierAnalyzer(AnalysisModule):
         emitted as signature_id observables; it is mutated in place to include
         any newly emitted uuids.
 
-        ``completed`` sets the analysis's completed flag. Pre-phase passes
-        False so AnalysisModule.accepts() still lets execute_final_analysis run
-        the post-phase rules; post-phase passes True.
+        ``completed`` sets the analysis's completed flag. Both phases pass
+        False so AnalysisModule.accepts() keeps the module re-runnable: within
+        a mode so execute_final_analysis runs the post-phase rules, and again
+        if the analysis mode changes so a post rule can react to an analysis
+        produced only in a later mode.
         """
         analysis = self.create_analysis(observable)
         analysis.completed = completed

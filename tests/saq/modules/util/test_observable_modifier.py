@@ -578,7 +578,7 @@ def test_execute_final_analysis_evaluates_rules():
 
     # Then call final analysis which should evaluate rules
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert observable.has_directive("extract_iocs")
 
 
@@ -625,7 +625,7 @@ def test_matching_rule_adds_directive():
 
     adapter.execute_analysis(observable)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert observable.has_directive("extract_iocs")
 
     analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
@@ -715,7 +715,7 @@ def test_multiple_rules_independent():
 
     adapter.execute_analysis(observable)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert observable.has_directive("crawl")
     assert observable.has_tag("processed")
     assert not observable.has_tag("should_not_appear")
@@ -747,7 +747,7 @@ def test_alert_tag_condition():
 
     adapter.execute_analysis(observable)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert observable.has_directive("sandbox")
 
 
@@ -771,7 +771,7 @@ def test_alert_tag_condition_no_match():
 
     adapter.execute_analysis(observable)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert not observable.has_directive("sandbox")
 
 
@@ -796,7 +796,7 @@ def test_alert_type_condition():
 
     adapter.execute_analysis(observable)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert observable.has_directive("crawl")
 
 
@@ -820,7 +820,7 @@ def test_queue_condition():
 
     adapter.execute_analysis(observable)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert observable.has_tag("external_alert")
 
 
@@ -844,7 +844,7 @@ def test_exclude_analysis_action():
 
     adapter.execute_analysis(observable)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert "saq.modules.sandbox:SandboxAnalyzer" in observable.excluded_analysis
 
 
@@ -868,7 +868,7 @@ def test_limit_analysis_action():
 
     adapter.execute_analysis(observable)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert "ioc_extraction" in observable.limited_analysis
 
 
@@ -894,7 +894,7 @@ def test_file_observable_matching():
 
     adapter.execute_analysis(observable)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert observable.has_directive("extract_iocs")
 
 
@@ -919,7 +919,7 @@ def test_file_name_pattern_match():
 
     adapter.execute_analysis(observable)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert observable.has_directive("extract_iocs")
 
 
@@ -1172,7 +1172,7 @@ def test_tree_condition_ancestor_match():
 
     adapter.execute_analysis(target_observable)
     result = adapter.analyze(target_observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert target_observable.has_directive("extract_iocs")
 
 
@@ -1214,7 +1214,7 @@ def test_tree_condition_no_match():
 
     adapter.execute_analysis(target_observable)
     result = adapter.analyze(target_observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert not target_observable.has_directive("extract_iocs")
 
 
@@ -1267,7 +1267,7 @@ def test_tree_condition_deep_ancestor_chain():
 
     adapter.execute_analysis(target)
     result = adapter.analyze(target, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert target.has_directive("extract_iocs")
 
 
@@ -1312,7 +1312,7 @@ def test_tree_condition_no_match_sibling_branch():
 
     adapter.execute_analysis(target)
     result = adapter.analyze(target, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert not target.has_directive("should_not_appear")
 
 
@@ -1357,7 +1357,7 @@ def test_tree_condition_global_scope_finds_sibling():
 
     adapter.execute_analysis(target)
     result = adapter.analyze(target, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert target.has_directive("found_via_global")
 
 
@@ -1411,7 +1411,7 @@ def test_tree_condition_global_scope():
 
     adapter.execute_analysis(target)
     result = adapter.analyze(target, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert target.has_tag("global_match")
 
 
@@ -1454,7 +1454,7 @@ def test_tree_condition_ancestors_scope_in_final_mode():
 
     adapter.execute_analysis(target)
     result = adapter.analyze(target, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert target.has_directive("ancestor_found")
 
 
@@ -1493,7 +1493,7 @@ def test_tree_condition_without_details_match():
 
     adapter.execute_analysis(target)
     result = adapter.analyze(target, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert target.has_tag("has_analysis")
 
 
@@ -1536,7 +1536,7 @@ def test_tree_condition_without_analysis_type():
 
     adapter.execute_analysis(target)
     result = adapter.analyze(target, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert target.has_detection_points
 
 
@@ -1586,7 +1586,7 @@ def test_has_tags_on_observable():
 
     adapter.execute_analysis(observable)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert observable.has_directive("process")
 
 
@@ -1612,7 +1612,7 @@ def test_has_directives_on_observable():
 
     adapter.execute_analysis(observable)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert observable.has_tag("reviewed")
 
 
@@ -1655,7 +1655,7 @@ def test_detection_point_action_integration():
 
     adapter.execute_analysis(observable)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert observable.has_detection_points()
 
     analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
@@ -1786,7 +1786,7 @@ def test_tree_condition_negate_parsed_from_yaml():
     target = root.add_observable_by_spec(F_URL, "https://example.com")
     adapter.execute_analysis(target)
     result = adapter.analyze(target, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert target.has_tag("negated")
 
 
@@ -2266,7 +2266,7 @@ def test_observable_match_parsed_from_yaml():
     # so inner condition is True. With negate, the rule should NOT match.
     adapter.execute_analysis(target)
     result = adapter.analyze(target, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert not target.has_directive("ocr")
 
 
@@ -2299,7 +2299,7 @@ def test_observable_match_parsed_from_yaml_no_ancestor():
 
     adapter.execute_analysis(target)
     result = adapter.analyze(target, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert target.has_directive("ocr")
 
 
@@ -2374,7 +2374,7 @@ def test_post_phase_rule_not_evaluated_in_execute_analysis():
 
     # Only after final analysis
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert observable.has_directive("post_applied")
 
 
@@ -2394,7 +2394,7 @@ def test_post_phase_rule_evaluated_in_execute_final_analysis():
 
     adapter.execute_analysis(observable)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert observable.has_tag("post_tag")
 
 
@@ -2423,7 +2423,7 @@ def test_pre_and_post_phase_rules_merged_in_analysis():
 
     adapter.execute_analysis(observable)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
 
     analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
     assert analysis is not None
@@ -2524,21 +2524,22 @@ def test_post_phase_rule_fires_after_pre_phase_match_via_accepts():
     assert adapter.accepts(observable) is True
 
     # post phase
-    assert adapter.analyze(observable, final_analysis=True) == AnalysisExecutionResult.COMPLETED
+    assert adapter.analyze(observable, final_analysis=True) == AnalysisExecutionResult.INCOMPLETE
     assert observable.has_tag("post_tag")
 
     analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
     assert analysis is not None
-    assert analysis.completed is True
+    assert analysis.completed is False
     rule_names = sorted(r["name"] for r in analysis.details["matched_rules"])
     assert rule_names == ["post rule", "pre rule"]
 
 
 @pytest.mark.unit
-def test_post_phase_only_match_marks_analysis_completed():
-    """When only a post-phase rule matches (no pre-phase analysis created), the
-    analysis produced by execute_final_analysis must be completed=True so the
-    module is not re-dispatched in subsequent final-analysis-mode cycles."""
+def test_post_phase_only_match_leaves_analysis_reevaluable():
+    """When only a post-phase rule matches, the analysis produced by
+    execute_final_analysis must be completed=False so AnalysisModule.accepts()
+    keeps the module re-runnable -- a post rule may need to re-evaluate against
+    an analysis that only appears in a later analysis mode."""
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
 
@@ -2556,7 +2557,7 @@ def test_post_phase_only_match_marks_analysis_completed():
 
     analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
     assert analysis is not None
-    assert analysis.completed is True
+    assert analysis.completed is False
 
 
 # ============================================================
@@ -2623,7 +2624,7 @@ def test_phase_field_defaults_to_post():
 
     # Should apply during final analysis
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert observable.has_tag("default_phase")
 
 
@@ -2650,7 +2651,7 @@ def test_invalid_phase_defaults_to_post(caplog):
 
     # Should work in final analysis (defaulted to post)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert observable.has_tag("bad_phase")
     assert any("invalid phase" in msg.lower() for msg in [r.message for r in caplog.records])
 
@@ -3170,7 +3171,7 @@ def test_tree_condition_self_scope_parsed_from_yaml():
 
     adapter.execute_analysis(target)
     result = adapter.analyze(target, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert target.has_directive("ocr")
 
 
@@ -3232,7 +3233,7 @@ def test_has_yara_meta_tags_integration():
 
     adapter.execute_analysis(observable)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert observable.has_directive("ocr")
 
     analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
@@ -3263,7 +3264,7 @@ def test_has_yara_meta_tags_no_match_integration():
 
     adapter.execute_analysis(observable)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert not observable.has_directive("ocr")
 
 
@@ -3395,7 +3396,7 @@ def test_tree_condition_parent_scope_parsed_from_yaml():
 
     adapter.execute_analysis(target)
     result = adapter.analyze(target, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert target.has_tag("matched_parent")
 
 
@@ -3546,7 +3547,7 @@ def test_tree_condition_descendants_scope_parsed_from_yaml():
 
     adapter.execute_analysis(target)
     result = adapter.analyze(target, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert target.has_directive("crawl")
 
 
@@ -3635,7 +3636,7 @@ def test_reset_analysis_parsed_from_yaml():
 
     adapter.execute_analysis(target)
     result = adapter.analyze(target, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert sentinel_key not in target._analysis
     assert target.has_directive("crawl")
 
@@ -3684,7 +3685,7 @@ def test_ignore_removes_observable_from_matching_parent():
 
     adapter.execute_analysis(target)
     result = adapter.analyze(target, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
 
     # Observable should be removed from email_analysis._observables
     assert target not in email_analysis.observables
@@ -3744,7 +3745,7 @@ def test_ignore_preserves_observable_in_other_parents():
 
     adapter.execute_analysis(target)
     result = adapter.analyze(target, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
 
     # Observable should be removed from email_analysis
     assert target not in email_analysis.observables
@@ -3776,7 +3777,7 @@ def test_ignore_global_without_parent_scope():
 
     adapter.execute_analysis(target)
     result = adapter.analyze(target, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
 
     # No parent-scoped tree conditions, so should be globally ignored
     assert target.ignored is True
@@ -4057,7 +4058,7 @@ def test_matching_rule_emits_signature_id_observable():
 
     adapter.execute_analysis(observable)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
 
     analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
     assert analysis is not None
@@ -4096,7 +4097,7 @@ def test_multiple_matching_rules_emit_distinct_signature_ids():
 
     adapter.execute_analysis(observable)
     result = adapter.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
 
     analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
     assert analysis is not None
@@ -4132,7 +4133,7 @@ def test_pre_phase_signature_id_survives_worker_handoff():
     # process pulling the root off the workload queue between phases.
     adapter_b = _create_analyzer_with_rules(root, rules)
     result = adapter_b.analyze(observable, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
 
     analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
     assert analysis is not None
@@ -4236,7 +4237,7 @@ def test_crawl_url_extracted_from_ical_file():
 
     adapter.execute_analysis(target_url)
     result = adapter.analyze(target_url, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert target_url.has_directive("crawl")
 
 
@@ -4284,7 +4285,7 @@ def test_crawl_ical_rule_does_not_match_non_ical_ancestor():
 
     adapter.execute_analysis(target_url)
     result = adapter.analyze(target_url, final_analysis=True)
-    assert result == AnalysisExecutionResult.COMPLETED
+    assert result == AnalysisExecutionResult.INCOMPLETE
     assert not target_url.has_directive("crawl")
 
 
@@ -4452,3 +4453,151 @@ def test_rule_eval_cost_no_rules_no_emission(caplog):
         r for r in caplog.records
         if "observable_modifier rule cost" in r.getMessage()
     ]
+
+
+# ============================================================
+# Post-phase re-evaluation across analysis modes
+# ============================================================
+
+
+@pytest.mark.unit
+def test_post_phase_reevaluated_in_later_mode_after_delayed_analysis():
+    """Regression: a post-phase rule whose tree_condition depends on an analysis
+    produced only in a later analysis mode must still fire -- even when an
+    earlier-phase rule already created the ObservableModifierAnalysis in the
+    first mode. The module must not seal the analysis completed, or
+    AnalysisModule.accepts() blocks the re-evaluation and the post rule never
+    sees the analysis it waits for."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+
+    # Stand-in for a delayed analysis module (e.g. a Splunk query) whose module
+    # group only runs in a later analysis mode.
+    class DeferredAnalysis(Analysis):
+        pass
+
+    module_path = f"{DeferredAnalysis.__module__}:{DeferredAnalysis.__name__}"
+    pre_uuid = "c0ffee00-0000-4000-8000-000000000001"
+    post_uuid = "c0ffee00-0000-4000-8000-000000000002"
+    rules = [
+        {
+            # matches in mode 1 -> creates the ObservableModifierAnalysis
+            "name": "pre rule",
+            "uuid": pre_uuid,
+            "phase": "pre",
+            "conditions": {"observable_types": ["url"]},
+            "actions": {"add_directives": ["pre_dir"]},
+        },
+        {
+            "name": "post rule depending on deferred analysis",
+            "uuid": post_uuid,
+            "phase": "post",
+            "conditions": {
+                "observable_types": ["url"],
+                "tree_conditions": [{
+                    "analysis_type": module_path,
+                    "scope": "self",
+                    "details_match": {"query_results.message_id_seen": "^0$"},
+                }],
+            },
+            "actions": {"add_detection_points": ["deferred analysis detection"]},
+        },
+    ]
+
+    # Mode 1: the pre rule matches; the deferred analysis has not run yet, so
+    # the post rule cannot match.
+    adapter1 = _create_analyzer_with_rules(root, rules)
+    adapter1.execute_analysis(observable)
+    assert adapter1.analyze(observable, final_analysis=True) == AnalysisExecutionResult.INCOMPLETE
+    assert not observable.has_detection_points()
+
+    analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
+    assert analysis is not None
+    # the analysis must NOT be sealed completed -- otherwise accepts() blocks
+    # the post phase from re-running in the later mode.
+    assert analysis.completed is False
+    assert adapter1.accepts(observable) is True
+
+    # The deferred analysis now appears (it ran in the later mode).
+    deferred = DeferredAnalysis()
+    deferred.details = {"query_results": [{"message_id_seen": "0"}]}
+    deferred.details_modified = True
+    observable.add_analysis(deferred)
+
+    # Mode 2: the root has moved to a later analysis mode and a fresh analyzer
+    # instance (a different worker process) resumes it.
+    root.analysis_mode = "test_groups"
+    adapter2 = _create_analyzer_with_rules(root, rules)
+    assert adapter2.accepts(observable) is True
+    adapter2.execute_analysis(observable)
+    adapter2.analyze(observable, final_analysis=True)
+
+    # the post rule now sees the deferred analysis and fires
+    assert observable.has_detection_points()
+    analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
+    assert sorted(r["uuid"] for r in analysis.details["matched_rules"]) == sorted(
+        [pre_uuid, post_uuid]
+    )
+
+
+@pytest.mark.unit
+def test_post_phase_idempotent_across_modes():
+    """Re-running the module (as happens across analysis modes) must not
+    duplicate a matched rule's effects: matched_rules entries, detection
+    points, signature_id observables, or appended exclude_analysis entries."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    post_uuid = "d0d0d0d0-0000-4000-8000-000000000001"
+    rules = [{
+        "name": "post rule",
+        "uuid": post_uuid,
+        "phase": "post",
+        "conditions": {"observable_types": ["url"]},
+        "actions": {
+            "add_detection_points": ["dup check detection"],
+            "add_tags": ["dup_tag"],
+            "exclude_analysis": ["some.module:SomeAnalysis"],
+        },
+    }]
+
+    # Run the full pre + final-analysis cycle three times, each on a fresh
+    # analyzer instance (simulating re-runs in successive analysis modes).
+    for _ in range(3):
+        adapter = _create_analyzer_with_rules(root, rules)
+        adapter.execute_analysis(observable)
+        adapter.analyze(observable, final_analysis=True)
+
+    analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
+    assert analysis is not None
+    assert [r["uuid"] for r in analysis.details["matched_rules"]] == [post_uuid]
+    assert len(observable.detections) == 1
+    assert observable.has_tag("dup_tag")
+    assert observable._excluded_analysis.count("some.module:SomeAnalysis") == 1
+    sig_observables = [o for o in analysis.observables if o.type == F_SIGNATURE_ID]
+    assert [o.value for o in sig_observables] == [post_uuid]
+
+
+@pytest.mark.unit
+def test_no_match_observable_sealed_completed():
+    """An observable that no rule's immutable conditions can match takes the
+    fast path: both execute_analysis and execute_final_analysis return
+    COMPLETED (sealing it) and no ObservableModifierAnalysis is created."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "fqdn-only rule",
+        "phase": "post",
+        "conditions": {"observable_types": ["fqdn"]},
+        "actions": {"add_tags": ["nope"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    assert adapter.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    assert adapter.analyze(observable, final_analysis=True) == AnalysisExecutionResult.COMPLETED
+    assert observable.get_and_load_analysis(ObservableModifierAnalysis) is None
