@@ -252,7 +252,7 @@ class AnalysisExecutionContext:
                     "root_uuid": self.root.uuid,
                     "exec_count": self.total_exec_count.get(key, 0),
                     "alert_type": self.root.alert_type,
-                    "is_alert": bool(self.root.alert_type),
+                    "is_alert": self.root.analysis_mode == ANALYSIS_MODE_CORRELATION,
                     "queue": self.root.queue,
                 }
 

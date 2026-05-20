@@ -1504,12 +1504,13 @@ def test_record_execution_statistics_with_fluent_bit(tmpdir):
             assert log_event_a["root_uuid"] == root.uuid
             assert "timestamp" in log_event_a
             # New fields added in the per-(root, module) aggregation PR:
-            # exec_count + alert fields are always present. Test helper
-            # create_root_analysis() defaults alert_type to "test_alert"
-            # so is_alert is True here.
+            # exec_count + alert fields are always present. is_alert is
+            # driven by analysis_mode (CORRELATION).
+            # create_root_analysis() defaults analysis_mode
+            # to "test_groups" so is_alert is False here.
             assert log_event_a["exec_count"] == 0  # nothing populated total_exec_count
             assert log_event_a["alert_type"] == root.alert_type
-            assert log_event_a["is_alert"] is bool(root.alert_type)
+            assert log_event_a["is_alert"] is False
             assert "queue" in log_event_a
             # No cache activity was recorded → cache_* fields must be absent.
             for k in [
@@ -1528,7 +1529,7 @@ def test_record_execution_statistics_with_fluent_bit(tmpdir):
             assert log_event_b["total_analysis_time_seconds"] == 4.0
             assert log_event_b["total_time_seconds"] == 10.0
             assert log_event_b["exec_count"] == 0
-            assert log_event_b["is_alert"] is bool(root.alert_type)
+            assert log_event_b["is_alert"] is False
 
 
 @pytest.mark.unit
@@ -1757,12 +1758,13 @@ def test_per_root_exec_count_reflects_repeated_invocations(tmpdir):
 
 
 @pytest.mark.unit
-def test_per_root_includes_alert_fields(tmpdir):
-    """alert_type / is_alert / queue surface root context on every event."""
+def test_per_root_is_alert_true_when_correlation_mode(tmpdir):
+    """is_alert is True when analysis_mode is CORRELATION."""
+    from saq.constants import ANALYSIS_MODE_CORRELATION
     from saq.engine.executor import AnalysisExecutionContext
     from unittest.mock import MagicMock, patch
 
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode=ANALYSIS_MODE_CORRELATION)
     root.initialize_storage()
     root.alert_type = "splunk - ipv4 search"
     root.queue = "external"
@@ -1783,16 +1785,15 @@ def test_per_root_includes_alert_fields(tmpdir):
 
 
 @pytest.mark.unit
-def test_per_root_alert_fields_when_not_alert(tmpdir):
-    """alert_type stays None / is_alert stays False on benign triage roots."""
+def test_per_root_is_alert_false_when_alert_type_set_but_not_promoted(tmpdir):
+    """is_alert is False when analysis_mode hasn't transitioned to CORRELATION yet.
+    """
     from saq.engine.executor import AnalysisExecutionContext
     from unittest.mock import MagicMock, patch
 
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
-    # create_root_analysis defaults alert_type to "test_alert"; override
-    # for this test to exercise the "not an alert" path.
-    root.alert_type = None
+    root.alert_type = "mailbox"
     context = AnalysisExecutionContext(root)
     context.total_analysis_time["module_a"] = 1.0
     context.total_exec_count["module_a"] = 1
@@ -1804,7 +1805,7 @@ def test_per_root_alert_fields_when_not_alert(tmpdir):
             context.record_execution_statistics(2.0, str(tmpdir))
 
     payload = mock_sender.emit.call_args[0][1]
-    assert payload["alert_type"] is None
+    assert payload["alert_type"] == "mailbox"
     assert payload["is_alert"] is False
 
 
