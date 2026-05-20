@@ -56,6 +56,10 @@
                     <div class="card">
                         <div class="card-header">
                             <h4 class="card-title">
+                                {% if request.values.get('module_path') %}
+                                <a href="{{ url_for('analysis.index', direct=alert.uuid) }}" class="btn btn-outline-dark btn-sm" title="Return to the full alert view">
+                                <span class="bi bi-arrow-left"></span> Back to Alert</a>
+                                {% endif %}
                                 <b>{{alert.description}}</b>
                                 <button class="btn btn-outline-dark btn-sm" type="button" id="copy_link_action_{{ unique_reference }}" title="Copy Link to Clipboard">
                                 <span class="bi bi-link"></span></button>
