@@ -1759,12 +1759,7 @@ def test_per_root_exec_count_reflects_repeated_invocations(tmpdir):
 
 @pytest.mark.unit
 def test_per_root_is_alert_true_when_correlation_mode(tmpdir):
-    """is_alert is True when analysis_mode is CORRELATION.
-
-    A root has been promoted to an alert (Alert row inserted) once its
-    analysis_mode transitions to CORRELATION. alert_type is a descriptive
-    string and does NOT drive is_alert.
-    """
+    """is_alert is True when analysis_mode is CORRELATION."""
     from saq.constants import ANALYSIS_MODE_CORRELATION
     from saq.engine.executor import AnalysisExecutionContext
     from unittest.mock import MagicMock, patch
@@ -1811,9 +1806,7 @@ def test_per_root_is_alert_false_when_alert_type_set_but_not_promoted(tmpdir):
 
     payload = mock_sender.emit.call_args[0][1]
     assert payload["alert_type"] == "mailbox"
-    assert payload["is_alert"] is False, (
-        "alert_type alone must NOT drive is_alert — only analysis_mode does"
-    )
+    assert payload["is_alert"] is False
 
 
 @pytest.mark.unit
