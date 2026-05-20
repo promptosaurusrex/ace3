@@ -63,13 +63,18 @@ class TestCacheKeySensitivity:
         assert k1 != k2
 
     @pytest.mark.unit
-    def test_changes_with_observable_time(self):
+    def test_ignores_observable_time(self):
+        """observable.time is deliberately excluded from the key — cacheable
+        results are time-independent, and including time would defeat dedup
+        for time-bearing observable types (IPs). Two observables identical
+        but for their time must produce the SAME key."""
         mod = _make_module()
         t1 = datetime(2026, 4, 17, 10, 0, tzinfo=timezone.utc)
         t2 = datetime(2026, 4, 17, 11, 0, tzinfo=timezone.utc)
         k1 = generate_cache_key(_make_observable(time=t1), mod)
         k2 = generate_cache_key(_make_observable(time=t2), mod)
-        assert k1 != k2
+        k_none = generate_cache_key(_make_observable(time=None), mod)
+        assert k1 == k2 == k_none
 
     @pytest.mark.unit
     def test_changes_with_module_name(self):

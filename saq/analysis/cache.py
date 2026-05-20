@@ -5,11 +5,14 @@ executions so that future analyses of the same observable can reuse the work.
 Phase 2 ships the write path only; reads/replay land in Phase 3.
 
 Cacheability contract (design doc §A1): a module's output must be a pure
-function of ``(observable.type, observable.value, observable.time,
-module.name, module.version, module.extended_version)``. Modules that mutate
-other observables or depend on surrounding tree state must leave
-``cache_ttl = None``. The caller additionally refuses to cache deltas that
-contain removals (§A4) as a safety net.
+function of ``(observable.type, observable.value, module.name,
+module.version, module.extended_version)``. Modules that mutate other
+observables or depend on surrounding tree state must leave
+``cache_ttl = None``. ``observable.time`` is deliberately NOT part of the
+key — cacheable modules produce time-independent results, and result drift
+over time is bounded by ``cache_ttl`` rather than by time-segmenting the
+key. The caller additionally refuses to cache deltas that contain removals
+(§A4) or are empty (nothing to replay) as a safety net.
 
 Size discipline (design doc §A3):
 
@@ -53,8 +56,14 @@ if TYPE_CHECKING:
 
 
 def generate_cache_key(observable: "Observable", module) -> Optional[str]:
-    """Mirror of ace2-core's ``generate_cache_key`` — sha256 over observable
-    identity + module identity + extended version.
+    """sha256 over observable identity + module identity + extended version.
+
+    ``observable.time`` is intentionally excluded. A cacheable module's
+    result is a pure function of the observable *value* plus external state
+    — never of when the observable was seen. Including time would also
+    defeat dedup for observable types that commonly carry one (IPs), since
+    every occurrence has a slightly different timestamp. Result drift over
+    time is bounded by ``cache_ttl``, not by the key.
 
     Returns None when the module hasn't opted into caching (``cache_ttl is
     None``), signalling that callers should skip cache operations entirely.
@@ -65,8 +74,6 @@ def generate_cache_key(observable: "Observable", module) -> Optional[str]:
     h = hashlib.sha256()
     h.update(observable.type.encode("utf-8", "ignore"))
     h.update(observable.value.encode("utf-8", "ignore"))
-    if observable.time:
-        h.update(str(observable.time.timestamp()).encode("utf-8", "ignore"))
     h.update(module.config.name.encode("utf-8", "ignore"))
     h.update(str(module.version).encode("utf-8", "ignore"))
     for key in sorted(module.extended_version):
@@ -133,6 +140,16 @@ def put_cached_delta(
     """
     try:
         if module.cache_ttl is None:
+            return None
+        # An empty delta means the module ran and changed nothing — there is
+        # nothing to replay. Caching it would write one row per distinct
+        # observable the module merely *looked at* (every non-matching IP for
+        # site_tagger, every non-NRD domain for nrd_analyzer, etc.), producing
+        # unbounded cache growth with no hit-rate benefit. The Phase 1
+        # recording path already filters these before record_module_execution;
+        # the cache-write path must apply the same filter. Silent — empty
+        # deltas are the common, expected case, not a misbehaving opt-in.
+        if delta.is_empty:
             return None
         if delta.has_removals:
             logging.warning(
@@ -437,12 +454,11 @@ class _ObservableShim:
     ``ModuleExecutionDelta`` when recomputing a lost key.
     """
 
-    __slots__ = ("type", "value", "time")
+    __slots__ = ("type", "value")
 
     def __init__(self, delta: "ModuleExecutionDelta"):
         self.type = delta.observable_type
         self.value = delta.observable_value
-        self.time = None
 
 
 def _extract_blob_refs(delta_dict: dict) -> list[str]:

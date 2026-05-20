@@ -49,8 +49,16 @@ def _make_delta(
     observable_value="https://example.com/",
     analysis=None,
     has_removal=False,
+    empty=False,
 ):
     obs = SimpleNamespace(type=observable_type, value=observable_value, time=None)
+    if empty:
+        target_diff = ObservableDiff()
+    else:
+        target_diff = ObservableDiff(
+            added_tags=["t1"],
+            removed_tags=["r1"] if has_removal else [],
+        )
     delta = ModuleExecutionDelta(
         module_path=f"saq.modules.test.{module.config.name}:{module.config.name}Analysis",
         module_instance=None,
@@ -60,10 +68,7 @@ def _make_delta(
         observable_value=observable_value,
         created_at=datetime.now(timezone.utc).isoformat(),
         execution_time_ms=42,
-        target_observable_diff=ObservableDiff(
-            added_tags=["t1"],
-            removed_tags=["r1"] if has_removal else [],
-        ),
+        target_observable_diff=target_diff,
         new_observables=[],
         root_diff=RootDiff(),
         analysis=analysis,
@@ -167,6 +172,17 @@ class TestPutCachedDelta:
     def test_refuses_delta_with_removals(self, blob_store):
         module = _make_module()
         delta = _make_delta(module, has_removal=True)
+        assert put_cached_delta(delta, module, blob_store) is None
+        assert _row_count(delta.cache_key) == 0
+
+    @pytest.mark.integration
+    def test_refuses_empty_delta(self, blob_store):
+        """An empty delta has nothing to replay — caching it would write one
+        row per observable the module merely looked at. put_cached_delta must
+        refuse it, with no row written."""
+        module = _make_module()
+        delta = _make_delta(module, empty=True)
+        assert delta.is_empty
         assert put_cached_delta(delta, module, blob_store) is None
         assert _row_count(delta.cache_key) == 0
 
