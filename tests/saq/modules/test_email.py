@@ -707,6 +707,49 @@ def test_basic_email_parsing(root_analysis, datadir):
             assert file_observable.has_directive(DIRECTIVE_EXTRACT_URLS)
 
 @pytest.mark.integration
+def test_long_filename_does_not_crash_analyzer(root_analysis, datadir):
+    """Regression: a .eml basename at the 255-byte per-component limit used to crash
+    analyze_rfc822 with ENAMETOOLONG when it tried to write '<basename>.headers'
+    (263 bytes). The analyzer must now shorten the derived basenames."""
+
+    long_basename = "a" * 251 + ".eml"
+    assert len(long_basename.encode("utf-8")) == 255
+
+    src = str(datadir / 'emails/splunk_logging.email.rfc822')
+    dst = str(datadir / 'emails' / long_basename)
+    shutil.copy(src, dst)
+
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(dst)
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    file_observable = root_analysis.get_observable(file_observable.uuid)
+    assert file_observable
+    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    assert isinstance(email_analysis, EmailAnalysis)
+    assert email_analysis.parsing_error is None
+
+    file_observables = email_analysis.get_observables_by_type(F_FILE)
+    file_names = [_.file_name for _ in file_observables]
+
+    # Every derived file must fit within the per-component limit.
+    for name in file_names:
+        assert len(name.encode("utf-8")) <= 255, f"{name!r} exceeds NAME_MAX"
+
+    # Headers and combined files should still be produced (under shortened names).
+    assert any(name.endswith(".headers") for name in file_names), file_names
+    assert any(name.endswith(".combined") for name in file_names), file_names
+
+@pytest.mark.integration
 def test_multi_recipient_to_cc_observables(root_analysis, datadir):
     """A single To: header with multiple addresses, plus a CC: with mixed local/external recipients,
     should produce one F_EMAIL_TO per To: address and one F_EMAIL_CC per CC: address.
