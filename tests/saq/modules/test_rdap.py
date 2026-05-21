@@ -11,7 +11,7 @@ from whoisit.errors import (
 
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODULE_RDAP_ANALYZER, F_FQDN, AnalysisExecutionResult
-from saq.modules.rdap import RdapAnalysis, RdapAnalyzer
+from saq.modules.rdap import RdapAnalysis, RdapAnalyzer, _registrable_domain
 from tests.saq.helpers import create_root_analysis
 
 
@@ -698,3 +698,114 @@ def test_rdap_analyzer_whois_fallback_no_dates(test_context, monkeypatch):
     assert analysis.age_created_in_days is None
     assert analysis.age_last_updated_in_days is None
     assert analysis.datetime_of_analysis is not None
+
+
+# ---------------------------------------------------------------------------
+# Registrable-domain reduction — RDAP/WHOIS are registry protocols and only
+# answer for registered domains, never subdomains. www.example.com must be
+# queried as example.com or the registry returns a spurious 404.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("www.example.com", "example.com"),
+        ("example.com", "example.com"),
+        ("a.b.c.example.com", "example.com"),
+        ("www.example.co.uk", "example.co.uk"),
+        ("WWW.Example.COM", "example.com"),
+        ("example.com.", "example.com"),
+        # No identifiable public suffix → input returned unchanged.
+        ("localhost", "localhost"),
+        ("unknown.invalidtld", "unknown.invalidtld"),
+    ],
+)
+def test_registrable_domain(value, expected):
+    assert _registrable_domain(value) == expected
+
+
+@pytest.mark.unit
+def test_rdap_analyzer_subdomain_reduced_to_registrable(test_context, monkeypatch):
+    """A subdomain FQDN must be queried as its registrable domain — RDAP
+    has no record for the host itself.
+    """
+    queried = []
+
+    def _rdap(domain, **_kw):
+        queried.append(domain)
+        return _make_rdap_result()
+
+    _patch_rdap(monkeypatch, _rdap)
+    _patch_whois_must_not_be_called(monkeypatch)
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_FQDN, "www.example.com")
+
+    analyzer = _make_analyzer(test_context)
+    analyzer.root = root
+
+    analyzer.execute_analysis(observable)
+    analysis = observable.get_analysis(RdapAnalysis)
+
+    assert queried == ["example.com"]
+    assert analysis.lookup_protocol == "rdap"
+    assert analysis.error is None
+    assert analysis.domain_name == "EXAMPLE.COM"
+
+
+@pytest.mark.unit
+def test_rdap_analyzer_registrable_domain_passthrough(test_context, monkeypatch):
+    """An observable that is already a registrable domain is queried as-is."""
+    queried = []
+
+    def _rdap(domain, **_kw):
+        queried.append(domain)
+        return _make_rdap_result()
+
+    _patch_rdap(monkeypatch, _rdap)
+    _patch_whois_must_not_be_called(monkeypatch)
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_FQDN, "example.com")
+
+    analyzer = _make_analyzer(test_context)
+    analyzer.root = root
+
+    analyzer.execute_analysis(observable)
+
+    assert queried == ["example.com"]
+
+
+@pytest.mark.unit
+def test_rdap_analyzer_whois_fallback_uses_registrable_domain(test_context, monkeypatch):
+    """The WHOIS fallback path also queries the registrable domain, not
+    the (subdomain) observable value.
+    """
+    def _rdap(_domain, **_kw):
+        raise UnsupportedError("No RDAP service for TLD 'de'")
+
+    queried = []
+
+    def _whois(domain):
+        queried.append(domain)
+        return _MockWhoisResult({"domain_name": "example.de", "text": "mock"})
+
+    _patch_rdap(monkeypatch, _rdap)
+    _patch_whois(monkeypatch, _whois)
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_FQDN, "login.example.de")
+
+    analyzer = _make_analyzer(test_context)
+    analyzer.root = root
+
+    analyzer.execute_analysis(observable)
+    analysis = observable.get_analysis(RdapAnalysis)
+
+    assert queried == ["example.de"]
+    assert analysis.lookup_protocol == "whois"

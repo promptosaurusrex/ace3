@@ -5,6 +5,12 @@ prefer RDAP, falling back to legacy WHOIS only when RDAP cannot
 answer — primarily for country-code TLDs (.de, .br, etc.) that have
 not yet stood up an RDAP service.
 
+RDAP and WHOIS are *registry* protocols: they only answer for
+registered domains, never for subdomains. The FQDN observable is
+therefore first reduced to its registrable domain (eTLD+1) — e.g.
+``www.example.com`` is queried as ``example.com`` — otherwise the
+registry returns a spurious 404 for the host.
+
 Outcomes to handle:
 
     - RDAP succeeds: parsed registration data + raw JSON response.
@@ -27,6 +33,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+import tldextract
 import whois
 import whoisit
 from whois.exceptions import PywhoisError
@@ -112,6 +119,22 @@ def _extract_rdap_emails(rdap_dict: dict) -> list[str]:
             if email:
                 emails.add(email)
     return sorted(emails)[:_MAX_EMAILS_STORED]
+
+
+def _registrable_domain(value: str) -> str:
+    """Reduce an FQDN to its registrable domain (eTLD+1).
+
+    RDAP and WHOIS are registry protocols — they only answer for
+    registered domains, never for subdomains, so ``www.example.com``
+    must be queried as ``example.com``. Falls back to the input
+    unchanged when no public suffix is identifiable (bare hostnames,
+    internal names), matching ``saq/nrd/util.py``'s handling.
+    """
+    normalized = (value or "").strip().lower().rstrip(".")
+    if not normalized:
+        return value
+    registrable = tldextract.extract(normalized).top_domain_under_public_suffix
+    return registrable or normalized
 
 
 class RdapAnalysis(Analysis):
@@ -357,12 +380,16 @@ class RdapAnalyzer(AnalysisModule):
         now = datetime.now(timezone.utc)
         analysis.datetime_of_analysis = now.isoformat(" ")
 
+        # RDAP/WHOIS only answer for registered domains — query the
+        # registrable domain, not the (possibly subdomain) observable.
+        query_domain = _registrable_domain(observable.value)
+
         # ---- RDAP attempt --------------------------------------------------
         bootstrap_error = self._ensure_rdap_bootstrap()
         if bootstrap_error is not None:
             rdap_error: Optional[str] = bootstrap_error
         else:
-            rdap_error = self._try_rdap(observable, analysis, now)
+            rdap_error = self._try_rdap(observable, query_domain, analysis, now)
             if rdap_error is None:
                 analysis.lookup_protocol = "rdap"
                 return AnalysisExecutionResult.COMPLETED
@@ -372,7 +399,7 @@ class RdapAnalyzer(AnalysisModule):
 
         # ---- WHOIS fallback ------------------------------------------------
         analysis.rdap_attempt_error = rdap_error
-        whois_error = self._try_whois(observable, analysis, now)
+        whois_error = self._try_whois(observable, query_domain, analysis, now)
         if whois_error is None:
             analysis.lookup_protocol = "whois"
             return AnalysisExecutionResult.COMPLETED
@@ -383,10 +410,12 @@ class RdapAnalyzer(AnalysisModule):
     def _try_rdap(
         self,
         observable,
+        query_domain: str,
         analysis: RdapAnalysis,
         now: datetime,
     ) -> Optional[str]:
-        """Populate ``analysis`` from an RDAP query.
+        """Populate ``analysis`` from an RDAP query for ``query_domain``
+        (the registrable domain reduced from ``observable``).
 
         Returns:
             ``None`` on success;
@@ -397,7 +426,7 @@ class RdapAnalyzer(AnalysisModule):
                 will fall back to WHOIS).
         """
         try:
-            result = whoisit.domain(observable.value, include_raw=True)
+            result = whoisit.domain(query_domain, include_raw=True)
         except ResourceDoesNotExist as e:
             analysis.error = f"rdap: domain not found: {e}".split(
                 "\n", 1
@@ -419,7 +448,7 @@ class RdapAnalyzer(AnalysisModule):
         analysis.rdap_data = dict(result)
         analysis.rdap_raw_json = json.dumps(raw, default=str) if raw is not None else None
 
-        analysis.domain_name = result.get("name") or observable.value
+        analysis.domain_name = result.get("name") or query_domain
         analysis.registrar = _extract_rdap_registrar(result)
         nameservers = result.get("nameservers") or []
         analysis.name_servers = list(nameservers)
@@ -458,14 +487,17 @@ class RdapAnalyzer(AnalysisModule):
     def _try_whois(
         self,
         observable,
+        query_domain: str,
         analysis: RdapAnalysis,
         now: datetime,
     ) -> Optional[str]:
-        """Populate ``analysis`` from a legacy WHOIS query. Returns
-        ``None`` on success or an error string on failure.
+        """Populate ``analysis`` from a legacy WHOIS query for
+        ``query_domain`` (the registrable domain reduced from
+        ``observable``). Returns ``None`` on success or an error string
+        on failure.
         """
         try:
-            whois_result = whois.whois(observable.value)
+            whois_result = whois.whois(query_domain)
         except PywhoisError as e:
             return str(e).split("\n", 1)[0].strip()[:200] or "query failed"
         except Exception as e:  # noqa: BLE001
