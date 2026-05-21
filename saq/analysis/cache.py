@@ -141,16 +141,11 @@ def put_cached_delta(
     try:
         if module.cache_ttl is None:
             return None
-        # An empty delta means the module ran and changed nothing — there is
-        # nothing to replay. Caching it would write one row per distinct
-        # observable the module merely *looked at* (every non-matching IP for
-        # site_tagger, every non-NRD domain for nrd_analyzer, etc.), producing
-        # unbounded cache growth with no hit-rate benefit. The Phase 1
-        # recording path already filters these before record_module_execution;
-        # the cache-write path must apply the same filter. Silent — empty
-        # deltas are the common, expected case, not a misbehaving opt-in.
+
+        # don't cache empty deltas
         if delta.is_empty:
             return None
+
         if delta.has_removals:
             logging.warning(
                 "refusing to cache delta module_name=%s observable_type=%s "
