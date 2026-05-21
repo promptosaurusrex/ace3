@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.55] - 2026-05-21
+
+- [ignore grouped suppression for the validation API](https://github.com/ACE-Collective/ace3/pull/265)
+- [Adds email_delivery observable for all recipients](https://github.com/ACE-Collective/ace3/pull/264)
+- [Fixes analysis cache writing empty deltas](https://github.com/ACE-Collective/ace3/pull/262)
+- [Fixes observable modifier bug with multiple analysis modes](https://github.com/ACE-Collective/ace3/pull/261)
+
 ## [3.0.54] - 2026-05-20
 
 - [Adds 'Back to Alert' button to analysis details](https://github.com/ACE-Collective/ace3/pull/260)
