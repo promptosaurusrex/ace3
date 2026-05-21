@@ -754,9 +754,9 @@ def test_multi_recipient_to_cc_observables(root_analysis, datadir):
     """A single To: header with multiple addresses, plus a CC: with mixed local/external recipients,
     should produce one F_EMAIL_TO per To: address and one F_EMAIL_CC per CC: address.
 
-    NOTE on F_EMAIL_DELIVERY: ACE journals one alert per recipient, so each alert remediates
-    only its own mailbox (mail_to / env_rcpt_to). Sibling recipients in the To: / CC: headers
-    do NOT get delivery observables on this alert — their own alert handles their mailbox."""
+    NOTE on F_EMAIL_DELIVERY: a delivery observable is created for EVERY local recipient the
+    message reached — envelope, To: and CC: — so the remediation timeline reflects the full
+    delivery footprint. Non-local recipients (e.g. outsider@external.example) are skipped."""
 
     root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
     root_analysis.analysis_mode = "test_groups"
@@ -790,10 +790,15 @@ def test_multi_recipient_to_cc_observables(root_analysis, datadir):
     email_cc_values = {o.value for o in email_analysis.observables if o.type == F_EMAIL_CC}
     assert email_cc_values == {'carol@company.com', 'outsider@external.example', 'dan@company.com'}
 
-    # F_EMAIL_DELIVERY observables: only this alert's recipient. With no SMTP envelope on
-    # the fixture, mail_to falls back to the FIRST parsed To: address.
+    # F_EMAIL_DELIVERY observables: one per local recipient across the To: and CC: headers.
+    # outsider@external.example is a non-local recipient and must NOT get a delivery observable.
     delivery_values = {o.value for o in email_analysis.get_observables_by_type(F_EMAIL_DELIVERY)}
-    assert delivery_values == {create_email_delivery(message_id, 'alice@company.com')}
+    assert delivery_values == {
+        create_email_delivery(message_id, 'alice@company.com'),
+        create_email_delivery(message_id, 'bob@company.com'),
+        create_email_delivery(message_id, 'carol@company.com'),
+        create_email_delivery(message_id, 'dan@company.com'),
+    }
 
     # mail_to should reflect both header To: addresses (multi-recipient parsing)
     assert email_analysis.mail_to_addresses == ['alice@company.com', 'bob@company.com']
@@ -810,6 +815,45 @@ def test_multi_recipient_to_cc_observables(root_analysis, datadir):
 
     # Return-Path header is present, so KEY_RETURN_PATH should be the parsed address (Fix G)
     assert email_analysis.return_path == 'sender@external.example'
+
+@pytest.mark.integration
+def test_multi_recipient_delivery_directive_propagation(root_analysis, datadir):
+    """When the message-id observable carries DIRECTIVE_REMEDIATE, the directive must be
+    copied to the delivery observable of EVERY local recipient, not just the primary one."""
+
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(str(datadir / 'emails/multi_recipient_to_cc.email.rfc822'))
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    message_id_observable = root_analysis.add_observable_by_spec(F_MESSAGE_ID, '<multi-recipient-test-12345@external.example>')
+    message_id_observable.add_directive(DIRECTIVE_REMEDIATE)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    file_observable = root_analysis.get_observable(file_observable.uuid)
+    assert file_observable
+    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    assert isinstance(email_analysis, EmailAnalysis)
+
+    message_id = '<multi-recipient-test-12345@external.example>'
+    delivery_observables = email_analysis.get_observables_by_type(F_EMAIL_DELIVERY)
+    delivery_values = {o.value for o in delivery_observables}
+    assert delivery_values == {
+        create_email_delivery(message_id, 'alice@company.com'),
+        create_email_delivery(message_id, 'bob@company.com'),
+        create_email_delivery(message_id, 'carol@company.com'),
+        create_email_delivery(message_id, 'dan@company.com'),
+    }
+
+    # every local recipient's delivery observable must carry the remediate directive
+    for delivery in delivery_observables:
+        assert delivery.has_directive(DIRECTIVE_REMEDIATE), delivery.value
 
 @pytest.mark.integration
 def test_attachment_filename_multi_rfc2047_chunks(root_analysis, datadir):

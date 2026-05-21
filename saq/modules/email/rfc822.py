@@ -830,7 +830,6 @@ class EmailAnalyzer(AnalysisModule):
         # who did the email come from and who did it go to?
         # with office365 journaling all you have is the header from
         mail_from = None # str
-        mail_to = None # strt
 
         received_time = None
 
@@ -856,8 +855,6 @@ class EmailAnalyzer(AnalysisModule):
         for rcpt_to in email_details[KEY_ENV_RCPT_TO]:
             address = normalize_email_address(rcpt_to)
             if address:
-                if mail_to is None:
-                    mail_to = address
                 add_email_address_observable(analysis, F_EMAIL_ENVELOPE_RCPT_TO, address, conversation_source=mail_from)
 
         email_details[KEY_TO] = [decode_rfc2822(h) for h in target_email.get_all('to', [])]
@@ -867,9 +864,6 @@ class EmailAnalyzer(AnalysisModule):
         for addr in email_details[KEY_TO_ADDRESSES]:
             address = normalize_email_address(addr)
             if address:
-                # if we don't know who it was delivered to yet then we grab the first To:
-                if mail_to is None:
-                    mail_to = address
                 add_email_address_observable(analysis, F_EMAIL_TO, address, conversation_source=mail_from)
 
         if 'subject' in target_email:
@@ -895,29 +889,34 @@ class EmailAnalyzer(AnalysisModule):
                 # we don't want to do that here so we exclude that analysis
                 message_id_observable.exclude_analysis(MessageIDAnalyzerV2)
 
-            # NOTE: only emit a delivery observable for THIS alert's recipient
-            # (mail_to / env_rcpt_to). ACE journals one alert per recipient, so
-            # broadening this to every header address would let analysts see
-            # "remediation failed" on sibling alerts whose mailbox a peer alert
-            # already cleaned up. Each alert remediates only its own mailbox.
-            if mail_to:
-                if is_local_email_domain(mail_to):
-                    email_delivery_observable = analysis.add_observable_by_spec(F_EMAIL_DELIVERY,
-                                                create_email_delivery(email_details[KEY_MESSAGE_ID], mail_to))
+            # note that we're adding delivery observables for *every* local recipient
+            # even though we're not directly observing it, we assume so that
+            # remediation can pick it up and run with it
+            delivery_recipients = []
+            for raw_recipient in set(
+                    env_rcpt_to
+                    + email_details[KEY_TO_ADDRESSES]
+                    + get_address_list(target_email, 'cc')
+                    + get_address_list(target_email, 'bcc')
+                ):
+                recipient = normalize_email_address(raw_recipient)
+                if is_local_email_domain(recipient):
+                    delivery_recipients.append(recipient)
 
-                    if email_delivery_observable:
-                        # if a message_id observable has the DIRECTIVE_REMEDIATE directive
-                        # then that directive gets copied to the delivery observable
-                        # so that the remediation system knows where to find the email
-                        for _ in self.get_root().get_observables_by_type(F_MESSAGE_ID):
-                            if message_id_observable and _.value == message_id_observable.value and _.has_directive(DIRECTIVE_REMEDIATE):
-                                logging.info(f"copying directive {DIRECTIVE_REMEDIATE} from message-id {_.value} to {email_delivery_observable.value}")
-                                email_delivery_observable.add_directive(DIRECTIVE_REMEDIATE)
+            # if a message_id observable has the DIRECTIVE_REMEDIATE directive
+            # then that directive gets copied to every delivery observable so
+            # the remediation system knows where to find the email
+            should_remediate = message_id_observable is not None and any(
+                _.value == message_id_observable.value and _.has_directive(DIRECTIVE_REMEDIATE)
+                for _ in self.get_root().get_observables_by_type(F_MESSAGE_ID))
 
-            for rcpt_to in env_rcpt_to:
-                if is_local_email_domain(rcpt_to):
-                    email_delivery_observable = analysis.add_observable_by_spec(F_EMAIL_DELIVERY,
-                                                create_email_delivery(email_details[KEY_MESSAGE_ID], rcpt_to))
+            for recipient in delivery_recipients:
+                email_delivery_observable = analysis.add_observable_by_spec(F_EMAIL_DELIVERY,
+                                            create_email_delivery(email_details[KEY_MESSAGE_ID], recipient))
+                if email_delivery_observable and should_remediate:
+                    logging.info(f"copying directive {DIRECTIVE_REMEDIATE} from message-id "
+                                 f"{message_id_observable.value} to {email_delivery_observable.value}")
+                    email_delivery_observable.add_directive(DIRECTIVE_REMEDIATE)
 
         if 'x-sender' in target_email:
             address = normalize_email_address(decode_rfc2822(target_email['x-sender']))
