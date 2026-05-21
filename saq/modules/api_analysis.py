@@ -502,33 +502,32 @@ class BaseAPIAnalyzer(AnalysisModule):
 
         for pivot_link in self.config.pivot_links:
             target = root if pivot_link.target == PIVOT_LINK_TARGET_ROOT else analysis
-            # seed the dedup set from links already on the target so dedup spans every
-            # module run that writes to it (e.g. a module running on multiple observables
-            # all adding to the same root alert) and survives re-analysis
+            # seed the dedup set from links already on the target
             target_seen = seen.get(id(target))
             if target_seen is None:
                 target_seen = {(p.url, p.icon, p.text) for p in target.pivot_links}
                 seen[id(target)] = target_seen
 
             # render every event into an ordered, deduplicated list of candidate links;
-            # run_seen dedups within this entry since links can't be added to target_seen
+            # dedup_set dedups within this pivot_link since links can't be added to target_seen
             # until we know which ones survive the limit
             candidates: list[tuple[str, str]] = []
-            run_seen: set = set()
+            dedup_set: set = set()
             for event in results:
                 try:
                     rows = render_event_templates_multi(
                         [pivot_link.url, pivot_link.text], event, strict=True,
                     )
-                except UndefinedError:
+                except UndefinedError as e:
+                    logging.warning("pivot link %s template syntax error: %s", pivot_link.url, e)
                     continue
                 for url_value, text_value in rows:
                     if not url_value or not text_value:
                         continue
                     key = (url_value, pivot_link.icon, text_value)
-                    if key in target_seen or key in run_seen:
+                    if key in target_seen or key in dedup_set:
                         continue
-                    run_seen.add(key)
+                    dedup_set.add(key)
                     candidates.append((url_value, text_value))
 
             limit = pivot_link.limit
