@@ -729,6 +729,38 @@ def test_per_group_suppression_does_not_block_other_groups(monkeypatch):
 
 
 @pytest.mark.unit
+def test_per_group_suppression_ignored_for_manual_hunt(monkeypatch, caplog):
+    """A manual hunt (e.g. the validate-hunt API) must ignore suppression so the analyst
+       sees the hunt's true output, even when a group alerted within the suppression window."""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_per_group_supp_manual",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        suppression="00:01:00",
+        group_by="src",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+    hunt.manual_hunt = True
+
+    # a recent alert for 1.2.3.4 would normally suppress that group
+    hunt.set_last_alert_time(local_time(), "1.2.3.4")
+
+    with caplog.at_level(logging.INFO):
+        submissions = hunt.process_query_results([
+            {"src": "1.2.3.4"},
+            {"src": "5.6.7.8"},
+        ])
+
+    # both groups pass through; suppression is ignored for the manual run
+    group_values = sorted(s.group_value for s in submissions)
+    assert group_values == ["1.2.3.4", "5.6.7.8"]
+    assert "ignoring suppression" in caplog.text
+
+
+@pytest.mark.unit
 def test_suppressed_property_false_when_group_by_set(monkeypatch):
     """Hunt.suppressed must return False for grouped hunts so HuntManager.execute
        does not gate-skip the entire hunt; per-group filtering happens after the query runs."""

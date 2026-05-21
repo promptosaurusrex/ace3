@@ -166,12 +166,9 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
 
     try:
         try:
-            # Don't persist execution state; validation runs must not affect scheduled automation
             hunt.manual_hunt = True
+            # are we passing in the query results to use?
             if use_query_results_override:
-                # Skip the data-source query and feed the supplied events directly
-                # into process_query_results so correlation logic can be exercised
-                # against a previously captured event list.
                 submissions = hunt.process_query_results(execution_arguments.query_results)
             else:
                 submissions = hunt.execute(**exec_kwargs)
