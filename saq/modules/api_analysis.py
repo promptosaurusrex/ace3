@@ -33,7 +33,7 @@ from saq.modules.config import AnalysisModuleConfig
 from saq.observables.mapping import ObservableMapping, apply_mapping_properties
 from saq.query.config import BaseQueryConfig, PIVOT_LINK_TARGET_ROOT, resolve_query
 from saq.query.extraction import extract_observables_from_event, process_summary_details
-from saq.query.template_rendering import UndefinedError, render_event_templates_multi
+from saq.query.template_rendering import UndefinedError, render_event_template, render_event_templates_multi
 from saq.util import abs_path, create_timedelta
 
 KEY_QUERY = 'query'
@@ -485,6 +485,11 @@ class BaseAPIAnalyzer(AnalysisModule):
             analysis node per the entry's `target`. Identical (url, icon, text) tuples are
             deduplicated per target within this run.
 
+            When an entry sets `limit`, only the first `limit` qualifying links (in
+            query-result order) are emitted. If it also sets `overflow`, a single
+            'see more' link is emitted when — and only when — the limit truncated the
+            result set. See process_overflow_pivot_link.
+
             Args:
                 analysis: The respective Analysis object whose query_results are rendered.
         """
@@ -497,28 +502,82 @@ class BaseAPIAnalyzer(AnalysisModule):
 
         for pivot_link in self.config.pivot_links:
             target = root if pivot_link.target == PIVOT_LINK_TARGET_ROOT else analysis
-            # seed the dedup set from links already on the target so dedup spans every
-            # module run that writes to it (e.g. a module running on multiple observables
-            # all adding to the same root alert) and survives re-analysis
+            # seed the dedup set from links already on the target
             target_seen = seen.get(id(target))
             if target_seen is None:
                 target_seen = {(p.url, p.icon, p.text) for p in target.pivot_links}
                 seen[id(target)] = target_seen
+
+            # render every event into an ordered, deduplicated list of candidate links;
+            # dedup_set dedups within this pivot_link since links can't be added to target_seen
+            # until we know which ones survive the limit
+            candidates: list[tuple[str, str]] = []
+            dedup_set: set = set()
             for event in results:
                 try:
                     rows = render_event_templates_multi(
                         [pivot_link.url, pivot_link.text], event, strict=True,
                     )
-                except UndefinedError:
+                except UndefinedError as e:
+                    logging.warning("pivot link %s template syntax error: %s", pivot_link.url, e)
                     continue
                 for url_value, text_value in rows:
                     if not url_value or not text_value:
                         continue
                     key = (url_value, pivot_link.icon, text_value)
-                    if key in target_seen:
+                    if key in target_seen or key in dedup_set:
                         continue
-                    target_seen.add(key)
-                    target.add_pivot_link(url_value, pivot_link.icon, text_value)
+                    dedup_set.add(key)
+                    candidates.append((url_value, text_value))
+
+            limit = pivot_link.limit
+            shown = candidates if limit is None else candidates[:limit]
+            for url_value, text_value in shown:
+                target_seen.add((url_value, pivot_link.icon, text_value))
+                target.add_pivot_link(url_value, pivot_link.icon, text_value)
+
+            # the limit truncated the result set -> emit a single 'see more' link
+            if pivot_link.overflow and limit is not None and len(candidates) > limit:
+                self.process_overflow_pivot_link(
+                    pivot_link, results[0], len(candidates) - limit, target, target_seen,
+                )
+
+    def process_overflow_pivot_link(self, pivot_link, event, overflow_count: int,
+                                    target: Analysis, target_seen: set) -> None:
+        """Render and attach a single overflow ('see more') pivot link.
+
+            The overflow url/text are Jinja templates rendered against the first
+            query-result event merged with `overflow_count` (the number of qualifying
+            links beyond `limit` that were not shown). The overflow link inherits the
+            parent pivot link's icon unless it specifies its own. Missing template
+            fields (strict mode) or an empty render skip the link.
+
+            Args:
+                pivot_link: The PivotLinkConfig entry whose `overflow` is being rendered.
+                event: The query-result event to render the overflow templates against.
+                overflow_count: The number of qualifying links not shown due to `limit`.
+                target: The Analysis/root the link is attached to.
+                target_seen: The dedup set for `target`.
+        """
+        if not isinstance(event, dict):
+            return
+
+        context = {**event, "overflow_count": overflow_count}
+        try:
+            url_value = render_event_template(pivot_link.overflow.url, context, strict=True)
+            text_value = render_event_template(pivot_link.overflow.text, context, strict=True)
+        except UndefinedError:
+            return
+
+        if not url_value or not text_value:
+            return
+
+        icon = pivot_link.overflow.icon if pivot_link.overflow.icon is not None else pivot_link.icon
+        key = (url_value, icon, text_value)
+        if key in target_seen:
+            return
+        target_seen.add(key)
+        target.add_pivot_link(url_value, icon, text_value)
 
     def execute_analysis(self, observable, **kwargs) -> AnalysisExecutionResult:
         """Analysis module execution. See base class for more information.

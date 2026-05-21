@@ -2,6 +2,7 @@ import datetime
 from unittest.mock import Mock, patch
 
 import pytest
+from pydantic import ValidationError
 
 from saq.analysis import RootAnalysis
 from saq.configuration.config import get_analysis_module_config
@@ -1020,3 +1021,157 @@ def test_process_pivot_links_query_results_dict(test_context):
         root_links = analyzer.get_root().pivot_links
         assert len(root_links) == 1
         assert root_links[0].url == "https://example.com/server1"
+
+
+@pytest.mark.unit
+def test_pivot_link_config_negative_limit_raises():
+    """A negative `limit` is a loud config-load error; 0 and positive are accepted."""
+    with pytest.raises(ValidationError):
+        PivotLinkConfig(url="u", text="t", limit=-1)
+
+    assert PivotLinkConfig(url="u", text="t").limit is None
+    assert PivotLinkConfig(url="u", text="t", limit=0).limit == 0
+    assert PivotLinkConfig(url="u", text="t", limit=5).limit == 5
+
+
+@pytest.mark.unit
+def test_pivot_link_config_overflow_without_limit_tolerated():
+    """`overflow` without `limit` is tolerated (logged) — the overflow link just never fires."""
+    pl = PivotLinkConfig(url="u", text="t", overflow={"url": "ou", "text": "ot"})
+    assert pl.overflow is not None
+    assert pl.overflow.url == "ou"
+    assert pl.limit is None
+
+
+@pytest.mark.unit
+def test_process_pivot_links_limit_caps_links(test_context):
+    """`limit` caps the number of emitted links, preserving query-result order."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk_client.return_value = MockSplunk()
+
+        config = _pivot_link_config(pivot_links=[{
+            "url": "https://example.com/{{ id }}",
+            "text": "Task {{ id }}",
+            "limit": 2,
+        }])
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+        analysis.query_results = [{"id": str(i)} for i in range(1, 6)]
+
+        analyzer.process_pivot_links(analysis)
+
+        root_links = analyzer.get_root().pivot_links
+        assert len(root_links) == 2
+        assert [link.url for link in root_links] == [
+            "https://example.com/1",
+            "https://example.com/2",
+        ]
+
+
+@pytest.mark.unit
+def test_process_pivot_links_overflow_skipped_when_not_truncated(test_context):
+    """With results at or under `limit`, every link is shown and no overflow link is added."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk_client.return_value = MockSplunk()
+
+        config = _pivot_link_config(pivot_links=[{
+            "url": "https://example.com/{{ id }}",
+            "text": "Task {{ id }}",
+            "limit": 5,
+            "overflow": {"url": "{{ endpoint }}$tsf.do", "text": "More"},
+        }])
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+        analysis.query_results = [
+            {"id": str(i), "endpoint": "https://snow.example.com/"} for i in range(1, 4)
+        ]
+
+        analyzer.process_pivot_links(analysis)
+
+        root_links = analyzer.get_root().pivot_links
+        assert len(root_links) == 3
+        assert all(link.text != "More" for link in root_links)
+
+
+@pytest.mark.unit
+def test_process_pivot_links_overflow_emitted_when_truncated(test_context):
+    """When `limit` truncates the result set, a single overflow link is appended."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk_client.return_value = MockSplunk()
+
+        config = _pivot_link_config(pivot_links=[{
+            "url": "https://example.com/{{ id }}",
+            "text": "Task {{ id }}",
+            "icon": "snow",
+            "limit": 2,
+            "overflow": {
+                "url": "{{ endpoint }}$tsf.do?sysparm_search={{ term | urlencode }}",
+                "text": "More ServiceNow results ({{ overflow_count }} more)",
+            },
+        }])
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+        analysis.query_results = [
+            {"id": str(i), "endpoint": "https://snow.example.com/", "term": "jdoe@acme.com"}
+            for i in range(1, 6)
+        ]
+
+        analyzer.process_pivot_links(analysis)
+
+        root_links = analyzer.get_root().pivot_links
+        # 2 capped per-row links + 1 overflow link
+        assert len(root_links) == 3
+        assert [link.url for link in root_links[:2]] == [
+            "https://example.com/1",
+            "https://example.com/2",
+        ]
+        overflow = root_links[2]
+        assert overflow.url == "https://snow.example.com/$tsf.do?sysparm_search=jdoe%40acme.com"
+        assert overflow.text == "More ServiceNow results (3 more)"
+        # overflow inherits the parent pivot link's icon when it specifies none
+        assert overflow.icon == "snow"
+
+
+@pytest.mark.unit
+def test_process_pivot_links_overflow_icon_override(test_context):
+    """An overflow entry with its own `icon` uses it rather than inheriting the parent's."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk_client.return_value = MockSplunk()
+
+        config = _pivot_link_config(pivot_links=[{
+            "url": "https://example.com/{{ id }}",
+            "text": "Task {{ id }}",
+            "icon": "parent-icon",
+            "limit": 1,
+            "overflow": {
+                "url": "{{ endpoint }}/more",
+                "text": "More",
+                "icon": "overflow-icon",
+            },
+        }])
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+        analysis.query_results = [
+            {"id": "1", "endpoint": "https://snow.example.com"},
+            {"id": "2", "endpoint": "https://snow.example.com"},
+        ]
+
+        analyzer.process_pivot_links(analysis)
+
+        root_links = analyzer.get_root().pivot_links
+        assert len(root_links) == 2
+        assert root_links[0].icon == "parent-icon"
+        assert root_links[1].text == "More"
+        assert root_links[1].icon == "overflow-icon"
