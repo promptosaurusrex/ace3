@@ -748,7 +748,7 @@ def test_per_group_suppression_ignored_for_manual_hunt(monkeypatch, caplog):
     # a recent alert for 1.2.3.4 would normally suppress that group
     hunt.set_last_alert_time(local_time(), "1.2.3.4")
 
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level(logging.DEBUG):
         submissions = hunt.process_query_results([
             {"src": "1.2.3.4"},
             {"src": "5.6.7.8"},
