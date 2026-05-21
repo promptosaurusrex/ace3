@@ -638,7 +638,7 @@ class BaseAPIAnalyzer(AnalysisModule):
             analysis.query_error = 'timed out'
 
         except Exception as e:
-            logging.error(f'Error when executing {self.api} query: {e}')
+            logging.error(f"Error when executing {self.api} query {self.target_query}: {e}")
             analysis.query_results = None
             analysis.query_error = str(e)
 
