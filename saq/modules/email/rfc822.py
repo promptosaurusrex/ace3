@@ -889,14 +889,9 @@ class EmailAnalyzer(AnalysisModule):
                 # we don't want to do that here so we exclude that analysis
                 message_id_observable.exclude_analysis(MessageIDAnalyzerV2)
 
-            # Emit an email_delivery observable for EVERY local recipient the
-            # message reached -- SMTP envelope recipients plus the To:, CC: and
-            # BCC: header addresses. The remediation timeline (ACE's own
-            # remediation plus external probes keys off these observables, so
-            # covering every recipient gives analysts the message's full
-            # delivery/remediation footprint rather than just this alert's own
-            # mailbox. Non-local recipients are skipped: they aren't in the
-            # tenant, so they can't be probed or remediated and would only produce noise.
+            # note that we're adding delivery observables for *every* local recipient
+            # even though we're not directly observing it, we assume so that
+            # remediation can pick it up and run with it
             delivery_recipients = []
             for raw_recipient in set(
                     env_rcpt_to
