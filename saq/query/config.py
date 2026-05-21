@@ -55,6 +55,19 @@ PIVOT_LINK_TARGET_ROOT = "root"
 VALID_PIVOT_LINK_TARGETS = {PIVOT_LINK_TARGET_ANALYSIS, PIVOT_LINK_TARGET_ROOT}
 
 
+class PivotLinkOverflowConfig(BaseModel):
+    """A single 'see more' link emitted when a pivot link's `limit` truncates the result set."""
+    model_config = {"extra": "forbid"}
+
+    url: str = Field(..., description="Jinja template for the overflow link URL, rendered against the "
+                                      "first query-result event plus `overflow_count` (the number of "
+                                      "qualifying links beyond `limit` that were not shown).")
+    text: str = Field(..., description="Jinja template for the overflow link display text, rendered "
+                                       "against the same context as `url`.")
+    icon: Optional[str] = Field(default=None, description="Optional icon for the overflow link. "
+                                                          "Defaults to the parent pivot link's icon.")
+
+
 class PivotLinkConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -64,6 +77,17 @@ class PivotLinkConfig(BaseModel):
     target: str = Field(
         default=PIVOT_LINK_TARGET_ROOT,
         description="Where to attach the rendered link: 'root' (the root alert) or 'analysis' (the analysis node).",
+    )
+    limit: Optional[int] = Field(
+        default=None, ge=0,
+        description="Maximum number of links this entry emits per analysis run. None means unlimited. "
+                    "Links are emitted in query-result order, so a query that sorts most-recent-first "
+                    "yields the most recent `limit` links.",
+    )
+    overflow: Optional[PivotLinkOverflowConfig] = Field(
+        default=None,
+        description="A single 'see more' link emitted only when `limit` truncates the result set "
+                    "(i.e. there were more qualifying links than `limit`). Requires `limit`.",
     )
 
     @field_validator("target")
@@ -76,6 +100,15 @@ class PivotLinkConfig(BaseModel):
             )
             return PIVOT_LINK_TARGET_ROOT
         return value
+
+    @model_validator(mode="after")
+    def validate_overflow_requires_limit(self):
+        if self.overflow is not None and self.limit is None:
+            logging.error(
+                "pivot_link has `overflow` configured without `limit`; the overflow link will "
+                "never be emitted (overflow only fires when `limit` truncates the result set)"
+            )
+        return self
 
 
 class TimeRangeConfig(BaseModel):
