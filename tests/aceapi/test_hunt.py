@@ -685,6 +685,42 @@ def test_validate_hunt_execution_success_no_analyze_no_alerts(test_client, auth_
 
 
 @pytest.mark.integration
+def test_validate_hunt_execution_sets_manual_hunt(test_client, auth_headers):
+    """The validate endpoint must set manual_hunt=True on the hunt before executing it.
+       manual_hunt causes suppression to be ignored so the analyst sees the hunt's true
+       output, unaffected by production alert history."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+    from saq.analysis.root import Submission, RootAnalysis
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_hunt = Mock(spec=QueryHunt)
+
+        mock_root = Mock(spec=RootAnalysis)
+        mock_root.json = {"uuid": "test-uuid-123", "description": "Test Hunt"}
+        mock_root.details = {"query": "test query", "events": []}
+        mock_submission = Mock(spec=Submission)
+        mock_submission.root = mock_root
+
+        mock_hunt.execute.return_value = [mock_submission]
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        payload = _make_compiled_payload(VALID_HUNT_YAML)
+        payload["execution_arguments"] = {
+            "start_time": "01/15/2025:10:00:00",
+            "end_time": "01/15/2025:12:00:00"
+        }
+
+        result = test_client.post(HUNT_VALIDATE_URL, json=payload, headers=auth_headers)
+
+        assert result.status_code == 200
+        assert mock_hunt.manual_hunt is True
+
+
+@pytest.mark.integration
 def test_validate_hunt_execution_forwards_time_range_overrides(test_client, auth_headers):
     """Verify execution_arguments.time_range_overrides reach hunt.execute() as a kwarg."""
     from saq.collectors.hunter.query_hunter import QueryHunt

@@ -1084,7 +1084,14 @@ class QueryHunt(Hunt):
         # filter out groups whose suppression window has not yet elapsed.
         # the hunt is run as a whole because we cannot know which groups are present
         # until after the query executes; suppression then drops the per-group alerts.
-        if self.group_by is not None and self.suppression is not None:
+        # manual_hunt runs (e.g. the validate-hunt API) ignore suppression entirely so
+        # the analyst sees the hunt's true output, unaffected by production alert history.
+        if self.group_by is not None and self.suppression is not None and self.manual_hunt:
+            logging.debug(
+                "ignoring suppression for hunt %s (uuid=%s, type=%s) - manual hunt / validation run",
+                self.name, self.uuid, self.type,
+            )
+        elif self.group_by is not None and self.suppression is not None:
             kept = []
             for submission in submissions:
                 group_value = getattr(submission, "group_value", None)
