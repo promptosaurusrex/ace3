@@ -74,6 +74,7 @@ splunk-sdk
 SQLAlchemy
 tabulate
 tld
+tldextract
 tzlocal
 urlfinderlib
 uWSGI
