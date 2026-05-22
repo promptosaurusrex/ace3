@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.56] - 2026-05-21
+
+- [Allow config analysis module to define overflow pivot link](https://github.com/ACE-Collective/ace3/pull/266)
+- [Fixes RDAP module so it only queries registrable domains](https://github.com/ACE-Collective/ace3/pull/268)
+- [log query on api call failure for debugging](https://github.com/ACE-Collective/ace3/pull/270)
+- [added gh cli to image](https://github.com/ACE-Collective/ace3/pull/271)
+
 ## [3.0.55] - 2026-05-21
 
 - [ignore grouped suppression for the validation API](https://github.com/ACE-Collective/ace3/pull/265)
