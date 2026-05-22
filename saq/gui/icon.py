@@ -1,6 +1,9 @@
 from typing import Optional
 from pydantic import BaseModel
 
+# key used to store the icon configuration in the root analysis extensions
+KEY_ICON_CONFIGURATION = "icon_configuration"
+
 class BlueprintFileLocation(BaseModel):
     model_config = {"extra": "forbid"}
 

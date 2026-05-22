@@ -1,13 +1,16 @@
+import uuid
+
 import pytest
 
 from saq.constants import F_TEST
 from saq.database.model import Alert, load_alert
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
+from saq.gui.icon import IconConfiguration, KEY_ICON_CONFIGURATION
 from tests.saq.helpers import create_root_analysis, insert_alert
 
 from saq.database import Observable
-from sqlalchemy import func
+from sqlalchemy import func, inspect
 
 @pytest.mark.integration
 def test_load_alert():
@@ -69,3 +72,72 @@ def test_sync_observable_mapping():
 
     observable = get_db().query(Observable).filter(Observable.type == test_observable.type, Observable.sha256 == func.UNHEX(test_observable.sha256_hash)).first()
     assert observable
+
+@pytest.mark.integration
+def test_sync_icon_configuration_blueprint():
+    # sync() should mirror a blueprint icon configuration into the icon_* columns
+    root_analysis = create_root_analysis(uuid=str(uuid.uuid4()))
+    root_analysis.initialize_storage()
+    root_analysis.set_extension(KEY_ICON_CONFIGURATION, {
+        "blueprint_file_location": {"name": "my_blueprint", "path": "images/custom.png"}})
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    alert = load_alert(root_analysis.uuid)
+    assert alert.icon_blueprint_name == "my_blueprint"
+    assert alert.icon_blueprint_path == "images/custom.png"
+    assert alert.icon_url is None
+
+@pytest.mark.integration
+def test_sync_icon_configuration_url():
+    # sync() should mirror a url icon configuration into the icon_url column
+    root_analysis = create_root_analysis(uuid=str(uuid.uuid4()))
+    root_analysis.initialize_storage()
+    root_analysis.set_extension(KEY_ICON_CONFIGURATION, {"url": "https://example.com/icon.png"})
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    alert = load_alert(root_analysis.uuid)
+    assert alert.icon_url == "https://example.com/icon.png"
+    assert alert.icon_blueprint_name is None
+    assert alert.icon_blueprint_path is None
+
+@pytest.mark.integration
+def test_sync_icon_configuration_long_data_url():
+    # icon_url must accept data urls well beyond the old 1024 char limit
+    long_data_url = "data:image/png;base64," + ("A" * 5000)
+    root_analysis = create_root_analysis(uuid=str(uuid.uuid4()))
+    root_analysis.initialize_storage()
+    root_analysis.set_extension(KEY_ICON_CONFIGURATION, {"url": long_data_url})
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    alert = load_alert(root_analysis.uuid)
+    assert alert.icon_url == long_data_url
+
+@pytest.mark.integration
+def test_sync_icon_configuration_none():
+    # an alert with no icon configuration leaves the icon_* columns NULL
+    alert = insert_alert()
+    assert alert.icon_blueprint_name is None
+    assert alert.icon_blueprint_path is None
+    assert alert.icon_url is None
+
+@pytest.mark.integration
+def test_apply_icon_configuration_writes_only_on_change():
+    # apply_icon_configuration should not dirty a column when the value is unchanged
+    root_analysis = create_root_analysis(uuid=str(uuid.uuid4()))
+    root_analysis.initialize_storage()
+    root_analysis.set_extension(KEY_ICON_CONFIGURATION, {"url": "https://example.com/icon.png"})
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    alert = load_alert(root_analysis.uuid)
+
+    # applying the same configuration registers no change
+    alert.apply_icon_configuration(IconConfiguration(url="https://example.com/icon.png"))
+    assert not inspect(alert).attrs.icon_url.history.has_changes()
+
+    # applying a different configuration does register a change
+    alert.apply_icon_configuration(IconConfiguration(url="https://example.com/other.png"))
+    assert inspect(alert).attrs.icon_url.history.has_changes()
