@@ -69,12 +69,18 @@ def create_encrypted_alert_zip(alert_uuid: str) -> str:
         except OSError:
             pass
 
-    # Match the existing pattern in app/analysis/views/export.py: ZipCrypto
-    # via the `zip` binary so the format is identical to the per-file
-    # downloads analysts already get.
+    parent_dir = os.path.dirname(storage_dir)
+    if os.path.basename(storage_dir) != alert_uuid:
+        logger.error(
+            "storage dir basename %s does not match alert uuid %s",
+            os.path.basename(storage_dir),
+            alert_uuid,
+        )
+        raise HTTPException(status_code=500, detail="unexpected alert storage layout")
+
     proc = subprocess.run(
-        ["zip", "-e", "-P", ALERT_ZIP_PASSWORD, "-r", dest, "."],
-        cwd=storage_dir,
+        ["zip", "-e", "-P", ALERT_ZIP_PASSWORD, "-r", dest, "--", alert_uuid],
+        cwd=parent_dir,
         check=False,
         capture_output=True,
     )
