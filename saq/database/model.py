@@ -118,6 +118,9 @@ class Alert(Base):
         # this is the RootAnalysis object that this Alert is associated with
         self._root_analysis: Optional[RootAnalysis] = None
 
+        # when True, calling load() logs an ERROR with a stack trace
+        self._log_error_on_load = False
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._initialize()
@@ -137,8 +140,14 @@ class Alert(Base):
         super().__init__(*args, **kwargs)
         self._initialize()
 
+    def set_log_error_on_load(self, value=True):
+        """Sets the log_error_on_load flag, propagated to the RootAnalysis on load()."""
+        assert isinstance(value, bool)
+        self._log_error_on_load = value
+
     def load(self):
         self._root_analysis = RootAnalysis(storage_dir=self.storage_dir)
+        self._root_analysis.set_log_error_on_load(self._log_error_on_load)
         return self._root_analysis.load()
 
         #try:

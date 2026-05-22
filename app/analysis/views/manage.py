@@ -137,6 +137,10 @@ def manage():
     # execute query to get all alerts
     alerts = query.all()
 
+    # we do not want load() called on alerts from the alert management screen
+    for alert in alerts:
+        alert.set_log_error_on_load(True)
+
     # load alert comments
     # NOTE: We should have the alert class do this automatically
     comments = {}

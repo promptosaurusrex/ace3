@@ -25,6 +25,26 @@ def test_load_alert():
         assert not get_db().dirty
 
 @pytest.mark.integration
+def test_alert_log_error_on_load(caplog):
+    # the log_error_on_load flag set on an Alert should propagate to the
+    # RootAnalysis created by load() and produce an ERROR log message
+    alert = insert_alert()
+    alert_id = alert.id
+    get_db().close()
+
+    for alert in get_db().query(Alert).filter(Alert.id == alert_id):
+        # default is False, so no error is logged
+        alert.load()
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+        # with the flag set, load() logs an error
+        alert.set_log_error_on_load(True)
+        alert.load()
+        error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(error_records) == 1
+        assert alert.storage_dir in error_records[0].getMessage()
+
+@pytest.mark.integration
 def test_insert_alert_name_too_long():
     # make an alert with a description that is too long
     root_analysis = create_root_analysis(desc = 'A' * 1025)
