@@ -1,6 +1,5 @@
 """Tests for aceapi_v2 alerts router — bulk add observable endpoint."""
 
-import os
 import zipfile
 from unittest.mock import MagicMock, patch
 
@@ -415,7 +414,7 @@ class TestDownloadAlert:
     @pytest.mark.asyncio
     @patch("aceapi_v2.alerts.service.get_db")
     async def test_download_happy_path(self, mock_get_db, client: AsyncClient, tmp_path):
-        storage_dir = tmp_path / "alert"
+        storage_dir = tmp_path / VALID_UUID
         storage_dir.mkdir()
         (storage_dir / "saq.log").write_text("log line one\nlog line two\n")
         (storage_dir / "data.json").write_text('{"hello": "world"}')
@@ -433,10 +432,12 @@ class TestDownloadAlert:
         zip_path = tmp_path / "downloaded.zip"
         zip_path.write_bytes(zip_bytes)
 
+        # Every entry must be nested under a "<uuid>/" subdirectory.
         with zipfile.ZipFile(zip_path) as zf:
             names = zf.namelist()
-            assert any(n.endswith("saq.log") for n in names)
-            assert any(n.endswith("data.json") for n in names)
+            assert all(n.startswith(f"{VALID_UUID}/") for n in names)
+            assert f"{VALID_UUID}/saq.log" in names
+            assert f"{VALID_UUID}/data.json" in names
 
         # The `unzip` binary can decrypt ZipCrypto; Python's stdlib zipfile can too
         # when given the right password.
@@ -444,14 +445,23 @@ class TestDownloadAlert:
         extract_dir.mkdir()
         with zipfile.ZipFile(zip_path) as zf:
             zf.extractall(extract_dir, pwd=b"infected")
-        # Recursively check the file is somewhere in the extracted tree.
-        found_log = False
-        for root, _dirs, files in os.walk(extract_dir):
-            if "saq.log" in files:
-                with open(os.path.join(root, "saq.log")) as f:
-                    assert f.read() == "log line one\nlog line two\n"
-                found_log = True
-        assert found_log, "saq.log not found in extracted zip"
+        # The alert's files extract into the "<uuid>/" subdirectory.
+        extracted_log = extract_dir / VALID_UUID / "saq.log"
+        assert extracted_log.is_file()
+        assert extracted_log.read_text() == "log line one\nlog line two\n"
+
+    @pytest.mark.asyncio
+    @patch("aceapi_v2.alerts.service.get_db")
+    async def test_storage_dir_basename_mismatch(
+        self, mock_get_db, client: AsyncClient, tmp_path
+    ):
+        # A storage directory not named after the alert UUID trips the guard.
+        storage_dir = tmp_path / "not-the-uuid"
+        storage_dir.mkdir()
+        alert = _make_storage_alert(VALID_UUID, str(storage_dir))
+        _wire_get_db(mock_get_db, alert)
+        response = await client.get(f"/alerts/{VALID_UUID}/download")
+        assert response.status_code == 500
 
 
 class TestViewAlertLogs:
