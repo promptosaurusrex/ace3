@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.57] - 2026-05-23
+
+- [adjust alert export zip to use sub dir based on alert uuid](https://github.com/ACE-Collective/ace3/pull/273)
+- [move alert icon configuration into database](https://github.com/ACE-Collective/ace3/pull/274)
+
 ## [3.0.56] - 2026-05-21
 
 - [Allow config analysis module to define overflow pivot link](https://github.com/ACE-Collective/ace3/pull/266)
