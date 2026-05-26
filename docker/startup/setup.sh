@@ -25,6 +25,13 @@ if [ "${ACE_INSTANCE_TYPE}" = "DEV" ]; then
 fi
 echo "database migrations complete"
 
+echo "running analysis cache database migrations..."
+/venv/bin/alembic -c alembic_analysis_cache.ini upgrade head
+if [ "${ACE_INSTANCE_TYPE}" = "DEV" ]; then
+    CACHE_DATABASE_NAME=analysis-result-cache-unittest /venv/bin/alembic -c alembic_analysis_cache.ini upgrade head
+fi
+echo "analysis cache database migrations complete"
+
 # Seed database before encryption check — ace enc test calls initialize_node()
 # which INSERTs into nodes with a company_id FK, so company must exist first.
 echo "seeding database..."

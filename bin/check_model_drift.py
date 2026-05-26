@@ -10,12 +10,15 @@ because Alembic cannot round-trip compare them.  These are filtered out
 automatically.
 
 Usage (inside dev container):
-    /venv/bin/python bin/check_model_drift.py
+    /venv/bin/python bin/check_model_drift.py             # main ace DB
+    /venv/bin/python bin/check_model_drift.py --cache     # analysis cache DB
 
 Or via Make:
     make db-check
+    make cache-db-check
 """
 
+import argparse
 import logging
 import os
 import sys
@@ -39,18 +42,17 @@ from sqlalchemy import Column, create_engine
 # Re-add project root so saq is importable
 sys.path.insert(0, project_root)
 
-from saq.database.meta import Base
-import saq.database.model  # noqa: F401 — populates Base.metadata
+from saq.database.meta import Base, CacheBase
+import saq.database.model  # noqa: F401 — populates Base.metadata and CacheBase.metadata
 
 
-def get_url() -> str:
+def get_url(db_name: str) -> str:
     password = os.environ.get("ACE_SUPERUSER_DB_USER_PASSWORD") or ""
     if not password:
         with open("/auth/passwords/ace-superuser") as fp:
             password = fp.read().strip()
     password = quote_plus(password)
     host = os.environ.get("ACE_DB_HOST", "ace-db")
-    db_name = os.environ.get("DATABASE_NAME", "ace")
     return f"mysql+pymysql://ace-superuser:{password}@{host}:3306/{db_name}"
 
 
@@ -89,10 +91,27 @@ def _expression_index_names(diffs) -> set[str]:
 
 
 def main() -> int:
-    engine = create_engine(get_url())
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else "")
+    parser.add_argument(
+        "--cache",
+        action="store_true",
+        help="check the analysis-result-cache database against CacheBase.metadata instead of the main ace database",
+    )
+    args = parser.parse_args()
+
+    if args.cache:
+        metadata = CacheBase.metadata
+        db_name = os.environ.get("CACHE_DATABASE_NAME", "analysis-result-cache-unittest")
+        revision_cmd = "make cache-db-revision"
+    else:
+        metadata = Base.metadata
+        db_name = os.environ.get("DATABASE_NAME", "ace")
+        revision_cmd = "make db-revision"
+
+    engine = create_engine(get_url(db_name))
     with engine.connect() as conn:
         migration_ctx = MigrationContext.configure(conn)
-        diffs = compare_metadata(migration_ctx, Base.metadata)
+        diffs = compare_metadata(migration_ctx, metadata)
 
     # Filter out expression-index false positives (paired add/remove)
     false_positive_indexes = _expression_index_names(diffs)
@@ -115,7 +134,7 @@ def main() -> int:
     for diff in real_diffs:
         print(f"  {diff}")
     print(
-        "\nRun 'make db-revision MESSAGE=\"describe your change\"' to generate a migration."
+        f"\nRun '{revision_cmd} MESSAGE=\"describe your change\"' to generate a migration."
     )
     return 1
 
