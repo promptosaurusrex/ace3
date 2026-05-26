@@ -21,6 +21,7 @@ DB_ACE = "ace"
 DB_BROCESS = "brocess"
 DB_EMAIL_ARCHIVE = "email_archive"
 DB_COLLECTION = "collection"
+DB_ANALYSIS_RESULT_CACHE = "analysis_result_cache"
 
 # 
 # instance types

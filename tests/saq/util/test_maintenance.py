@@ -107,11 +107,15 @@ def test_distribute_old_alerts(days, target, insert_alert, alert_age_days, add_t
 
 
 @pytest.mark.unit
-def test_prune_skips_when_not_primary(monkeypatch):
-    """Cache-row prune is global maintenance — non-primary nodes must skip it."""
+def test_cache_stats_skips_when_not_primary(monkeypatch, caplog):
+    """The cache stats heartbeat is global maintenance — non-primary nodes
+    must skip it (no cache_stats line emitted)."""
+    import logging as _logging
     import saq.util.maintenance as maintenance
     monkeypatch.setattr(maintenance, "is_primary_node", lambda: False)
-    assert maintenance.prune_expired_cache_rows() == 0
+    with caplog.at_level(_logging.INFO):
+        maintenance.emit_cache_stats()
+    assert not [r for r in caplog.records if "cache_stats" in r.getMessage()]
 
 
 @pytest.mark.unit
@@ -125,43 +129,16 @@ def test_gc_durable_blobs_skips_when_not_primary(monkeypatch):
 
 
 @pytest.mark.integration
-def test_prune_analysis_result_cache_emits_cache_stats(caplog):
-    """Each prune run should emit a cache_stats heartbeat for Splunk."""
+def test_emit_cache_stats_emits_heartbeat(caplog):
+    """Each run emits a cache_stats heartbeat for Splunk."""
     import logging as _logging
-    from saq.util.maintenance import prune_analysis_result_cache
+    from saq.util.maintenance import emit_cache_stats
 
     with caplog.at_level(_logging.INFO):
-        prune_analysis_result_cache()
+        emit_cache_stats()
 
     stats_lines = [r for r in caplog.records if "cache_stats" in r.getMessage()]
-    assert stats_lines, "expected cache_stats heartbeat from prune run"
+    assert stats_lines, "expected cache_stats heartbeat"
     msg = stats_lines[0].getMessage()
-    for field in ("total_rows=", "expired_rows=", "total_uncompressed_bytes=",
-                  "blob_refs_rows=", "modules="):
+    for field in ("total_rows=", "total_on_disk_bytes=", "blob_refs_rows="):
         assert field in msg, f"cache_stats line missing field {field!r}: {msg}"
-
-
-@pytest.mark.integration
-def test_prune_analysis_result_cache_warns_on_backlog(caplog, monkeypatch):
-    """If rows remain expired after a sweep, prune should emit prune_backlog."""
-    import logging as _logging
-    import saq.util.maintenance as maintenance
-
-    # Force collect_stats to report an unresolved backlog.
-    monkeypatch.setattr(
-        maintenance,
-        "collect_cache_stats",
-        lambda: {
-            "total_rows": 100,
-            "expired_rows": 5,
-            "total_uncompressed_bytes": 1234,
-            "blob_refs_rows": 0,
-            "modules_with_entries": 1,
-        },
-    )
-    with caplog.at_level(_logging.WARNING):
-        maintenance.prune_analysis_result_cache()
-
-    backlog = [r for r in caplog.records if "prune_backlog" in r.getMessage()]
-    assert backlog, "expected prune_backlog warning when expired_rows > 0"
-    assert "remaining_expired=5" in backlog[0].getMessage()

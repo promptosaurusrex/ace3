@@ -189,6 +189,12 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
 
         db.commit()
 
+    with get_db_connection("analysis_result_cache") as db:
+        cursor = db.cursor()
+        cursor.execute("DELETE FROM analysis_result_cache")
+        cursor.execute("DELETE FROM blob_refs")
+        db.commit()
+
 def execute_global_setup():
 
     # where is ACE?

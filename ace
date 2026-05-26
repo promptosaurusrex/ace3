@@ -1838,10 +1838,10 @@ cleanup_alerts_parsers.add_argument('--ignore-days-old', type=int, required=Fals
     #help='force delete fp alerts instead of archiving them')
 cleanup_alerts_parsers.set_defaults(func=cleanup_alerts)
 
-def analysis_cache_prune(args):
-    """Deletes expired rows from the analysis_result_cache table (primary node only). Meant to be called from cron."""
-    from saq.util.maintenance import prune_expired_cache_rows
-    prune_expired_cache_rows(dry_run=args.dry_run)
+def analysis_cache_stats(args):
+    """Emits an analysis result cache health heartbeat for Splunk (primary node only). Meant to be called from cron."""
+    from saq.util.maintenance import emit_cache_stats
+    emit_cache_stats()
     sys.exit(0)
 
 def analysis_cache_gc(args):
@@ -1856,18 +1856,9 @@ def analysis_cache_local_maintenance(args):
     maintain_local_cache(dry_run=args.dry_run)
     sys.exit(0)
 
-analysis_cache_prune_parser = get_cli_subparsers().add_parser('analysis-cache-prune',
-    help="Deletes expired rows from the analysis result cache (primary node only).")
-analysis_cache_prune_parser.add_argument('--dry-run', required=False, dest='dry_run', default=False, action='store_true',
-    help="Just report how many rows would be deleted.")
-analysis_cache_prune_parser.set_defaults(func=analysis_cache_prune)
-
-# deprecated alias of analysis-cache-prune, kept so existing cron/automation keeps working
-prune_analysis_cache_parser = get_cli_subparsers().add_parser('prune-analysis-cache',
-    help="Deprecated alias of analysis-cache-prune.")
-prune_analysis_cache_parser.add_argument('--dry-run', required=False, dest='dry_run', default=False, action='store_true',
-    help="Just report how many rows would be deleted.")
-prune_analysis_cache_parser.set_defaults(func=analysis_cache_prune)
+analysis_cache_stats_parser = get_cli_subparsers().add_parser('analysis-cache-stats',
+    help="Emits an analysis result cache health heartbeat for Splunk (primary node only).")
+analysis_cache_stats_parser.set_defaults(func=analysis_cache_stats)
 
 analysis_cache_gc_parser = get_cli_subparsers().add_parser('analysis-cache-gc',
     help="Garbage-collects the durable analysis cache blob store tier (primary node only).")

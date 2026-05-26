@@ -19,14 +19,39 @@ from sqlalchemy.exc import DisconnectionError
 from sqlalchemy.orm.scoping import scoped_session
 from sqlalchemy.orm.session import sessionmaker
 
-DatabaseSession = None
+# registry of SQLAlchemy ORM scoped sessions keyed by database config name
+# the "ace" session is registered by initialize_database(); sessions for other
+# databases are created lazily on first get_db() request
+_db_sessions: dict[str, scoped_session] = {}
+_db_sessions_lock = threading.RLock()
 
-def get_db() -> scoped_session:
-    return DatabaseSession
+def get_db(name: str = "ace") -> scoped_session:
+    """returns the SQLAlchemy scoped session for the named database
+
+    get_db() with no argument returns the "ace" session and is backwards
+    compatible with all existing callers. sessions for other configured
+    databases are created lazily (with their own engine) on first request."""
+    if name is None:
+        name = "ace"
+
+    with _db_sessions_lock:
+        session = _db_sessions.get(name)
+        if session is not None:
+            return session
+
+        # the "ace" session is created by initialize_database() using the flask
+        # config -- before that runs get_db() returns None (preserves the
+        # historical "is the database initialized yet" check)
+        if name == "ace":
+            return None
+
+        session = _db_sessions[name] = scoped_session(sessionmaker(bind=_create_engine_for(name)))
+        logging.debug("created new scoped session for database %s", name)
+        return session
 
 def set_db(value):
-    global DatabaseSession
-    DatabaseSession = value
+    with _db_sessions_lock:
+        _db_sessions["ace"] = value
 
 class _database_pool:
     def __init__(self, name):
@@ -277,10 +302,92 @@ def execute_with_db_cursor(db_name: str, target: Callable, *args, **kwargs):
         cursor = db.cursor()
         return target(db, cursor, *args, **kwargs)
 
+def _attach_engine_listeners(engine):
+    """attaches the pool-monitoring and fork-safety event listeners to an engine
+
+    the checkout listener's pid check is what makes an engine fork-safe -- a
+    connection record created in a parent process is invalidated rather than
+    reused after a fork."""
+
+    @event.listens_for(engine, 'connect')
+    def connect(dbapi_connection, connection_record):
+        connection_record.info['pid'] = os.getpid()
+
+    @event.listens_for(engine, 'checkin')
+    def checkin(dbapi_connection, connection_record):
+        emit_monitor(MONITOR_SQLALCHEMY_DB_POOL_STATUS, engine.pool.status())
+
+    @event.listens_for(engine, 'checkout')
+    def checkout(dbapi_connection, connection_record, connection_proxy):
+        emit_monitor(MONITOR_SQLALCHEMY_DB_POOL_STATUS, engine.pool.status())
+
+        pid = os.getpid()
+        if connection_record.info['pid'] != pid:
+            connection_record.dbapi_connection = connection_proxy.dbapi_connection = None
+            message = f"connection record belongs to pid {connection_record.info['pid']} attempting to check out in pid {pid}"
+            logging.debug(message)
+            raise DisconnectionError(message)
+
+
+def _build_database_url(database_config) -> str:
+    """builds a SQLAlchemy connection URL for the given database config"""
+    if database_config.unix_socket:
+        return "mysql+pymysql://{username}:{password}@localhost/{database}?unix_socket={unix_socket}&charset=utf8mb4".format(
+            username=database_config.username,
+            password=database_config.password,
+            unix_socket=database_config.unix_socket,
+            database=database_config.database)
+
+    return "mysql+pymysql://{username}:{password}@{hostname}:{port}/{database}?charset=utf8mb4".format(
+        username=database_config.username,
+        password=database_config.password,
+        hostname=database_config.hostname,
+        port=database_config.port,
+        database=database_config.database)
+
+
+def _build_engine_options(database_config) -> dict:
+    """builds the create_engine kwargs for the given database config
+
+    mirrors the SQLALCHEMY_DATABASE_OPTIONS that flask_config builds for the
+    ace database so that alternate databases get the same pooling behavior."""
+    options: dict[str, Any] = {
+        "pool_recycle": 60 * 10,  # 10 minute connection pool recycle
+        "pool_timeout": 30,
+        "pool_size": 5,
+        "connect_args": {"init_command": "SET NAMES utf8mb4"},
+        "pool_pre_ping": True,
+    }
+
+    if database_config.max_allowed_packet:
+        options["connect_args"]["max_allowed_packet"] = database_config.max_allowed_packet
+
+    if not database_config.unix_socket:
+        if database_config.ssl_ca or database_config.ssl_cert or database_config.ssl_key:
+            ssl_options = {"ca": abs_path(database_config.ssl_ca)}
+            if database_config.ssl_cert:
+                ssl_options["cert"] = abs_path(database_config.ssl_cert)
+            if database_config.ssl_key:
+                ssl_options["key"] = abs_path(database_config.ssl_key)
+            options["connect_args"]["ssl"] = ssl_options
+
+    return options
+
+
+def _create_engine_for(name: str):
+    """creates a SQLAlchemy engine for the named (non-ace) database config"""
+    database_config = get_config().get_database_config(name)
+    engine = create_engine(
+        _build_database_url(database_config),
+        isolation_level="READ COMMITTED",
+        **_build_engine_options(database_config))
+    _attach_engine_listeners(engine)
+    return engine
+
+
 def initialize_database():
     """Initializes database connections by creating the SQLAlchemy engine and session objects."""
 
-    global DatabaseSession
     from flask_config import get_flask_config
 
     # see https://github.com/PyMySQL/PyMySQL/issues/644
@@ -289,31 +396,12 @@ def initialize_database():
 
     if get_db() is None:
         engine = create_engine(
-            get_flask_config(get_config().global_settings.instance_type).SQLALCHEMY_DATABASE_URI, 
+            get_flask_config(get_config().global_settings.instance_type).SQLALCHEMY_DATABASE_URI,
             isolation_level='READ COMMITTED',
             **get_flask_config(get_config().global_settings.instance_type).SQLALCHEMY_DATABASE_OPTIONS)
 
-        @event.listens_for(engine, 'connect')
-        def connect(dbapi_connection, connection_record):
-            pid = os.getpid()
-            connection_record.info['pid'] = pid
-
-        @event.listens_for(engine, 'checkin')
-        def checkin(dbapi_connection, connection_record):
-            emit_monitor(MONITOR_SQLALCHEMY_DB_POOL_STATUS, engine.pool.status())
-
-        @event.listens_for(engine, 'checkout')
-        def checkout(dbapi_connection, connection_record, connection_proxy):
-            emit_monitor(MONITOR_SQLALCHEMY_DB_POOL_STATUS, engine.pool.status())
-
-            pid = os.getpid()
-            if connection_record.info['pid'] != pid:
-                connection_record.dbapi_connection = connection_proxy.dbapi_connection = None
-                message = f"connection record belongs to pid {connection_record.info['pid']} attempting to check out in pid {pid}"
-                logging.debug(message)
-                raise DisconnectionError(message)
-
-        DatabaseSession = scoped_session(sessionmaker(bind=engine))
+        _attach_engine_listeners(engine)
+        set_db(scoped_session(sessionmaker(bind=engine)))
 
     else:
         # if you call this a second time it just closes all the sessions

@@ -29,7 +29,7 @@ from sqlalchemy import (
     desc,
     text,
 )
-from sqlalchemy.dialects.mysql import LONGBLOB, MEDIUMTEXT
+from sqlalchemy.dialects.mysql import DATETIME as MYSQL_DATETIME, LONGBLOB, MEDIUMTEXT
 from sqlalchemy.orm import (
     Mapped,
     aliased,
@@ -55,7 +55,7 @@ from saq.constants import (
     QUEUE_DEFAULT,
 )
 from saq.crypto import decrypt_chunk
-from saq.database.meta import Base
+from saq.database.meta import Base, CacheBase
 from saq.database.pool import get_db, get_db_connection
 from saq.database.retry import execute_with_retry, retry
 from saq.database.util.sync import sync_observable
@@ -2779,8 +2779,15 @@ class SandboxSubmission(Base):
         nullable=True)
 
 
-class AnalysisResultCache(Base):
-    """Per-module analysis delta cache. See docs/design/analysis_diff_tracking.md."""
+class AnalysisResultCache(CacheBase):
+    """Per-module analysis delta cache. See docs/design/analysis_diff_tracking.md.
+
+    Lives in the dedicated analysis-result-cache database (CacheBase metadata).
+    The table is partitioned daily by created_at, which forces created_at into
+    the primary key (MySQL requires the partitioning column in every unique
+    key). cache_key is therefore no longer unique on its own — the cache is
+    append-only and reads pick the freshest non-expired row.
+    """
 
     __tablename__ = 'analysis_result_cache'
     __table_args__ = (
@@ -2820,10 +2827,15 @@ class AnalysisResultCache(Base):
         nullable=False,
         server_default=text('0'))
 
+    # part of the primary key so the table can be partitioned by it; DATETIME
+    # (not TIMESTAMP) because RANGE COLUMNS partitioning does not support
+    # TIMESTAMP; microsecond precision keeps (key..., created_at) unique under
+    # rapid re-writes
     created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP,
+        MYSQL_DATETIME(fsp=6),
+        primary_key=True,
         nullable=False,
-        server_default=text('CURRENT_TIMESTAMP'))
+        server_default=text('CURRENT_TIMESTAMP(6)'))
 
     expires_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -2831,11 +2843,13 @@ class AnalysisResultCache(Base):
         index=True)
 
 
-class BlobRef(Base):
+class BlobRef(CacheBase):
     """Explicit reference counting for blobs stored in the analysis blob store.
 
-    Rows are composite-PK'd on (sha256, referrer_kind, referrer_id). Deleting
-    a referrer's row doesn't delete the underlying blob bytes — blob GC is a
+    Lives in the dedicated analysis-result-cache database (CacheBase metadata).
+    Rows are composite-PK'd on (sha256, referrer_kind, referrer_id, created_at).
+    created_at is in the key so the table can be partitioned by it. Deleting a
+    referrer's row doesn't delete the underlying blob bytes — blob GC is a
     separate downstream sweep that deletes blobs with zero refs.
     """
 
@@ -2856,10 +2870,15 @@ class BlobRef(Base):
         String(128),
         primary_key=True)
 
+    # part of the primary key so the table can be partitioned by it; DATETIME
+    # (not TIMESTAMP) because RANGE COLUMNS partitioning does not support
+    # TIMESTAMP; microsecond precision keeps (key..., created_at) unique under
+    # rapid re-writes
     created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP,
+        MYSQL_DATETIME(fsp=6),
+        primary_key=True,
         nullable=False,
-        server_default=text('CURRENT_TIMESTAMP'))
+        server_default=text('CURRENT_TIMESTAMP(6)'))
 
 
 # NOTE there is no database relationship between these tables

@@ -111,6 +111,13 @@ database_email_archive:
   username: ace-user
   password: "env:ACE_DB_PASSWORD"
 
+database_analysis_result_cache:
+  hostname: ace-db
+  unix_socket: ""
+  database: analysis-result-cache-unittest
+  username: ace-user
+  password: "env:ACE_DB_PASSWORD"
+
 analysis_module_basic_test:
   name: basic_test
   python_module: saq.modules.test

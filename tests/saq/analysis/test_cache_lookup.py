@@ -21,6 +21,7 @@ from saq.analysis.module_execution_delta import (
     RootDiff,
 )
 from saq.configuration.config import get_config
+from saq.constants import DB_ANALYSIS_RESULT_CACHE
 from saq.database.pool import get_db_connection
 
 
@@ -70,7 +71,7 @@ def _make_delta(
 
 
 def _delete_cache_row(cache_key):
-    with get_db_connection() as db:
+    with get_db_connection(DB_ANALYSIS_RESULT_CACHE) as db:
         cursor = db.cursor()
         cursor.execute("DELETE FROM blob_refs WHERE referrer_id = %s", (cache_key,))
         cursor.execute("DELETE FROM analysis_result_cache WHERE cache_key = %s", (cache_key,))
@@ -79,7 +80,7 @@ def _delete_cache_row(cache_key):
 
 def _set_expires_at(cache_key, sql_expr):
     """Force expires_at to a specific SQL expression for testing TTL paths."""
-    with get_db_connection() as db:
+    with get_db_connection(DB_ANALYSIS_RESULT_CACHE) as db:
         cursor = db.cursor()
         cursor.execute(
             f"UPDATE analysis_result_cache SET expires_at = {sql_expr} WHERE cache_key = %s",
@@ -88,19 +89,20 @@ def _set_expires_at(cache_key, sql_expr):
         db.commit()
 
 
-def _write_raw_row(cache_key, module, delta_dict, has_blob_refs=False):
+def _write_raw_row(cache_key, module, delta_dict, has_blob_refs=False,
+                   expires_sql="DATE_ADD(NOW(), INTERVAL 1 HOUR)"):
     """Insert a raw row bypassing put_cached_delta — for testing legacy
-    shapes and corruption paths.
+    shapes, corruption paths, and append-only duplicate-key behavior.
     """
     delta_json = json.dumps(delta_dict, sort_keys=True, default=str).encode("utf-8")
     delta_zstd = zstandard.ZstdCompressor(level=3).compress(delta_json)
-    with get_db_connection() as db:
+    with get_db_connection(DB_ANALYSIS_RESULT_CACHE) as db:
         cursor = db.cursor()
         cursor.execute(
             "INSERT INTO analysis_result_cache "
             "(cache_key, module_name, module_version, observable_type, observable_value, "
-            " delta_zstd, delta_uncompressed_size, has_blob_refs, expires_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, DATE_ADD(NOW(), INTERVAL 1 HOUR))",
+            f" delta_zstd, delta_uncompressed_size, has_blob_refs, expires_at) "
+            f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, {expires_sql})",
             (
                 cache_key,
                 module.config.name,
@@ -292,3 +294,55 @@ class TestGetCachedDelta:
             assert result.miss_reason is None
         finally:
             _delete_cache_row(delta.cache_key)
+
+    @pytest.mark.integration
+    def test_returns_freshest_row_when_duplicates(self, blob_store):
+        """Append-only: several non-expired rows can share a cache_key; the
+        lookup returns the one with the latest expires_at."""
+        module = _make_module()
+        obs = _make_observable()
+        cache_key = generate_cache_key(obs, module)
+        stale = _make_delta(
+            module, observable_value="https://stale.example/",
+            analysis={"module_path": "x", "details": {"v": "stale"}, "completed": True},
+        )
+        fresh = _make_delta(
+            module, observable_value="https://fresh.example/",
+            analysis={"module_path": "x", "details": {"v": "fresh"}, "completed": True},
+        )
+        try:
+            _write_raw_row(cache_key, module, stale.to_dict(),
+                           expires_sql="DATE_ADD(NOW(), INTERVAL 1 HOUR)")
+            _write_raw_row(cache_key, module, fresh.to_dict(),
+                           expires_sql="DATE_ADD(NOW(), INTERVAL 10 HOUR)")
+            result = get_cached_delta(obs, module, blob_store)
+            assert result.delta is not None
+            assert result.delta.analysis["details"]["v"] == "fresh"
+        finally:
+            _delete_cache_row(cache_key)
+
+    @pytest.mark.integration
+    def test_expired_duplicate_ignored_returns_live_row(self, blob_store):
+        """An expired row sharing a cache_key with a live row is filtered out
+        by the expires_at>NOW() predicate; the lookup returns the live row."""
+        module = _make_module()
+        obs = _make_observable()
+        cache_key = generate_cache_key(obs, module)
+        expired = _make_delta(
+            module, observable_value="https://expired.example/",
+            analysis={"module_path": "x", "details": {"v": "expired"}, "completed": True},
+        )
+        live = _make_delta(
+            module, observable_value="https://live.example/",
+            analysis={"module_path": "x", "details": {"v": "live"}, "completed": True},
+        )
+        try:
+            _write_raw_row(cache_key, module, expired.to_dict(),
+                           expires_sql="DATE_SUB(NOW(), INTERVAL 1 HOUR)")
+            _write_raw_row(cache_key, module, live.to_dict(),
+                           expires_sql="DATE_ADD(NOW(), INTERVAL 1 HOUR)")
+            result = get_cached_delta(obs, module, blob_store)
+            assert result.delta is not None
+            assert result.delta.analysis["details"]["v"] == "live"
+        finally:
+            _delete_cache_row(cache_key)

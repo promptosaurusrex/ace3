@@ -124,6 +124,7 @@ def initialize_sql(target_dir: str, primary_database: str):
         "database_collection": { "password": user_password },
         "database_email_archive": { "password": user_password },
         "database_brocess": { "password": user_password },
+        "database_analysis_result_cache": { "password": user_password },
     }
     with open(target_path, "w") as fp:
         yaml.dump(database_passwords, fp, indent=2)
@@ -134,6 +135,7 @@ def initialize_sql(target_dir: str, primary_database: str):
         ("01-ace.sql", "21-ace-unittest.sql"),
         ("02-email-archive.sql", "22-email-archive-unittest.sql"),
         ("03-brocess.sql", "23-brocess-unittest.sql"),
+        ("04-analysis-result-cache.sql", "24-analysis-result-cache-unittest.sql"),
         ("05-amc.sql", "25-amc-unittest.sql"), ]:
         with open(os.path.join(source_dir, src_sql), "r") as fp_in:
             with open(os.path.join(target_dir, dest_sql), "w") as fp_out:

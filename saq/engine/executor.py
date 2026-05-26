@@ -167,8 +167,8 @@ class AnalysisExecutionContext:
         self.total_exec_count: dict[str, int] = {}
         self.cache_hit_count: dict[str, int] = {}
         self.cache_miss_count: dict[str, int] = {}
+        # the cache is append-only — every write is an insert
         self.cache_write_count_insert: dict[str, int] = {}
-        self.cache_write_count_update: dict[str, int] = {}
         self.cache_lookup_ms_sum: dict[str, int] = {}
         self.cache_lookup_ms_max: dict[str, int] = {}
         self.cache_write_ms_sum: dict[str, int] = {}
@@ -231,7 +231,6 @@ class AnalysisExecutionContext:
                 | set(self.cache_hit_count.keys())
                 | set(self.cache_miss_count.keys())
                 | set(self.cache_write_count_insert.keys())
-                | set(self.cache_write_count_update.keys())
             )
 
             for key in all_module_keys:
@@ -259,16 +258,14 @@ class AnalysisExecutionContext:
                 hits = self.cache_hit_count.get(key, 0)
                 misses = self.cache_miss_count.get(key, 0)
                 inserts = self.cache_write_count_insert.get(key, 0)
-                updates = self.cache_write_count_update.get(key, 0)
-                if hits or misses or inserts or updates:
+                if hits or misses or inserts:
                     payload["cache_hit_count"] = hits
                     payload["cache_miss_count"] = misses
                     payload["cache_write_count_insert"] = inserts
-                    payload["cache_write_count_update"] = updates
                     if hits:
                         payload["cache_lookup_ms_sum"] = self.cache_lookup_ms_sum.get(key, 0)
                         payload["cache_lookup_ms_max"] = self.cache_lookup_ms_max.get(key, 0)
-                    if inserts or updates:
+                    if inserts:
                         payload["cache_write_ms_sum"] = self.cache_write_ms_sum.get(key, 0)
                         payload["cache_write_ms_max"] = self.cache_write_ms_max.get(key, 0)
                         payload["cache_write_bytes_uncompressed_sum"] = (
@@ -1344,14 +1341,9 @@ class AnalysisExecutor:
                                 write_result = put_cached_delta(delta, analysis_module, get_blob_store())
                                 if write_result is not None:
                                     module_name = analysis_module.name
-                                    if write_result.op == "insert":
-                                        context.cache_write_count_insert[module_name] = (
-                                            context.cache_write_count_insert.get(module_name, 0) + 1
-                                        )
-                                    else:
-                                        context.cache_write_count_update[module_name] = (
-                                            context.cache_write_count_update.get(module_name, 0) + 1
-                                        )
+                                    context.cache_write_count_insert[module_name] = (
+                                        context.cache_write_count_insert.get(module_name, 0) + 1
+                                    )
                                     context.cache_write_ms_sum[module_name] = (
                                         context.cache_write_ms_sum.get(module_name, 0)
                                         + write_result.write_ms
