@@ -1504,15 +1504,46 @@ def test_export_to_brocess_large_email(test_context):
     mail_from = "john" + ("0" * 255) + "@netflix.com"
     mail_to = "somebody" + ("0" * 255) + "@host.com"
     analyzer.export_to_brocess({
-        "mail_from": mail_from, 
+        "mail_from": mail_from,
         "env_rcpt_to": [mail_to],
     })
 
     with get_db_connection(DB_BROCESS) as db:
         _cursor = db.cursor()
-        _cursor.execute("SELECT source, destination, numconnections FROM smtplog WHERE source = %s AND destination = %s AND numconnections = 1", (mail_from[:255], mail_to[:255]))
+        _cursor.execute("SELECT source, destination, numconnections FROM smtplog WHERE source = %s AND destination = %s AND numconnections = 1", (mail_from[:255].encode("utf-8"), mail_to[:255].encode("utf-8")))
         result = _cursor.fetchone()
         assert result
+
+@pytest.mark.unit
+def test_export_to_brocess_multibyte_oversize(test_context):
+    # smtplog.source/destination are varbinary(255) — a byte limit.
+    # values whose UTF-8 encoding exceeds 255 bytes must not crash the export
+    with get_db_connection(DB_BROCESS) as db:
+        _cursor = db.cursor()
+        _cursor.execute("DELETE FROM smtplog")
+        db.commit()
+
+    analyzer = EmailLoggingAnalyzer(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_EMAIL_LOGGER))
+    # "®" is 2 bytes in UTF-8: 200 ASCII + 60 multibyte = 260 chars / 320 bytes
+    mail_from = ("a" * 200) + ("®" * 60) + "@x.com"
+    mail_to = ("b" * 200) + ("®" * 60) + "@y.com"
+    analyzer.export_to_brocess({
+        "mail_from": mail_from,
+        "env_rcpt_to": [mail_to],
+    })
+
+    with get_db_connection(DB_BROCESS) as db:
+        _cursor = db.cursor()
+        _cursor.execute("SELECT source, destination, LENGTH(source), LENGTH(destination) FROM smtplog")
+        result = _cursor.fetchone()
+        assert result
+        source, destination, source_len, destination_len = result
+        assert source_len <= 255
+        assert destination_len <= 255
+        assert source == mail_from.encode("utf-8")[:255]
+        assert destination == mail_to.encode("utf-8")[:255]
 
 @pytest.mark.integration
 @pytest.mark.parametrize("email_file,expected_subject,expected_subject_raw", [
