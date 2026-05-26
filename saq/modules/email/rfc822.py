@@ -1233,7 +1233,9 @@ class EmailAnalyzer(AnalysisModule):
         # create a file with just the header information and scan that separately
         headers_path = None
         if KEY_HEADERS in email_details:
-            headers_path = self.get_root().create_file_path(shorten_basename_for_suffix(_file.file_path, '.headers'))
+            rel_path = _file.file_path
+            shortened_basename = shorten_basename_for_suffix(os.path.basename(rel_path), '.headers')
+            headers_path = self.get_root().create_file_path(os.path.join(os.path.dirname(rel_path), shortened_basename))
             if os.path.exists(headers_path):
                 logging.debug("headers file {} already exists".format(headers_path))
             else:
@@ -1250,7 +1252,9 @@ class EmailAnalyzer(AnalysisModule):
         # combine the header and the decoded parts of the email into a single buffer for scanning with yara
         # we only combine the un-named html and text parts, not additional attachements
         if headers_path:
-            combined_path = self.get_root().create_file_path(shorten_basename_for_suffix(_file.file_path, '.combined'))
+            rel_path = _file.file_path
+            shortened_basename = shorten_basename_for_suffix(os.path.basename(rel_path), '.combined')
+            combined_path = self.get_root().create_file_path(os.path.join(os.path.dirname(rel_path), shortened_basename))
             if os.path.exists(combined_path):
                 logging.debug(f"combined path {combined_path} already exists")
             else:
