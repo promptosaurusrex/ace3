@@ -239,6 +239,10 @@ class YaraScanner_v3_4(AnalysisModule):
                         self.scanner_start_time = None
                         gc.collect()
                 
+            except TimeoutError as e:
+                logging.warning("yara scanner server timed out scanning file {}: {}".format(_full_path, e))
+                matches_found = False
+
             except socket.error as e:
                 logging.warning("failed to connect to yara socket server: {}".format(e))
                 if not self.scanner:
