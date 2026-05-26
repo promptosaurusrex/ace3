@@ -750,6 +750,49 @@ def test_long_filename_does_not_crash_analyzer(root_analysis, datadir):
     assert any(name.endswith(".combined") for name in file_names), file_names
 
 @pytest.mark.integration
+def test_nested_relative_path_does_not_crash_analyzer(root_analysis, datadir):
+    """Regression: when an email lives at a nested relative path (e.g. an officeparser
+    stream extracted under '<parent>.msg.officeparser/'), `_file.file_path` contains
+    '/' and previously hit `assert os.sep not in basename` inside
+    `shorten_basename_for_suffix`, crashing the entire email analysis."""
+
+    nested_target = "parent.msg.officeparser/stream_81.eml"
+    src = str(datadir / 'emails/splunk_logging.email.rfc822')
+
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(src, target_path=nested_target)
+    assert file_observable is not None
+    assert file_observable.file_path == nested_target  # path includes the subdirectory
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    file_observable = root_analysis.get_observable(file_observable.uuid)
+    assert file_observable
+    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    assert isinstance(email_analysis, EmailAnalysis)
+    assert email_analysis.parsing_error is None
+
+    file_observables = email_analysis.get_observables_by_type(F_FILE)
+    derived_paths = [o.file_path for o in file_observables]
+
+    # Layout must be preserved — derived files land under the same parent subdir,
+    # not flattened to the root file directory.
+    headers_paths = [p for p in derived_paths if p.endswith(".headers")]
+    combined_paths = [p for p in derived_paths if p.endswith(".combined")]
+    assert headers_paths, derived_paths
+    assert combined_paths, derived_paths
+    for p in headers_paths + combined_paths:
+        assert p.startswith("parent.msg.officeparser/"), p
+
+@pytest.mark.integration
 def test_multi_recipient_to_cc_observables(root_analysis, datadir):
     """A single To: header with multiple addresses, plus a CC: with mixed local/external recipients,
     should produce one F_EMAIL_TO per To: address and one F_EMAIL_CC per CC: address.
