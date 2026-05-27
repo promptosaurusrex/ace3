@@ -28,9 +28,9 @@ _db_sessions_lock = threading.RLock()
 def get_db(name: str = "ace") -> scoped_session:
     """returns the SQLAlchemy scoped session for the named database
 
-    get_db() with no argument returns the "ace" session and is backwards
-    compatible with all existing callers. sessions for other configured
-    databases are created lazily (with their own engine) on first request."""
+    get_db() with no argument returns the "ace" session
+    sessions for other configured databases are created lazily (with their own
+    engine) on first request."""
     if name is None:
         name = "ace"
 
@@ -39,9 +39,7 @@ def get_db(name: str = "ace") -> scoped_session:
         if session is not None:
             return session
 
-        # the "ace" session is created by initialize_database() using the flask
-        # config -- before that runs get_db() returns None (preserves the
-        # historical "is the database initialized yet" check)
+        # the "ace" session is created by initialize_database() using the flask config
         if name == "ace":
             return None
 

@@ -2828,7 +2828,7 @@ class SandboxSubmission(Base):
 
 
 class AnalysisResultCache(CacheBase):
-    """Per-module analysis delta cache. See docs/design/analysis_diff_tracking.md.
+    """Per-module analysis delta cache.
 
     Lives in the dedicated analysis-result-cache database (CacheBase metadata).
     The table is partitioned daily by created_at, which forces created_at into
@@ -2875,10 +2875,7 @@ class AnalysisResultCache(CacheBase):
         nullable=False,
         server_default=text('0'))
 
-    # part of the primary key so the table can be partitioned by it; DATETIME
-    # (not TIMESTAMP) because RANGE COLUMNS partitioning does not support
-    # TIMESTAMP; microsecond precision keeps (key..., created_at) unique under
-    # rapid re-writes
+    # part of the primary key so the table can be partitioned by it
     created_at: Mapped[datetime] = mapped_column(
         MYSQL_DATETIME(fsp=6),
         primary_key=True,
@@ -2897,8 +2894,8 @@ class BlobRef(CacheBase):
     Lives in the dedicated analysis-result-cache database (CacheBase metadata).
     Rows are composite-PK'd on (sha256, referrer_kind, referrer_id, created_at).
     created_at is in the key so the table can be partitioned by it. Deleting a
-    referrer's row doesn't delete the underlying blob bytes — blob GC is a
-    separate downstream sweep that deletes blobs with zero refs.
+    referrer's row doesn't delete the underlying blob, a separate downstream
+    sweep deletes blobs with zero refs.
     """
 
     __tablename__ = 'blob_refs'
@@ -2918,10 +2915,7 @@ class BlobRef(CacheBase):
         String(128),
         primary_key=True)
 
-    # part of the primary key so the table can be partitioned by it; DATETIME
-    # (not TIMESTAMP) because RANGE COLUMNS partitioning does not support
-    # TIMESTAMP; microsecond precision keeps (key..., created_at) unique under
-    # rapid re-writes
+    # part of the primary key so the table can be partitioned by it
     created_at: Mapped[datetime] = mapped_column(
         MYSQL_DATETIME(fsp=6),
         primary_key=True,

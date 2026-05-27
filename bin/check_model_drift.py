@@ -10,8 +10,8 @@ because Alembic cannot round-trip compare them.  These are filtered out
 automatically.
 
 Usage (inside dev container):
-    /venv/bin/python bin/check_model_drift.py             # main ace DB
-    /venv/bin/python bin/check_model_drift.py --cache     # analysis cache DB
+    /venv/bin/python bin/check_model_drift.py                       # main ace DB (default)
+    /venv/bin/python bin/check_model_drift.py --database cache      # analysis cache DB
 
 Or via Make:
     make db-check
@@ -44,6 +44,22 @@ sys.path.insert(0, project_root)
 
 from saq.database.meta import Base, CacheBase
 import saq.database.model  # noqa: F401 — populates Base.metadata and CacheBase.metadata
+
+
+DATABASES = {
+    "ace": {
+        "metadata": Base.metadata,
+        "env_var": "DATABASE_NAME",
+        "default_name": "ace",
+        "revision_cmd": "make db-revision",
+    },
+    "cache": {
+        "metadata": CacheBase.metadata,
+        "env_var": "CACHE_DATABASE_NAME",
+        "default_name": "analysis-result-cache-unittest",
+        "revision_cmd": "make cache-db-revision",
+    },
+}
 
 
 def get_url(db_name: str) -> str:
@@ -93,20 +109,17 @@ def _expression_index_names(diffs) -> set[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else "")
     parser.add_argument(
-        "--cache",
-        action="store_true",
-        help="check the analysis-result-cache database against CacheBase.metadata instead of the main ace database",
+        "--database",
+        choices=list(DATABASES),
+        default="ace",
+        help="which database to drift-check (default: ace)",
     )
     args = parser.parse_args()
 
-    if args.cache:
-        metadata = CacheBase.metadata
-        db_name = os.environ.get("CACHE_DATABASE_NAME", "analysis-result-cache-unittest")
-        revision_cmd = "make cache-db-revision"
-    else:
-        metadata = Base.metadata
-        db_name = os.environ.get("DATABASE_NAME", "ace")
-        revision_cmd = "make db-revision"
+    cfg = DATABASES[args.database]
+    metadata = cfg["metadata"]
+    db_name = os.environ.get(cfg["env_var"], cfg["default_name"])
+    revision_cmd = cfg["revision_cmd"]
 
     engine = create_engine(get_url(db_name))
     with engine.connect() as conn:

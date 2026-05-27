@@ -73,4 +73,4 @@ jobs:
           ACE_DB_HOST: 127.0.0.1
           ACE_SUPERUSER_DB_USER_PASSWORD: ci-password
           CACHE_DATABASE_NAME: analysis-result-cache
-        run: python bin/check_model_drift.py --cache
+        run: python bin/check_model_drift.py --database cache

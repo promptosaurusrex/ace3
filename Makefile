@@ -26,4 +26,4 @@ cache-db-downgrade:
 	docker compose exec dev /venv/bin/alembic -c alembic/analysis_cache.ini downgrade -1
 
 cache-db-check:
-	docker compose exec -e CACHE_DATABASE_NAME=analysis-result-cache-unittest dev /venv/bin/python bin/check_model_drift.py --cache
+	docker compose exec -e CACHE_DATABASE_NAME=analysis-result-cache-unittest dev /venv/bin/python bin/check_model_drift.py --database cache

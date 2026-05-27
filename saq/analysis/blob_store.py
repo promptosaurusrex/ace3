@@ -305,12 +305,6 @@ class LocalHardlinkBlobStore(BlobStore):
         return os.path.exists(self._path_for(sha256))
 
     def reference(self, sha256: str, referrer_kind: str, referrer_id: str) -> None:
-        # INSERT IGNORE (via MySQL dialect prefix) swallows a duplicate-key
-        # error. blob_refs has created_at in its primary key, so re-referencing
-        # the same (sha, kind, id) at a different time inserts a second row
-        # rather than deduping — that is harmless: GC only cares whether *any*
-        # row references a sha, and the extra rows are reclaimed by the same
-        # partition drop. The IGNORE still protects against a same-second retry.
         stmt = mysql_insert(BlobRef).values(
             sha256=sha256, referrer_kind=referrer_kind, referrer_id=referrer_id,
         ).prefix_with('IGNORE')
@@ -318,7 +312,6 @@ class LocalHardlinkBlobStore(BlobStore):
         get_db(DB_ANALYSIS_RESULT_CACHE).commit()
 
     def unreference(self, sha256: str, referrer_kind: str, referrer_id: str) -> None:
-        # no created_at predicate — drop every row for this (sha, kind, id)
         get_db(DB_ANALYSIS_RESULT_CACHE).execute(
             delete(BlobRef).where(
                 BlobRef.sha256 == sha256,

@@ -1,10 +1,7 @@
 from sqlalchemy.orm import declarative_base
 
-# metadata for tables in the main ace database -- this is what alembic
-# autogenerate targets
+# main ace database
 Base = declarative_base()
 
-# separate metadata for tables that live in the dedicated analysis-result-cache
-# database. kept out of Base so alembic (which manages only the ace database)
-# never tries to create or drop them there
+# analysis result cache database
 CacheBase = declarative_base()
