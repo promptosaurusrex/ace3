@@ -17,8 +17,7 @@ from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config, set_config
 from saq.constants import ANALYSIS_MODE_ANALYSIS, INSTANCE_TYPE_UNITTEST, SERVICE_ENGINE
 from saq.crypto import set_encryption_password
-from saq.database import get_db
-from saq.database.pool import get_db_connection
+from saq.database.pool import get_db_connection, remove_all_sessions
 from saq.database.util.automation_user import initialize_automation_user
 from saq.database.util.user_management import add_user
 from saq.email_archive import initialize_email_archive
@@ -339,24 +338,12 @@ def global_function_setup(request):
     set_global_runtime_settings(global_runtime_settings_copy)
 
     # SQLAlchemy session management
-    db_session = get_db()
-    if db_session is not None:
-
-        #
-        # (09/24/2025) there's something weird going on here with SSL enabled
-        # we end up with SSL sockets in an invalid state sometimes
-        # so I've got these wrapped in try/except for now...
-        #
-
-        try:
-            db_session.remove()
-        except Exception as e:
-            logging.error(f"error removing database session: {e}")
-
-        try:
-            db_session.close()
-        except Exception as e:
-            logging.error(f"error closing database session: {e}")
+    #
+    # (09/24/2025) there's something weird going on here with SSL enabled
+    # we end up with SSL sockets in an invalid state sometimes — the per-session
+    # try/except inside remove_all_sessions() handles that
+    #
+    remove_all_sessions()
 
     from sqlalchemy.orm.session import close_all_sessions
     close_all_sessions()

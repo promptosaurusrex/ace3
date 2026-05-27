@@ -51,6 +51,21 @@ def set_db(value):
     with _db_sessions_lock:
         _db_sessions["ace"] = value
 
+def remove_all_sessions():
+    """remove() every registered scoped session
+
+    Call at request/loop boundaries so any partial transaction state on the
+    thread-local session is discarded before the next unit of work.
+    """
+    with _db_sessions_lock:
+        for name, session in list(_db_sessions.items()):
+            if session is None:
+                continue
+            try:
+                session.remove()
+            except Exception as e:
+                logging.warning("error removing %s session: %s", name, e)
+
 class _database_pool:
     def __init__(self, name):
         # the name of the database this is a pool for

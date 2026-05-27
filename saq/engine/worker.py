@@ -13,7 +13,7 @@ from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_engine_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, F_FILE, LockManagerType, WorkloadManagerType
-from saq.database.pool import get_db
+from saq.database.pool import remove_all_sessions
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.delayed_analysis import DelayedAnalysisRequest
@@ -375,10 +375,7 @@ class Worker:
                 time.sleep(1) # avoid spinning
             finally:
                 # SQLAlchemy session management
-                db_session = get_db()
-                if db_session is not None:
-                    db_session.remove()
-                    db_session.close()
+                remove_all_sessions()
 
         logging.debug("worker {} exiting".format(os.getpid()))
 

@@ -1,7 +1,7 @@
 from aceapi.blueprints import register_blueprints
 from saq.configuration import get_config
 from saq.configuration.config import get_database_config
-from saq.database.pool import set_db
+from saq.database.pool import remove_all_sessions, set_db
 
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
@@ -80,6 +80,12 @@ def create_app(testing=False):
         set_db(db.session)
     #set_g(G_DB, db)
     db.init_app(flask_app)
+
+    @flask_app.teardown_appcontext
+    def _remove_all_sessions(exception):
+        # release thread-local sessions for every registered engine, not just
+        # the ace session that flask-sqlalchemy manages on its own
+        remove_all_sessions()
 
     with flask_app.app_context():
         @event.listens_for(db.engine, 'checkin')
