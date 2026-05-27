@@ -34,6 +34,7 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from saq.configuration.config import get_config
 from saq.configuration.schema import BlobStoreSpec
+from saq.constants import DB_ANALYSIS_RESULT_CACHE
 from saq.database.model import BlobRef
 from saq.database.pool import get_db
 from saq.environment import get_base_dir
@@ -104,11 +105,15 @@ def query_referenced_shas(shas: Iterable[str]) -> set[str]:
     referenced: set[str] = set()
     for i in range(0, len(shas), _MAINTENANCE_BATCH):
         batch = shas[i:i + _MAINTENANCE_BATCH]
+        # distinct: blob_refs is append-only-ish (created_at is in the PK), so a
+        # sha256 can appear in several rows
         referenced.update(
-            get_db().scalars(select(BlobRef.sha256).where(BlobRef.sha256.in_(batch))).all()
+            get_db(DB_ANALYSIS_RESULT_CACHE).scalars(
+                select(BlobRef.sha256).where(BlobRef.sha256.in_(batch)).distinct()
+            ).all()
         )
     # release the read transaction so we don't hold it across the delete loop
-    get_db().commit()
+    get_db(DB_ANALYSIS_RESULT_CACHE).commit()
     return referenced
 
 
@@ -300,24 +305,21 @@ class LocalHardlinkBlobStore(BlobStore):
         return os.path.exists(self._path_for(sha256))
 
     def reference(self, sha256: str, referrer_kind: str, referrer_id: str) -> None:
-        # INSERT IGNORE (via MySQL dialect prefix) makes this idempotent —
-        # re-referencing the same (sha, kind, id) is a no-op rather than a
-        # duplicate-key error.
         stmt = mysql_insert(BlobRef).values(
             sha256=sha256, referrer_kind=referrer_kind, referrer_id=referrer_id,
         ).prefix_with('IGNORE')
-        get_db().execute(stmt)
-        get_db().commit()
+        get_db(DB_ANALYSIS_RESULT_CACHE).execute(stmt)
+        get_db(DB_ANALYSIS_RESULT_CACHE).commit()
 
     def unreference(self, sha256: str, referrer_kind: str, referrer_id: str) -> None:
-        get_db().execute(
+        get_db(DB_ANALYSIS_RESULT_CACHE).execute(
             delete(BlobRef).where(
                 BlobRef.sha256 == sha256,
                 BlobRef.referrer_kind == referrer_kind,
                 BlobRef.referrer_id == referrer_id,
             )
         )
-        get_db().commit()
+        get_db(DB_ANALYSIS_RESULT_CACHE).commit()
 
     def maintain_global(self, grace_period: timedelta, dry_run: bool = False) -> GlobalMaintenanceStats:
         # for the local hardlink store the filesystem IS the durable tier, so

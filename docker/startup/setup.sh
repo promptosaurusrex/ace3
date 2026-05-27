@@ -18,12 +18,19 @@ fi
 
 # Run database migrations first — tables must exist before encryption check
 echo "running database migrations..."
-/venv/bin/alembic upgrade head
+/venv/bin/alembic -c alembic/ace.ini upgrade head
 if [ "${ACE_INSTANCE_TYPE}" = "DEV" ]; then
-    DATABASE_NAME=ace-unittest /venv/bin/alembic upgrade head
-    DATABASE_NAME=ace-unittest-2 /venv/bin/alembic upgrade head
+    DATABASE_NAME=ace-unittest /venv/bin/alembic -c alembic/ace.ini upgrade head
+    DATABASE_NAME=ace-unittest-2 /venv/bin/alembic -c alembic/ace.ini upgrade head
 fi
 echo "database migrations complete"
+
+echo "running analysis cache database migrations..."
+/venv/bin/alembic -c alembic/analysis_cache.ini upgrade head
+if [ "${ACE_INSTANCE_TYPE}" = "DEV" ]; then
+    CACHE_DATABASE_NAME=analysis-result-cache-unittest /venv/bin/alembic -c alembic/analysis_cache.ini upgrade head
+fi
+echo "analysis cache database migrations complete"
 
 # Seed database before encryption check — ace enc test calls initialize_node()
 # which INSERTs into nodes with a company_id FK, so company must exist first.

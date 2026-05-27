@@ -14,7 +14,7 @@ from ace_api import upload
 from saq.analysis.root import RootAnalysis, Submission
 from saq.configuration.config import get_config, get_engine_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, DB_COLLECTION, NO_NODES_AVAILABLE, NO_WORK_AVAILABLE, NO_WORK_SUBMITTED, WORK_SUBMITTED
-from saq.database import ALERT, execute_with_retry, get_db, get_db_connection
+from saq.database import ALERT, execute_with_retry, get_db, get_db_connection, remove_all_sessions
 from saq.database.pool import execute_with_db_cursor
 from saq.engine.node_manager.distributed_node_manager import translate_node
 from saq.environment import get_data_dir, get_global_runtime_settings
@@ -266,7 +266,7 @@ class RemoteNodeGroup:
                     break
 
             finally:
-                get_db().remove()
+                remove_all_sessions()
 
     def release_work_locks(self):
         with get_db_connection(DB_COLLECTION) as db:

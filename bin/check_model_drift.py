@@ -10,12 +10,15 @@ because Alembic cannot round-trip compare them.  These are filtered out
 automatically.
 
 Usage (inside dev container):
-    /venv/bin/python bin/check_model_drift.py
+    /venv/bin/python bin/check_model_drift.py                       # main ace DB (default)
+    /venv/bin/python bin/check_model_drift.py --database cache      # analysis cache DB
 
 Or via Make:
     make db-check
+    make cache-db-check
 """
 
+import argparse
 import logging
 import os
 import sys
@@ -39,18 +42,33 @@ from sqlalchemy import Column, create_engine
 # Re-add project root so saq is importable
 sys.path.insert(0, project_root)
 
-from saq.database.meta import Base
-import saq.database.model  # noqa: F401 — populates Base.metadata
+from saq.database.meta import Base, CacheBase
+import saq.database.model  # noqa: F401 — populates Base.metadata and CacheBase.metadata
 
 
-def get_url() -> str:
+DATABASES = {
+    "ace": {
+        "metadata": Base.metadata,
+        "env_var": "DATABASE_NAME",
+        "default_name": "ace",
+        "revision_cmd": "make db-revision",
+    },
+    "cache": {
+        "metadata": CacheBase.metadata,
+        "env_var": "CACHE_DATABASE_NAME",
+        "default_name": "analysis-result-cache-unittest",
+        "revision_cmd": "make cache-db-revision",
+    },
+}
+
+
+def get_url(db_name: str) -> str:
     password = os.environ.get("ACE_SUPERUSER_DB_USER_PASSWORD") or ""
     if not password:
         with open("/auth/passwords/ace-superuser") as fp:
             password = fp.read().strip()
     password = quote_plus(password)
     host = os.environ.get("ACE_DB_HOST", "ace-db")
-    db_name = os.environ.get("DATABASE_NAME", "ace")
     return f"mysql+pymysql://ace-superuser:{password}@{host}:3306/{db_name}"
 
 
@@ -89,10 +107,24 @@ def _expression_index_names(diffs) -> set[str]:
 
 
 def main() -> int:
-    engine = create_engine(get_url())
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else "")
+    parser.add_argument(
+        "--database",
+        choices=list(DATABASES),
+        default="ace",
+        help="which database to drift-check (default: ace)",
+    )
+    args = parser.parse_args()
+
+    cfg = DATABASES[args.database]
+    metadata = cfg["metadata"]
+    db_name = os.environ.get(cfg["env_var"], cfg["default_name"])
+    revision_cmd = cfg["revision_cmd"]
+
+    engine = create_engine(get_url(db_name))
     with engine.connect() as conn:
         migration_ctx = MigrationContext.configure(conn)
-        diffs = compare_metadata(migration_ctx, Base.metadata)
+        diffs = compare_metadata(migration_ctx, metadata)
 
     # Filter out expression-index false positives (paired add/remove)
     false_positive_indexes = _expression_index_names(diffs)
@@ -115,7 +147,7 @@ def main() -> int:
     for diff in real_diffs:
         print(f"  {diff}")
     print(
-        "\nRun 'make db-revision MESSAGE=\"describe your change\"' to generate a migration."
+        f"\nRun '{revision_cmd} MESSAGE=\"describe your change\"' to generate a migration."
     )
     return 1
 

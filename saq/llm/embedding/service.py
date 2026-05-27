@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from saq.configuration.config import get_service_config
 from saq.configuration.schema import ServiceConfig
 from saq.constants import REDIS_DB_BG_TASKS, SERVICE_LLM_EMBEDDING
-from saq.database.pool import get_db
+from saq.database.pool import remove_all_sessions
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.error.reporting import report_exception
 from saq.llm.embedding.vector import vectorize
@@ -101,7 +101,7 @@ class EmbeddingWorker:
             logging.error(f"error executing task {task_data}: {e}")
             report_exception()
         finally:
-            get_db().remove()
+            remove_all_sessions()
 
     def execute_task(self, task: EmbeddingTask):
         lock_uuid = str(uuid.uuid4())

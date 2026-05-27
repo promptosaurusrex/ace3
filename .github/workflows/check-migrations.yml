@@ -3,7 +3,8 @@ name: Check Alembic Migrations
 on:
   pull_request:
     paths:
-      - 'alembic/versions/**'
+      - 'alembic/ace/versions/**'
+      - 'alembic/analysis_cache/versions/**'
   merge_group:
 
 jobs:
@@ -14,18 +15,22 @@ jobs:
       - run: pip install alembic
       - name: Check for migration conflicts
         run: |
-          heads=$(alembic heads | wc -l)
-          if [ "$heads" -gt 1 ]; then
-            echo "::error::Multiple Alembic migration heads detected — the migration chain has forked."
-            echo ""
-            echo "Heads:"
-            alembic heads
-            echo ""
-            echo "Branches:"
-            alembic branches
-            echo ""
-            echo "Resolution: rebase so one migration's down_revision points to the other."
-            exit 1
-          fi
-          echo "Migration chain OK (single head):"
-          alembic heads
+          set -e
+          for cfg in alembic/ace.ini alembic/analysis_cache.ini; do
+            echo "checking $cfg"
+            heads=$(alembic -c "$cfg" heads | wc -l)
+            if [ "$heads" -gt 1 ]; then
+              echo "::error::Multiple Alembic migration heads detected in $cfg — the migration chain has forked."
+              echo ""
+              echo "Heads:"
+              alembic -c "$cfg" heads
+              echo ""
+              echo "Branches:"
+              alembic -c "$cfg" branches
+              echo ""
+              echo "Resolution: rebase so one migration's down_revision points to the other."
+              exit 1
+            fi
+            echo "Migration chain OK (single head) for $cfg:"
+            alembic -c "$cfg" heads
+          done

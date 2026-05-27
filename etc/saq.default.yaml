@@ -126,8 +126,10 @@ analysis_cache:
   details_spill_bytes: 16384
   # refuse to cache deltas whose compressed payload exceeds this many bytes
   max_compressed_bytes: 1048576
-  # prune sweep batch size — keep lock windows short
-  prune_batch_size: 1000
+  # retention window (in days) for analysis_result_cache / blob_refs partitions
+  # partitions older than this are dropped by bin/manage-analysis-result-cache-partitions.sh
+  # MUST exceed the longest module cache_ttl or partition drops would delete live rows
+  partition_retention_days: 35
 
 # directives that cannot be copied between observables via copy_directives_to
 fixed_directives:
@@ -707,6 +709,20 @@ database_email_archive:
   port: 3306
   unix_socket: ""
   database: email-archive
+  username: ace-user
+  password: "env:ACE_DB_PASSWORD"
+  ssl_ca: ssl/ca-chain.cert.pem
+  max_allowed_packet: 1073741824
+  # how long (in HH:MM:SS format) a database connecton is considered valid
+  # connections that exceed this lifetime are terminated and recreated
+  max_connection_lifetime: "00:15:00"
+
+database_analysis_result_cache:
+  name: analysis_result_cache
+  hostname: ace-db
+  port: 3306
+  unix_socket: ""
+  database: analysis-result-cache
   username: ace-user
   password: "env:ACE_DB_PASSWORD"
   ssl_ca: ssl/ca-chain.cert.pem

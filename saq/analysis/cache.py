@@ -1,4 +1,4 @@
-"""Analysis result cache — write path, key generation, pruning.
+"""Analysis result cache — write path, key generation, lookup/replay.
 
 This module persists ``ModuleExecutionDelta`` records from successful module
 executions so that future analyses of the same observable can reuse the work.
@@ -34,7 +34,7 @@ import time
 from typing import TYPE_CHECKING, NamedTuple, Optional
 
 import zstandard
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from saq.analysis.analysis import Analysis as _Analysis, UnknownAnalysis
@@ -46,7 +46,8 @@ from saq.analysis.blob_store import (
 from saq.analysis.module_execution_delta import ModuleExecutionDelta
 from saq.analysis.module_path import SPLIT_MODULE_PATH
 from saq.configuration.config import get_config
-from saq.database.model import AnalysisResultCache, BlobRef
+from saq.constants import DB_ANALYSIS_RESULT_CACHE
+from saq.database.model import AnalysisResultCache
 from saq.database.pool import get_db
 from saq.util import parse_event_time
 
@@ -58,15 +59,9 @@ if TYPE_CHECKING:
 def generate_cache_key(observable: "Observable", module) -> Optional[str]:
     """sha256 over observable identity + module identity + extended version.
 
-    ``observable.time`` is intentionally excluded. A cacheable module's
-    result is a pure function of the observable *value* plus external state
-    — never of when the observable was seen. Including time would also
-    defeat dedup for observable types that commonly carry one (IPs), since
-    every occurrence has a slightly different timestamp. Result drift over
-    time is bounded by ``cache_ttl``, not by the key.
+    NOTE right now we are excluding ``observable.time`` from the key.
 
-    Returns None when the module hasn't opted into caching (``cache_ttl is
-    None``), signalling that callers should skip cache operations entirely.
+    Returns None when the module hasn't opted into caching.
     """
     if module.cache_ttl is None:
         return None
@@ -88,15 +83,14 @@ class CacheWriteResult(NamedTuple):
     :class:`AnalysisExecutionContext` — the actual metric emission happens at
     end-of-root in ``record_execution_statistics``.
     """
-    op: str  # "insert" or "update"
+    op: str  # NOTE always "insert" — cache is append-only
     write_ms: int
     uncompressed_bytes: int
     compressed_bytes: int
 
 
 def _maybe_spill_details(delta_dict: dict, blob_store: BlobStore, cache_key: str) -> bool:
-    """Move ``delta_dict['analysis']['details']`` into the blob store when it's
-    large enough to hurt the cache table.
+    """Move ``delta_dict['analysis']['details']`` into the blob store when it exceeds the spill threshold.
 
     Mutates ``delta_dict`` in place: ``details`` is replaced with a
     ``{"__blob_ref__": "<sha>"}`` pointer, and a ``blob_refs`` row is written
@@ -107,6 +101,7 @@ def _maybe_spill_details(delta_dict: dict, blob_store: BlobStore, cache_key: str
     analysis = delta_dict.get("analysis")
     if not isinstance(analysis, dict):
         return False
+
     details = analysis.get("details")
     if details is None:
         return False
@@ -131,9 +126,7 @@ def put_cached_delta(
     """Persist a successful module execution's delta.
 
     Returns a :class:`CacheWriteResult` if a cache row was written, ``None``
-    otherwise (caller passed a module with no ``cache_ttl``, the kill switch
-    is off, the delta had removals, was still delayed, spawned file
-    observables, exceeded the size cap, or the DB write failed).
+    otherwise.
 
     All DB failures are caught and logged — this function must never raise
     into the executor.
@@ -159,6 +152,7 @@ def put_cached_delta(
                 },
             )
             return None
+
         # Step 3.2: refuse to cache deltas captured mid-delay. Replay path
         # unconditionally marks the analysis completed — caching a delayed
         # analysis would lie. Combined with snapshot Step 3.0, the only
@@ -179,6 +173,7 @@ def put_cached_delta(
                 },
             )
             return None
+
         # Step 3.3: refuse to cache deltas that would spawn file
         # observables on replay. File-byte materialization is Phase 4
         # territory; until that lands, replaying a file-spawning delta
@@ -197,6 +192,9 @@ def put_cached_delta(
                 },
             )
             return None
+
+        # NOTE this comes after the previous checks so we can get visibility
+        # into the reason for skipping the cache write
         if not get_config().analysis_cache.enabled:
             return None
 
@@ -205,6 +203,7 @@ def put_cached_delta(
             # Caller didn't set it — compute now.
             cache_key = generate_cache_key(_ObservableShim(delta), module)
             delta.cache_key = cache_key
+
         if cache_key is None:
             return None
 
@@ -236,9 +235,8 @@ def put_cached_delta(
                     "max_compressed_bytes": max_compressed_bytes,
                 },
             )
+
             # If we spilled details but are bailing out, unreference the blob
-            # so the prune/GC story doesn't hold onto it for a cache row that
-            # never got written.
             if has_blob_refs:
                 for sha in _extract_blob_refs(delta_dict):
                     try:
@@ -253,10 +251,13 @@ def put_cached_delta(
 
         ttl_seconds = int(module.cache_ttl.total_seconds())
 
-        # INSERT ... ON DUPLICATE KEY UPDATE so concurrent fills and repeated
-        # analyses of the same observable don't collide. Last write wins —
-        # both results are valid by construction (design doc §open-question 5).
-        # Compute expires_at on the DB to avoid Python-vs-DB clock drift.
+        # The cache is append-only. analysis_result_cache is partitioned by
+        # created_at, which forces created_at into the primary key, so cache_key
+        # is no longer unique on its own and an upsert is not possible. A repeat
+        # analysis of the same observable just inserts another row — get_cached_delta
+        # picks the freshest non-expired one and partition drops reclaim the rest.
+        # Last write wins; both results are valid by construction (design doc
+        # §open-question 5). expires_at is computed on the DB to avoid clock drift.
         stmt = mysql_insert(AnalysisResultCache).values(
             cache_key=cache_key,
             module_name=module.config.name,
@@ -271,26 +272,13 @@ def put_cached_delta(
                 text("INTERVAL :ttl SECOND").bindparams(ttl=ttl_seconds),
             ),
         )
-        stmt = stmt.on_duplicate_key_update(
-            module_version=stmt.inserted.module_version,
-            delta_zstd=stmt.inserted.delta_zstd,
-            delta_uncompressed_size=stmt.inserted.delta_uncompressed_size,
-            has_blob_refs=stmt.inserted.has_blob_refs,
-            expires_at=stmt.inserted.expires_at,
-        )
         write_start_ns = time.monotonic_ns()
-        result = get_db().execute(stmt)
-        get_db().commit()
+        get_db(DB_ANALYSIS_RESULT_CACHE).execute(stmt)
+        get_db(DB_ANALYSIS_RESULT_CACHE).commit()
         write_ms = (time.monotonic_ns() - write_start_ns) // 1_000_000
 
-        # MySQL returns rowcount=1 for INSERT and rowcount=2 for an
-        # ON DUPLICATE KEY UPDATE that actually changed values. Our update
-        # always refreshes expires_at, so 2 reliably means "existing row
-        # refreshed" and 1 means "new URL seen for the first time".
-        op = "insert" if result.rowcount == 1 else "update"
-
         return CacheWriteResult(
-            op=op,
+            op="insert",
             write_ms=write_ms,
             uncompressed_bytes=uncompressed_size,
             compressed_bytes=len(delta_zstd),
@@ -303,143 +291,40 @@ def put_cached_delta(
             extra={"module_name": module_name},
         )
         try:
-            get_db().rollback()
+            get_db(DB_ANALYSIS_RESULT_CACHE).rollback()
         except Exception:
             pass
         return None
 
 
-def delete_for_module(module_name: str) -> int:
-    """Delete all cache entries (and their blob refs) for a given module name.
-
-    Used on rules-file reload when ``extended_version`` changes and the
-    module wants to evict stale entries immediately rather than wait for TTL.
-    Batched to keep lock windows short.
-    """
-    batch_size = get_config().analysis_cache.prune_batch_size
-    total = 0
-    while True:
-        cache_keys = get_db().scalars(
-            select(AnalysisResultCache.cache_key)
-            .where(AnalysisResultCache.module_name == module_name)
-            .limit(batch_size)
-        ).all()
-        if not cache_keys:
-            return total
-
-        get_db().execute(
-            delete(BlobRef).where(
-                BlobRef.referrer_kind == REFERRER_KIND_CACHE_ROW,
-                BlobRef.referrer_id.in_(cache_keys),
-            )
-        )
-        get_db().execute(
-            delete(AnalysisResultCache).where(
-                AnalysisResultCache.cache_key.in_(cache_keys)
-            )
-        )
-        get_db().commit()
-
-        total += len(cache_keys)
-        if len(cache_keys) < batch_size:
-            return total
-
-
-def prune(blob_store: BlobStore, batch_size: Optional[int] = None) -> int:
-    """Delete expired cache rows and drop their blob_refs in the same tx.
-
-    Returns total rows deleted. Follows design doc §A8's sketch: SELECT ...
-    FOR UPDATE SKIP LOCKED so redundant sweeps don't fight over rows; each
-    batch is its own transaction so a crash mid-run doesn't lose progress.
-
-    The backend's ``unreference`` is called *after* each batch commits for any
-    housekeeping it needs — for the local backend this is a no-op (actual blob
-    deletion lives in ``blob_store.maintain_global()``).
-
-    ``batch_size`` defaults to ``analysis_cache.prune_batch_size``;
-    tests may override it for finer-grained control.
-    """
-    if batch_size is None:
-        batch_size = get_config().analysis_cache.prune_batch_size
-    total = 0
-    while True:
-        cache_keys = get_db().scalars(
-            select(AnalysisResultCache.cache_key)
-            .where(AnalysisResultCache.expires_at < func.now())
-            .order_by(AnalysisResultCache.expires_at)
-            .limit(batch_size)
-            .with_for_update(skip_locked=True)
-        ).all()
-        if not cache_keys:
-            return total
-
-        blob_rows = get_db().execute(
-            select(BlobRef.sha256, BlobRef.referrer_id).where(
-                BlobRef.referrer_kind == REFERRER_KIND_CACHE_ROW,
-                BlobRef.referrer_id.in_(cache_keys),
-            )
-        ).all()
-
-        get_db().execute(
-            delete(BlobRef).where(
-                BlobRef.referrer_kind == REFERRER_KIND_CACHE_ROW,
-                BlobRef.referrer_id.in_(cache_keys),
-            )
-        )
-        get_db().execute(
-            delete(AnalysisResultCache).where(
-                AnalysisResultCache.cache_key.in_(cache_keys)
-            )
-        )
-        get_db().commit()
-
-        # Post-commit, invoke backend unreference so S3/remote backends can
-        # do their own housekeeping. Local backend: no-op.
-        for sha, referrer_id in blob_rows:
-            try:
-                blob_store.unreference(sha, REFERRER_KIND_CACHE_ROW, referrer_id)
-            except Exception:
-                logging.warning(
-                    "blob_store.unreference failed sha256=%s referrer_id=%s",
-                    sha, referrer_id, exc_info=True,
-                    extra={"sha256": sha, "referrer_id": referrer_id},
-                )
-
-        total += len(cache_keys)
-        if len(cache_keys) < batch_size:
-            return total
-
-
 def collect_stats() -> dict:
-    """Snapshot the cache tables for observability.
+    """Snapshot the cache tables for observability via INFORMATION_SCHEMA.
 
-    Returns a dict with row counts and size totals suitable for emission as
-    a single Splunk log line. Runs in O(index scan) time — tiny tables plus
-    the expires_at index keep this cheap even for a busy cache.
+    Row counts and byte totals come from per-partition InnoDB statistics
+    rather than COUNT(*)/SUM(...) on the tables — at billion-row scale the
+    aggregate queries would scan the whole table or index, while the
+    statistics lookup is O(partitions). Counts are approximate (InnoDB
+    estimates can drift by ~10%) which is acceptable for a 15-minute
+    Splunk heartbeat.
     """
-    total_rows = get_db().scalar(
-        select(func.count()).select_from(AnalysisResultCache)
-    ) or 0
-    expired_rows = get_db().scalar(
-        select(func.count())
-        .select_from(AnalysisResultCache)
-        .where(AnalysisResultCache.expires_at < func.now())
-    ) or 0
-    total_uncompressed_bytes = get_db().scalar(
-        select(func.coalesce(func.sum(AnalysisResultCache.delta_uncompressed_size), 0))
-    ) or 0
-    blob_refs_rows = get_db().scalar(
-        select(func.count()).select_from(BlobRef)
-    ) or 0
-    modules_with_entries = get_db().scalar(
-        select(func.count(func.distinct(AnalysisResultCache.module_name)))
-    ) or 0
+    rows = get_db(DB_ANALYSIS_RESULT_CACHE).execute(text("""
+        SELECT TABLE_NAME,
+               COALESCE(SUM(TABLE_ROWS), 0) AS row_count,
+               COALESCE(SUM(DATA_LENGTH + INDEX_LENGTH), 0) AS byte_count
+          FROM INFORMATION_SCHEMA.PARTITIONS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME IN ('analysis_result_cache', 'blob_refs')
+         GROUP BY TABLE_NAME
+    """)).all()
+
+    by_table = {name: (int(rc), int(bc)) for name, rc, bc in rows}
+    cache_rows, cache_bytes = by_table.get("analysis_result_cache", (0, 0))
+    blob_refs_rows, _ = by_table.get("blob_refs", (0, 0))
+
     return {
-        "total_rows": int(total_rows),
-        "expired_rows": int(expired_rows),
-        "total_uncompressed_bytes": int(total_uncompressed_bytes),
-        "blob_refs_rows": int(blob_refs_rows),
-        "modules_with_entries": int(modules_with_entries),
+        "total_rows": cache_rows,
+        "total_on_disk_bytes": cache_bytes,
+        "blob_refs_rows": blob_refs_rows,
     }
 
 
@@ -488,11 +373,13 @@ def _inline_blob_refs(delta_dict: dict, blob_store: BlobStore) -> None:
     analysis = delta_dict.get("analysis")
     if not isinstance(analysis, dict):
         return
+
     details = analysis.get("details")
     if isinstance(details, dict) and "__blob_ref__" in details:
         sha = details["__blob_ref__"]
         with blob_store.get(sha) as fp:
             blob_bytes = fp.read()
+
         analysis["details"] = json.loads(blob_bytes.decode("utf-8"))
 
 
@@ -550,7 +437,10 @@ def get_cached_delta(
         return (time.monotonic_ns() - lookup_start_ns) // 1_000_000
 
     try:
-        row = get_db().execute(
+        # The cache is append-only, so several non-expired rows can share a
+        # cache_key; order by expires_at DESC so the freshest (longest-lived)
+        # row wins.
+        row = get_db(DB_ANALYSIS_RESULT_CACHE).execute(
             select(
                 AnalysisResultCache.delta_zstd,
                 AnalysisResultCache.has_blob_refs,
@@ -559,6 +449,8 @@ def get_cached_delta(
                 AnalysisResultCache.cache_key == cache_key,
                 AnalysisResultCache.expires_at > func.now(),
             )
+            .order_by(AnalysisResultCache.expires_at.desc())
+            .limit(1)
         ).first()
 
         if row is None:
@@ -581,8 +473,8 @@ def get_cached_delta(
 
         # Step 3.4 legacy-shape guard: pre-Step-3.1 rows wrote
         # `analysis` dicts without a `details` key. Treat as miss so the
-        # executor falls through to a live run, which will overwrite the
-        # row via ON DUPLICATE KEY UPDATE with a Step-3.1-shaped delta.
+        # executor falls through to a live run; that run inserts a fresh
+        # Step-3.1-shaped row, which then wins the expires_at ordering above.
         analysis_in_dict = delta_dict.get("analysis")
         if isinstance(analysis_in_dict, dict) and "details" not in analysis_in_dict:
             return CacheLookupResult(None, "legacy_no_details", _elapsed_ms(), cache_key_prefix)

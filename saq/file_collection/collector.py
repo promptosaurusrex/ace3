@@ -8,7 +8,7 @@ from sqlalchemy import or_, text
 from sqlalchemy.sql import func
 
 from saq.database.model import Alert, FileCollection
-from saq.database.pool import get_db
+from saq.database.pool import get_db, remove_all_sessions
 from saq.error.reporting import report_exception
 from saq.file_collection.interface import FileCollectionListener
 from saq.file_collection.types import FileCollectionStatus, FileCollectionWorkItem
@@ -192,7 +192,7 @@ class FileCollectionCollector:
                 report_exception()
             finally:
                 try:
-                    get_db().remove()
+                    remove_all_sessions()
                 except Exception as e:
                     logging.error(f"error removing database connection: {e}")
                     report_exception()

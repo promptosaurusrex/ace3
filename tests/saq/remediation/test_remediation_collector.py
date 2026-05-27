@@ -437,7 +437,7 @@ def test_collection_loop_handles_exceptions_in_notify():
 
 @pytest.mark.unit
 def test_collection_loop_removes_database_connection():
-    from unittest.mock import Mock, patch
+    from unittest.mock import patch
 
     collector = RemediationCollector()
 
@@ -447,18 +447,15 @@ def test_collection_loop_removes_database_connection():
     # set shutdown event so loop exits
     collector.shutdown_event.set()
 
-    # mock get_db to track remove() calls
-    mock_db = Mock()
-
-    with patch("saq.remediation.collector.get_db", return_value=mock_db):
+    with patch("saq.remediation.collector.remove_all_sessions") as mock_remove:
         collector.collection_loop()
 
-    # verify database connection was removed
-    mock_db.remove.assert_called_once()
+    # verify database sessions were removed
+    mock_remove.assert_called_once()
 
 @pytest.mark.unit
 def test_collection_loop_handles_db_remove_exception():
-    from unittest.mock import Mock, patch
+    from unittest.mock import patch
 
     collector = RemediationCollector()
 
@@ -468,16 +465,12 @@ def test_collection_loop_handles_db_remove_exception():
     # set shutdown event so loop exits
     collector.shutdown_event.set()
 
-    # mock get_db to raise exception on remove
-    mock_db = Mock()
-    mock_db.remove.side_effect = RuntimeError("test db error")
-
-    with patch("saq.remediation.collector.get_db", return_value=mock_db):
+    with patch("saq.remediation.collector.remove_all_sessions", side_effect=RuntimeError("test db error")) as mock_remove:
         # should not raise exception
         collector.collection_loop()
 
     # verify remove was attempted
-    mock_db.remove.assert_called_once()
+    mock_remove.assert_called_once()
 
 @pytest.mark.unit
 def test_collection_loop_exits_on_shutdown_event():

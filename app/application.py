@@ -19,7 +19,7 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_executor import Executor # XXX what is this for?
 from sqlalchemy import event
 
-from saq.database.pool import set_db
+from saq.database.pool import remove_all_sessions, set_db
 from saq.environment import get_global_runtime_settings
 from saq.monitor import emit_monitor
 from saq.monitor_definitions import MONITOR_SQLALCHEMY_DB_POOL_STATUS
@@ -126,6 +126,12 @@ def create_app(testing: Optional[bool]=False):
         set_db(db.session)
 
     db.init_app(flask_app)
+
+    @flask_app.teardown_appcontext
+    def _remove_all_sessions(exception):
+        # release thread-local sessions for every registered engine, not just
+        # the ace session that flask-sqlalchemy manages on its own
+        remove_all_sessions()
 
     with flask_app.app_context():
         @event.listens_for(db.engine, 'checkin')

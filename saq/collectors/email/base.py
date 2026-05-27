@@ -9,7 +9,7 @@ from typing import Union
 from saq.collectors.email import RemoteEmailCollector
 from saq.configuration import get_config
 from saq.constants import ANALYSIS_MODE_EMAIL
-from saq.database import get_db
+from saq.database import remove_all_sessions
 from saq.environment import get_data_dir
 from saq.error import report_exception
 from saq.persistence import Persistable
@@ -223,7 +223,7 @@ class EmailCollectionBaseProcessor(ABC, Persistable):
             else:
                 logging.warning(f"uncaught exception: {e.__class__}, {e}")
         finally:
-            get_db().remove()
+            remove_all_sessions()
 
     @property
     def process_email_func(self):

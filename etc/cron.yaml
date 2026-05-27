@@ -18,10 +18,15 @@ jobs:
     command: /opt/ace/bin/nrd-refresh >> /opt/ace/data/logs/nrd-refresh-`date '+%Y-%m-%d'`.log 2>&1
     shell: /bin/bash
     schedule: "*/30 * * * *"
-  - name: analysis cache prune (expired rows)
-    command: /opt/ace/bin/analysis-cache-prune >> /opt/ace/data/logs/analysis-cache-prune-`date '+%Y-%m-%d'`.log 2>&1
+  - name: analysis cache partition maintenance
+    command: /opt/ace/bin/manage-analysis-result-cache-partitions.sh >> /opt/ace/data/logs/analysis-cache-partitions-`date '+%Y-%m-%d'`.log 2>&1
     shell: /bin/bash
-    schedule: "*/5 * * * *"
+    schedule: "0 4 * * *"
+    concurrencyPolicy: Forbid
+  - name: analysis cache stats
+    command: /opt/ace/bin/analysis-cache-stats >> /opt/ace/data/logs/analysis-cache-stats-`date '+%Y-%m-%d'`.log 2>&1
+    shell: /bin/bash
+    schedule: "*/15 * * * *"
     concurrencyPolicy: Forbid
   - name: analysis cache gc (durable blobs)
     command: /opt/ace/bin/analysis-cache-gc >> /opt/ace/data/logs/analysis-cache-gc-`date '+%Y-%m-%d'`.log 2>&1

@@ -14,7 +14,7 @@ from saq.collectors.submission_file_manager import SubmissionFileManager
 from saq.collectors.workload_repository import WorkloadRepository
 from saq.collectors.duplicate_filter import DuplicateSubmissionFilter
 from saq.configuration.config import get_config
-from saq.database import get_db
+from saq.database import remove_all_sessions
 from saq.environment import get_data_dir
 from saq.error import report_exception
 from saq.persistence import Persistable
@@ -321,7 +321,7 @@ class CollectorService(ACEServiceInterface):
                     break
             finally:
                 # this is a primary loop, so we need to release any database connections
-                get_db().remove()
+                remove_all_sessions()
     
     def execute_collection_loop(self) -> int:
         submissions_processed = 0

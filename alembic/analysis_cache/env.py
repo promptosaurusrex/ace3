@@ -2,16 +2,16 @@ import os
 import sys
 from urllib.parse import quote_plus
 
-# Ensure the project root is on sys.path so saq is importable
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# ensure the project root is on sys.path so saq is importable
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from alembic import context
 from sqlalchemy import create_engine, pool
 
-from saq.database.meta import Base
-import saq.database.model  # noqa: F401 — populates Base.metadata
+from saq.database.meta import CacheBase
+import saq.database.model  # noqa: F401 — populates CacheBase.metadata
 
-target_metadata = Base.metadata
+target_metadata = CacheBase.metadata
 
 
 def get_url() -> str:
@@ -21,7 +21,9 @@ def get_url() -> str:
             password = fp.read().strip()
     password = quote_plus(password)
     host = os.environ.get("ACE_DB_HOST", "ace-db")
-    db_name = os.environ.get("DATABASE_NAME", "ace")
+    # CACHE_DATABASE_NAME is separate from DATABASE_NAME so the bootstrap script
+    # can target main+cache in the same shell without collisions
+    db_name = os.environ.get("CACHE_DATABASE_NAME", "analysis-result-cache")
     return f"mysql+pymysql://ace-superuser:{password}@{host}:3306/{db_name}"
 
 

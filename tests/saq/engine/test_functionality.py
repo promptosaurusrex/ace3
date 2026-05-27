@@ -1515,7 +1515,7 @@ def test_record_execution_statistics_with_fluent_bit(tmpdir):
             # No cache activity was recorded → cache_* fields must be absent.
             for k in [
                 "cache_hit_count", "cache_miss_count",
-                "cache_write_count_insert", "cache_write_count_update",
+                "cache_write_count_insert",
                 "cache_lookup_ms_sum", "cache_lookup_ms_max",
                 "cache_write_ms_sum", "cache_write_ms_max",
                 "cache_write_bytes_uncompressed_sum",
@@ -1723,7 +1723,7 @@ def test_per_root_omits_cache_fields_when_no_cache_activity(tmpdir):
     # No cache fields when the module had no cache activity.
     for k in [
         "cache_hit_count", "cache_miss_count",
-        "cache_write_count_insert", "cache_write_count_update",
+        "cache_write_count_insert",
         "cache_lookup_ms_sum", "cache_lookup_ms_max",
         "cache_write_ms_sum", "cache_write_ms_max",
         "cache_write_bytes_uncompressed_sum",
@@ -1822,7 +1822,6 @@ def test_per_root_cache_write_byte_aggregation(tmpdir):
     context.total_exec_count["module_a"] = 2
     context.cache_miss_count["module_a"] = 2
     context.cache_write_count_insert["module_a"] = 1
-    context.cache_write_count_update["module_a"] = 1
     context.cache_write_ms_sum["module_a"] = 15
     context.cache_write_ms_max["module_a"] = 10
     context.cache_write_bytes_uncompressed_sum["module_a"] = 4000
@@ -1837,7 +1836,6 @@ def test_per_root_cache_write_byte_aggregation(tmpdir):
     payload = mock_sender.emit.call_args[0][1]
     assert payload["cache_miss_count"] == 2
     assert payload["cache_write_count_insert"] == 1
-    assert payload["cache_write_count_update"] == 1
     assert payload["cache_write_ms_sum"] == 15
     assert payload["cache_write_ms_max"] == 10
     assert payload["cache_write_bytes_uncompressed_sum"] == 4000

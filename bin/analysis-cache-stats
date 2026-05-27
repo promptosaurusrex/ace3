@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+source bin/initialize-environment.sh && ace analysis-cache-stats

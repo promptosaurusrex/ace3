@@ -1,4 +1,4 @@
-"""Integration tests for saq.analysis.cache (put, prune, delete_for_module)."""
+"""Integration tests for saq.analysis.cache (put, lookup)."""
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -11,9 +11,7 @@ import zstandard
 from saq.analysis.blob_store import LocalHardlinkBlobStore, LocalHardlinkBlobStoreConfig
 from saq.analysis.cache import (
     collect_stats,
-    delete_for_module,
     generate_cache_key,
-    prune,
     put_cached_delta,
 )
 from saq.analysis.module_execution_delta import (
@@ -23,8 +21,8 @@ from saq.analysis.module_execution_delta import (
     RootDiff,
 )
 from saq.configuration.config import get_config
-from saq.constants import F_FILE
-from saq.database.pool import get_db, get_db_connection
+from saq.constants import DB_ANALYSIS_RESULT_CACHE, F_FILE
+from saq.database.pool import get_db_connection
 
 
 @pytest.fixture
@@ -78,7 +76,7 @@ def _make_delta(
 
 
 def _row_count(cache_key):
-    with get_db_connection() as db:
+    with get_db_connection(DB_ANALYSIS_RESULT_CACHE) as db:
         cursor = db.cursor()
         cursor.execute(
             "SELECT COUNT(*) FROM analysis_result_cache WHERE cache_key = %s",
@@ -88,7 +86,7 @@ def _row_count(cache_key):
 
 
 def _blob_ref_count(cache_key):
-    with get_db_connection() as db:
+    with get_db_connection(DB_ANALYSIS_RESULT_CACHE) as db:
         cursor = db.cursor()
         cursor.execute(
             "SELECT COUNT(*) FROM blob_refs WHERE referrer_kind = 'cache_row' AND referrer_id = %s",
@@ -98,7 +96,7 @@ def _blob_ref_count(cache_key):
 
 
 def _delete_cache_row(cache_key):
-    with get_db_connection() as db:
+    with get_db_connection(DB_ANALYSIS_RESULT_CACHE) as db:
         cursor = db.cursor()
         cursor.execute("DELETE FROM blob_refs WHERE referrer_id = %s", (cache_key,))
         cursor.execute("DELETE FROM analysis_result_cache WHERE cache_key = %s", (cache_key,))
@@ -122,7 +120,7 @@ class TestPutCachedDelta:
             assert _row_count(delta.cache_key) == 1
 
             # Verify the payload round-trips through zstd → JSON → from_dict.
-            with get_db_connection() as db:
+            with get_db_connection(DB_ANALYSIS_RESULT_CACHE) as db:
                 cursor = db.cursor()
                 cursor.execute(
                     "SELECT delta_zstd, delta_uncompressed_size, has_blob_refs "
@@ -141,15 +139,17 @@ class TestPutCachedDelta:
             _delete_cache_row(delta.cache_key)
 
     @pytest.mark.integration
-    def test_repeat_write_returns_update_op(self, blob_store):
-        """Second call with the same cache_key must return op=update, not insert."""
+    def test_repeat_write_appends_new_row(self, blob_store):
+        """The cache is append-only: a second write of the same cache_key
+        inserts another row (op is always "insert") rather than upserting."""
         module = _make_module()
         delta = _make_delta(module)
         try:
             first_result = put_cached_delta(delta, module, blob_store)
             assert first_result is not None
             assert first_result.op == "insert"
-            # Second call — force a value change so MySQL reports rowcount=2.
+            assert _row_count(delta.cache_key) == 1
+
             delta2 = _make_delta(
                 module,
                 observable_type=delta.observable_type,
@@ -158,7 +158,9 @@ class TestPutCachedDelta:
             delta2.cache_key = delta.cache_key
             second_result = put_cached_delta(delta2, module, blob_store)
             assert second_result is not None
-            assert second_result.op == "update"
+            assert second_result.op == "insert"
+            # append-only — both rows now coexist under the same cache_key
+            assert _row_count(delta.cache_key) == 2
         finally:
             _delete_cache_row(delta.cache_key)
 
@@ -236,29 +238,32 @@ class TestPutCachedDelta:
         assert warn_logs[0].module_name == module.config.name
 
     @pytest.mark.integration
-    def test_upsert_idempotent_on_duplicate_key(self, blob_store):
+    def test_repeat_write_with_new_version_appends(self, blob_store):
+        """A re-analysis at a new module version appends a row; the freshest
+        row (the one the lookup path picks) carries the new version."""
         module = _make_module()
         delta = _make_delta(module)
         try:
             put_cached_delta(delta, module, blob_store)
-            # Rewrite with a different version — ON DUPLICATE KEY UPDATE
-            # should update the row rather than throw.
-            module2 = _make_module(name=module.config.name, version=2)
+            # second write at version 2 with a longer ttl so its expires_at is
+            # unambiguously later than the first row's
+            module2 = _make_module(
+                name=module.config.name, version=2, ttl=timedelta(hours=2)
+            )
             delta2 = _make_delta(
                 module2,
                 observable_type=delta.observable_type,
                 observable_value=delta.observable_value,
             )
-            # Force the same key (even though bumping version normally mints a
-            # different one) — we're testing the DB upsert contract, not key
-            # derivation. Assign manually.
             delta2.cache_key = delta.cache_key
             assert put_cached_delta(delta2, module2, blob_store) is not None
-            assert _row_count(delta.cache_key) == 1
-            with get_db_connection() as db:
+            assert _row_count(delta.cache_key) == 2
+            # the lookup path reads the freshest (latest expires_at) row
+            with get_db_connection(DB_ANALYSIS_RESULT_CACHE) as db:
                 cursor = db.cursor()
                 cursor.execute(
-                    "SELECT module_version FROM analysis_result_cache WHERE cache_key = %s",
+                    "SELECT module_version FROM analysis_result_cache "
+                    "WHERE cache_key = %s ORDER BY expires_at DESC LIMIT 1",
                     (delta.cache_key,),
                 )
                 assert cursor.fetchone()[0] == 2
@@ -281,7 +286,7 @@ class TestPutCachedDelta:
             assert put_cached_delta(delta, module, blob_store) is not None
             assert _blob_ref_count(delta.cache_key) == 1
 
-            with get_db_connection() as db:
+            with get_db_connection(DB_ANALYSIS_RESULT_CACHE) as db:
                 cursor = db.cursor()
                 cursor.execute(
                     "SELECT delta_zstd, has_blob_refs FROM analysis_result_cache "
@@ -324,73 +329,10 @@ class TestKillSwitch:
         assert _row_count(delta.cache_key) == 0
 
 
-class TestPrune:
-
-    @pytest.mark.integration
-    def test_deletes_expired_rows_and_leaves_fresh(self, blob_store):
-        module = _make_module()
-        fresh_delta = _make_delta(module)
-        expired_delta = _make_delta(
-            module, observable_value="https://expired.example/"
-        )
-        try:
-            assert put_cached_delta(fresh_delta, module, blob_store)
-            assert put_cached_delta(expired_delta, module, blob_store)
-
-            # Force the "expired" row into the past.
-            with get_db_connection() as db:
-                cursor = db.cursor()
-                cursor.execute(
-                    "UPDATE analysis_result_cache SET expires_at = DATE_SUB(NOW(), INTERVAL 1 HOUR) "
-                    "WHERE cache_key = %s",
-                    (expired_delta.cache_key,),
-                )
-                db.commit()
-
-            deleted = prune(blob_store)
-            assert deleted >= 1
-            assert _row_count(expired_delta.cache_key) == 0
-            assert _row_count(fresh_delta.cache_key) == 1
-        finally:
-            _delete_cache_row(fresh_delta.cache_key)
-            _delete_cache_row(expired_delta.cache_key)
-
-    @pytest.mark.integration
-    def test_prune_drops_blob_refs_in_same_tx(self, blob_store):
-        module = _make_module()
-        # 32 KiB is 2× the default analysis_cache.details_spill_bytes,
-        # so this reliably triggers the blob-store spill path.
-        big_details = {"payload": "x" * (32 * 1024)}
-        analysis = {
-            "type": "saq.modules.test:Dummy",
-            "summary": "big",
-            "details": big_details,
-        }
-        delta = _make_delta(module, analysis=analysis)
-        try:
-            put_cached_delta(delta, module, blob_store)
-            assert _blob_ref_count(delta.cache_key) == 1
-
-            with get_db_connection() as db:
-                cursor = db.cursor()
-                cursor.execute(
-                    "UPDATE analysis_result_cache SET expires_at = DATE_SUB(NOW(), INTERVAL 1 HOUR) "
-                    "WHERE cache_key = %s",
-                    (delta.cache_key,),
-                )
-                db.commit()
-            prune(blob_store)
-
-            assert _row_count(delta.cache_key) == 0
-            assert _blob_ref_count(delta.cache_key) == 0
-        finally:
-            _delete_cache_row(delta.cache_key)
-
-
 class TestMaintainGlobal:
 
     @pytest.mark.integration
-    def test_deletes_orphan_blobs_after_prune(self, blob_store):
+    def test_deletes_orphan_blobs_after_unreference(self, blob_store):
         """maintain_global keeps referenced blobs and reclaims orphans (real blob_refs)."""
         import os
         import time
@@ -418,16 +360,19 @@ class TestMaintainGlobal:
             assert stats.blobs_deleted == 0
             assert stats.skipped_referenced == 1
 
-            # expire and prune the cache row, dropping the blob_ref
-            with get_db_connection() as db:
+            # drop the blob_ref — a partition drop reclaims the cache row and
+            # its blob_refs together; deleting the row directly stands in here
+            with get_db_connection(DB_ANALYSIS_RESULT_CACHE) as db:
                 cursor = db.cursor()
                 cursor.execute(
-                    "UPDATE analysis_result_cache SET expires_at = DATE_SUB(NOW(), INTERVAL 1 HOUR) "
-                    "WHERE cache_key = %s",
+                    "DELETE FROM blob_refs WHERE referrer_id = %s",
+                    (delta.cache_key,),
+                )
+                cursor.execute(
+                    "DELETE FROM analysis_result_cache WHERE cache_key = %s",
                     (delta.cache_key,),
                 )
                 db.commit()
-            prune(blob_store)
             assert _blob_ref_count(delta.cache_key) == 0
 
             # now the blob is an orphan — maintain_global reclaims it
@@ -457,33 +402,12 @@ class TestCollectStats:
             put_cached_delta(delta_big, module, blob_store)
             after = collect_stats()
 
-            assert after["total_rows"] >= before["total_rows"] + 2
-            assert after["blob_refs_rows"] >= before["blob_refs_rows"] + 1
-            assert after["total_uncompressed_bytes"] > before["total_uncompressed_bytes"]
-            assert after["modules_with_entries"] >= 1
+            # row counts and byte totals come from InnoDB per-partition
+            # statistics which only refresh periodically — assert
+            # non-regression rather than exact growth
+            assert after["total_rows"] >= before["total_rows"]
+            assert after["blob_refs_rows"] >= before["blob_refs_rows"]
+            assert after["total_on_disk_bytes"] >= before["total_on_disk_bytes"]
         finally:
             _delete_cache_row(delta_small.cache_key)
             _delete_cache_row(delta_big.cache_key)
-
-
-class TestDeleteForModule:
-
-    @pytest.mark.integration
-    def test_deletes_all_rows_for_one_module(self, blob_store):
-        module_name = f"dfm_{uuid4().hex[:8]}"
-        module = _make_module(name=module_name)
-        d1 = _make_delta(module, observable_value="https://a.example/")
-        d2 = _make_delta(module, observable_value="https://b.example/")
-        try:
-            put_cached_delta(d1, module, blob_store)
-            put_cached_delta(d2, module, blob_store)
-            assert _row_count(d1.cache_key) == 1
-            assert _row_count(d2.cache_key) == 1
-
-            deleted = delete_for_module(module_name)
-            assert deleted == 2
-            assert _row_count(d1.cache_key) == 0
-            assert _row_count(d2.cache_key) == 0
-        finally:
-            _delete_cache_row(d1.cache_key)
-            _delete_cache_row(d2.cache_key)

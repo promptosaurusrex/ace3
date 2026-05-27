@@ -15,7 +15,7 @@ from saq.configuration.config import get_service_config
 from saq.configuration.schema import ServiceConfig
 from saq.constants import SERVICE_EXTERNAL_REMEDIATION_CHECK
 from saq.database.model import Alert, ExternalRemediationCheck
-from saq.database.pool import get_db
+from saq.database.pool import get_db, remove_all_sessions
 from saq.error.reporting import report_exception
 from saq.remediation.external.database import cancel_external_checks_for_alert
 from saq.remediation.external.manager import ExternalRemediationCheckManager
@@ -101,7 +101,7 @@ class ExternalRemediationCheckService(ACEServiceInterface):
                 report_exception()
             finally:
                 try:
-                    get_db().remove()
+                    remove_all_sessions()
                 except Exception:
                     pass
             self._sweep_shutdown.wait(interval_seconds)
