@@ -2,6 +2,7 @@ from datetime import datetime
 import gc
 import logging
 import os
+import traceback
 from typing import Callable, Optional, Union
 from uuid import uuid4
 
@@ -75,6 +76,9 @@ class RootAnalysis(Analysis):
 
         # set to True after load() is called
         self.is_loaded = False
+
+        # when True, calling load() logs an ERROR with a stack trace
+        self.log_error_on_load = False
 
         # we keep track of when delayed initially starts here
         # to allow for eventual timeouts when something is wrong
@@ -563,8 +567,16 @@ class RootAnalysis(Analysis):
         """Saves the Alert to disk. Resolves AttachmentLinks into Attachments. Note that this does not insert the Alert into the system."""
         return RootAnalysisSerializer.save_to_disk(self)
 
+    def set_log_error_on_load(self, value=True):
+        """Sets the log_error_on_load flag, controlling whether load() logs an ERROR."""
+        assert isinstance(value, bool)
+        self.log_error_on_load = value
+
     def load(self):
         """Loads the Alert object from the JSON file.  Note that this does NOT load the details property."""
+        if self.log_error_on_load:
+            logging.error("load() called on root analysis %s when log_error_on_load is set\n%s",
+                          self.storage_dir, "".join(traceback.format_stack()))
         return RootAnalysisSerializer.load_from_disk(self)
 
     def flush(self):

@@ -750,6 +750,49 @@ def test_long_filename_does_not_crash_analyzer(root_analysis, datadir):
     assert any(name.endswith(".combined") for name in file_names), file_names
 
 @pytest.mark.integration
+def test_nested_relative_path_does_not_crash_analyzer(root_analysis, datadir):
+    """Regression: when an email lives at a nested relative path (e.g. an officeparser
+    stream extracted under '<parent>.msg.officeparser/'), `_file.file_path` contains
+    '/' and previously hit `assert os.sep not in basename` inside
+    `shorten_basename_for_suffix`, crashing the entire email analysis."""
+
+    nested_target = "parent.msg.officeparser/stream_81.eml"
+    src = str(datadir / 'emails/splunk_logging.email.rfc822')
+
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(src, target_path=nested_target)
+    assert file_observable is not None
+    assert file_observable.file_path == nested_target  # path includes the subdirectory
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    file_observable = root_analysis.get_observable(file_observable.uuid)
+    assert file_observable
+    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    assert isinstance(email_analysis, EmailAnalysis)
+    assert email_analysis.parsing_error is None
+
+    file_observables = email_analysis.get_observables_by_type(F_FILE)
+    derived_paths = [o.file_path for o in file_observables]
+
+    # Layout must be preserved — derived files land under the same parent subdir,
+    # not flattened to the root file directory.
+    headers_paths = [p for p in derived_paths if p.endswith(".headers")]
+    combined_paths = [p for p in derived_paths if p.endswith(".combined")]
+    assert headers_paths, derived_paths
+    assert combined_paths, derived_paths
+    for p in headers_paths + combined_paths:
+        assert p.startswith("parent.msg.officeparser/"), p
+
+@pytest.mark.integration
 def test_multi_recipient_to_cc_observables(root_analysis, datadir):
     """A single To: header with multiple addresses, plus a CC: with mixed local/external recipients,
     should produce one F_EMAIL_TO per To: address and one F_EMAIL_CC per CC: address.
@@ -1461,15 +1504,46 @@ def test_export_to_brocess_large_email(test_context):
     mail_from = "john" + ("0" * 255) + "@netflix.com"
     mail_to = "somebody" + ("0" * 255) + "@host.com"
     analyzer.export_to_brocess({
-        "mail_from": mail_from, 
+        "mail_from": mail_from,
         "env_rcpt_to": [mail_to],
     })
 
     with get_db_connection(DB_BROCESS) as db:
         _cursor = db.cursor()
-        _cursor.execute("SELECT source, destination, numconnections FROM smtplog WHERE source = %s AND destination = %s AND numconnections = 1", (mail_from[:255], mail_to[:255]))
+        _cursor.execute("SELECT source, destination, numconnections FROM smtplog WHERE source = %s AND destination = %s AND numconnections = 1", (mail_from[:255].encode("utf-8"), mail_to[:255].encode("utf-8")))
         result = _cursor.fetchone()
         assert result
+
+@pytest.mark.unit
+def test_export_to_brocess_multibyte_oversize(test_context):
+    # smtplog.source/destination are varbinary(255) — a byte limit.
+    # values whose UTF-8 encoding exceeds 255 bytes must not crash the export
+    with get_db_connection(DB_BROCESS) as db:
+        _cursor = db.cursor()
+        _cursor.execute("DELETE FROM smtplog")
+        db.commit()
+
+    analyzer = EmailLoggingAnalyzer(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_EMAIL_LOGGER))
+    # "®" is 2 bytes in UTF-8: 200 ASCII + 60 multibyte = 260 chars / 320 bytes
+    mail_from = ("a" * 200) + ("®" * 60) + "@x.com"
+    mail_to = ("b" * 200) + ("®" * 60) + "@y.com"
+    analyzer.export_to_brocess({
+        "mail_from": mail_from,
+        "env_rcpt_to": [mail_to],
+    })
+
+    with get_db_connection(DB_BROCESS) as db:
+        _cursor = db.cursor()
+        _cursor.execute("SELECT source, destination, LENGTH(source), LENGTH(destination) FROM smtplog")
+        result = _cursor.fetchone()
+        assert result
+        source, destination, source_len, destination_len = result
+        assert source_len <= 255
+        assert destination_len <= 255
+        assert source == mail_from.encode("utf-8")[:255]
+        assert destination == mail_to.encode("utf-8")[:255]
 
 @pytest.mark.integration
 @pytest.mark.parametrize("email_file,expected_subject,expected_subject_raw", [

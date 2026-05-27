@@ -367,7 +367,10 @@ class EmailLoggingAnalyzer(AnalysisModule):
                     sql = """INSERT INTO smtplog ( source, destination, numconnections, firstconnectdate )
                              VALUES (%s, %s, 1, UNIX_TIMESTAMP(NOW()))
                              ON DUPLICATE KEY UPDATE numconnections = numconnections + 1"""
-                    params = (mail_from[:255], email_address[:255])
+                    params = (
+                        mail_from.encode("utf-8", errors="replace")[:255],
+                        email_address.encode("utf-8", errors="replace")[:255],
+                    )
                     execute_with_retry(db, c, sql, params)
 
                 db.commit()

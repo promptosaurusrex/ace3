@@ -118,6 +118,9 @@ class Alert(Base):
         # this is the RootAnalysis object that this Alert is associated with
         self._root_analysis: Optional[RootAnalysis] = None
 
+        # when True, calling load() logs an ERROR with a stack trace
+        self._log_error_on_load = False
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._initialize()
@@ -137,8 +140,14 @@ class Alert(Base):
         super().__init__(*args, **kwargs)
         self._initialize()
 
+    def set_log_error_on_load(self, value=True):
+        """Sets the log_error_on_load flag, propagated to the RootAnalysis on load()."""
+        assert isinstance(value, bool)
+        self._log_error_on_load = value
+
     def load(self):
         self._root_analysis = RootAnalysis(storage_dir=self.storage_dir)
+        self._root_analysis.set_log_error_on_load(self._log_error_on_load)
         return self._root_analysis.load()
 
         #try:
@@ -269,6 +278,21 @@ class Alert(Base):
 
     removal_time: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP,
+        nullable=True)
+
+    # blueprint icons are a legacy feature that is not commonly used anymore
+    icon_blueprint_name: Mapped[Optional[str]] = mapped_column(
+        String(256),
+        nullable=True)
+
+    icon_blueprint_path: Mapped[Optional[str]] = mapped_column(
+        String(1024),
+        nullable=True)
+
+    # full url to an icon image to use for this alert
+    # can also be a data url
+    icon_url: Mapped[Optional[str]] = mapped_column(
+        Text,
         nullable=True)
 
     # relationships
@@ -638,6 +662,23 @@ class Alert(Base):
         get_db().execute(ObservableMapping.__table__.insert().prefix_with('IGNORE').values(observable_id=existing_observable.id, alert_id=self.id))
         get_db().commit()
 
+    def apply_icon_configuration(self, icon_configuration: Optional["IconConfiguration"]):
+        """Mirrors an IconConfiguration into the icon_* columns, writing only changed columns."""
+        if icon_configuration and icon_configuration.blueprint_file_location:
+            name = icon_configuration.blueprint_file_location.name
+            path = icon_configuration.blueprint_file_location.path
+        else:
+            name = path = None
+
+        url = icon_configuration.url if icon_configuration else None
+
+        if self.icon_blueprint_name != name:
+            self.icon_blueprint_name = name
+        if self.icon_blueprint_path != path:
+            self.icon_blueprint_path = path
+        if self.icon_url != url:
+            self.icon_url = url
+
     @retry
     def sync(self, build_index=True):
         """Saves the Alert to disk and database."""
@@ -664,6 +705,13 @@ class Alert(Base):
 
         # compute number of detection points
         self.detection_count = len(self.root_analysis.all_detection_points)
+
+        # mirror the icon configuration from the root analysis extensions into the
+        # icon_* columns so the management screen can render it without load()
+        from saq.gui.icon import IconConfiguration, KEY_ICON_CONFIGURATION
+        icon_configuration_dict = (self.root_analysis.extensions or {}).get(KEY_ICON_CONFIGURATION)
+        icon_configuration = IconConfiguration.model_validate(icon_configuration_dict) if icon_configuration_dict else None
+        self.apply_icon_configuration(icon_configuration)
 
         # save the alert to the database
         session = Session.object_session(self)

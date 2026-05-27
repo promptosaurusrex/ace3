@@ -1566,6 +1566,54 @@ rebuild_index_parser.add_argument('--all', default=False, action='store_true', d
 rebuild_index_parser.add_argument('dirs', nargs='*', default=[], help="One ore more alert directories to resync.")
 rebuild_index_parser.set_defaults(func=rebuild_index)
 
+def backfill_icons(args):
+    """Backfills the icon_* columns for alerts created before those columns existed."""
+    from saq.database import Alert, get_db_connection
+    from saq.gui.icon import IconConfiguration, KEY_ICON_CONFIGURATION
+
+    storage_dirs = []
+    if args.resync_all:
+        with get_db_connection() as db:
+            c = db.cursor()
+            c.execute("""SELECT storage_dir FROM alerts WHERE location = %s""", (get_global_runtime_settings().saq_node,))
+            for row in c:
+                storage_dirs.append(row[0])
+    else:
+        storage_dirs = args.dirs
+
+    logging.info("backfilling icon columns for %s alerts", len(storage_dirs))
+
+    for storage_dir in storage_dirs:
+        alert = get_db().query(Alert).filter(Alert.storage_dir == storage_dir).first()
+        if alert is None:
+            logging.error("missing alert with storage directory %s", storage_dir)
+            continue
+
+        try:
+            if not alert.load():
+                logging.error("unable to load %s", storage_dir)
+                continue
+
+            icon_configuration_dict = (alert.root_analysis.extensions or {}).get(KEY_ICON_CONFIGURATION)
+            icon_configuration = IconConfiguration.model_validate(icon_configuration_dict) if icon_configuration_dict else None
+            alert.apply_icon_configuration(icon_configuration)
+            get_db().commit()
+            logging.info("backfilled icon columns for %s", storage_dir)
+
+        except Exception as e:
+            get_db().rollback()
+            logging.error("icon backfill failure on %s: %s (%s)", storage_dir, e, type(e))
+            continue
+
+    sys.exit(0)
+
+backfill_icons_parser = alert_sp.add_parser('backfill-icons',
+    help="Backfills the alert icon columns from the root analysis for existing alerts.")
+backfill_icons_parser.add_argument('--all', default=False, action='store_true', dest='resync_all',
+    help="Backfills all alerts that belong to this node. This can take a long time.")
+backfill_icons_parser.add_argument('dirs', nargs='*', default=[], help="One or more alert directories to backfill.")
+backfill_icons_parser.set_defaults(func=backfill_icons)
+
 def import_alerts(args):
     """Imports one or more alerts from the given directories."""
     from saq.constants import ANALYSIS_MODE_CORRELATION

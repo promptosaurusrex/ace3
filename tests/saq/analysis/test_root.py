@@ -168,6 +168,28 @@ def test_load():
     root.save()
     root.load()
 
+@pytest.mark.unit
+def test_log_error_on_load_default(caplog):
+    root = create_root_analysis()
+    root.initialize_storage()
+    root.save()
+    # the flag defaults to False so load() should not log an error
+    assert root.log_error_on_load is False
+    root.load()
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+@pytest.mark.unit
+def test_log_error_on_load_enabled(caplog):
+    root = create_root_analysis()
+    root.initialize_storage()
+    root.save()
+    root.set_log_error_on_load(True)
+    assert root.log_error_on_load is True
+    root.load()
+    error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(error_records) == 1
+    assert root.storage_dir in error_records[0].getMessage()
+
 @pytest.mark.skip(reason="Skipping IO count tests for now.")
 @pytest.mark.unit
 @track_io

@@ -10,10 +10,9 @@ from saq.configuration.config import get_config
 from saq.constants import EVENT_TIME_FORMAT_TZ
 from saq.database.model import Alert
 from saq.environment import get_base_dir
-from saq.gui.icon import IconConfiguration
+from saq.gui.icon import BlueprintFileLocation, IconConfiguration, KEY_ICON_CONFIGURATION
 
 # supported extension keys
-KEY_ICON_CONFIGURATION = "icon_configuration"
 KEY_ALERT_TEMPLATE = "alert_template"
 
 class GUIAlert(Alert):
@@ -138,18 +137,23 @@ class GUIAlert(Alert):
 
     @property
     def icon_configuration(self) -> Optional[IconConfiguration]:
-        if not self.root_analysis.extensions:
-            return None
+        # return legacy blueprint icon configuration if defined
+        if self.icon_blueprint_name and self.icon_blueprint_path:
+            return IconConfiguration(blueprint_file_location=BlueprintFileLocation(
+                name=self.icon_blueprint_name, path=self.icon_blueprint_path))
 
-        icon_configuration_dict = self.root_analysis.extensions.get(KEY_ICON_CONFIGURATION, None)
-        if not icon_configuration_dict:
-            return None
+        # return url icon configuration if defined
+        if self.icon_url:
+            return IconConfiguration(url=self.icon_url)
 
-        return IconConfiguration.model_validate(icon_configuration_dict)
+        # otherwise return None to use the old legacy icon system
+        return None
 
     @icon_configuration.setter
     def icon_configuration(self, value: IconConfiguration):
+        # NOTE: the root analysis extensions remain the authoritative source
         self.root_analysis.set_extension(KEY_ICON_CONFIGURATION, value.model_dump())
+        self.apply_icon_configuration(value)
 
     @property
     def legacy_icon(self) -> str:
