@@ -26,6 +26,7 @@ from saq.modules.file_analysis.disassembly import disassemble
 from saq.observables.file import FileObservable
 from saq.util.filesystem import abs_path
 
+import yara
 import yara_scanner
 
 from saq.util.strings import format_item_list_for_summary
@@ -239,8 +240,8 @@ class YaraScanner_v3_4(AnalysisModule):
                         self.scanner_start_time = None
                         gc.collect()
                 
-            except TimeoutError as e:
-                logging.warning("yara scanner server timed out scanning file {}: {}".format(_full_path, e))
+            except (yara.TimeoutError, TimeoutError) as e:
+                logging.warning("yara scanner server timed out scanning file %s: %s", _full_path, e)
                 matches_found = False
 
             except socket.error as e:
