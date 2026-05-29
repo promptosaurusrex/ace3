@@ -1112,7 +1112,7 @@ class EmailAnalyzer(AnalysisModule):
 
                     _file_name = '{}_{:03}'.format(_file_name, index)
                     file_path = '{}{}'.format(_file_name, _file_ext)
-                    file_path = os.path.join(self.get_root().storage_dir, file_path)
+                    file_path = self.get_root().create_file_path(file_path)
 
                 # figure out what the payload should be
                 if target.get_content_type() == 'message/rfc822':
@@ -1149,8 +1149,12 @@ class EmailAnalyzer(AnalysisModule):
                         extracted_file.add_directive(DIRECTIVE_RENDER)
 
                 # tracking attachments for logging purposes
+                # always store a path relative to the files dir; when the file observable could not be
+                # added (per-type limit reached) file_path is a full path, so make it relative here
+                attachment_rel_path = (extracted_file.file_path if extracted_file
+                                       else os.path.relpath(file_path, self.get_root().file_dir))
                 attachments.append((len(payload), target.get_content_type(),
-                                    extracted_file.file_path if extracted_file else file_path,
+                                    attachment_rel_path,
                                     hashlib.sha256(payload).hexdigest()))
 
                 # If this was a message/rfc822, recursively process its payload
