@@ -143,6 +143,19 @@ def test_create_file_path(file_manager):
 
 
 @pytest.mark.unit
+def test_create_file_path_already_full_path(file_manager):
+    """An already-resolved path within the files dir must be returned unchanged."""
+    os.makedirs(file_manager.file_dir, exist_ok=True)
+
+    full_path = os.path.join(file_manager.file_dir, "test.dat")
+    result = file_manager.create_file_path(full_path)
+
+    # the prefix must not be doubled (regression for files/.../files/... path bug)
+    assert result == full_path
+    assert result.count(FILE_SUBDIR) == 1
+
+
+@pytest.mark.unit
 def test_storage_operations(file_manager, temp_storage_dir):
     """Test storage copy, move, and delete operations."""
     # Create some test content in storage

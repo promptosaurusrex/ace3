@@ -9,7 +9,7 @@ import pytz
 
 from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_config, get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_EMAIL_LOGGER, ANALYSIS_TYPE_BRO_SMTP, ANALYSIS_TYPE_MAILBOX, DB_BROCESS, DB_EMAIL_ARCHIVE, DIRECTIVE_ARCHIVE, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, EVENT_TIME_FORMAT_JSON_TZ, F_EMAIL_ADDRESS, F_EMAIL_CC, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_FROM, F_EMAIL_TO, F_FILE, F_MESSAGE_ID, F_URL, create_email_conversation, create_email_delivery
+from saq.constants import ANALYSIS_MODULE_EMAIL_LOGGER, ANALYSIS_TYPE_BRO_SMTP, ANALYSIS_TYPE_MAILBOX, DB_BROCESS, DB_EMAIL_ARCHIVE, FILE_SUBDIR, DIRECTIVE_ARCHIVE, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, EVENT_TIME_FORMAT_JSON_TZ, F_EMAIL_ADDRESS, F_EMAIL_CC, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_FROM, F_EMAIL_TO, F_FILE, F_MESSAGE_ID, F_URL, create_email_conversation, create_email_delivery
 from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.crypto import decrypt
 from saq.database.model import load_alert
@@ -25,6 +25,7 @@ from saq.modules.email.correlation import URLEmailPivotAnalysis_v2
 from saq.modules.email.logging import EmailLoggingAnalyzer
 from saq.modules.email.mailbox import MAILBOX_ALERT_PREFIX
 from saq.modules.email.message_id import MessageIDAnalysisV2
+from saq.modules.email.constants import KEY_LOG_ENTRY
 from saq.modules.email.rfc822 import EmailAnalysis
 from saq.util.hashing import sha256_file
 from saq.util.uuid import get_storage_dir
@@ -74,11 +75,60 @@ def test_no_mailbox(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(get_storage_dir(root_analysis.uuid))
-    
+
     # we should still have our old details
     assert 'hello' in root_analysis.details
     # and we should NOT have the email details merged in since it's not a mailbox analysis
     assert 'email' not in root_analysis.details
+
+
+@pytest.mark.integration
+def test_combined_buffer_with_unaddable_file_observable(root_analysis, datadir, monkeypatch):
+    # regression: when add_file_observable returns None (per-type observable limit reached) for an
+    # auto-generated part, the combined buffer must still build without duplicating the files/ path prefix
+    from saq.analysis.analysis import Analysis
+
+    original_add_file_observable = Analysis.add_file_observable
+
+    def limited_add_file_observable(self, path, *args, **kwargs):
+        # simulate the per-type observable limit being hit for the auto-generated (unknown_) parts
+        if "unknown_" in str(path):
+            return None
+        return original_add_file_observable(self, path, *args, **kwargs)
+
+    monkeypatch.setattr(Analysis, "add_file_observable", limited_add_file_observable)
+
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(str(datadir / "emails/splunk_logging.email.rfc822"))
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module("file_type", "test_groups")
+    engine.configuration_manager.enable_module("email_analyzer", "test_groups")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    file_observable = root_analysis.get_observable(file_observable.uuid)
+    analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    assert analysis
+
+    # tracked attachment paths must always be relative to the files dir, never absolute or doubled
+    for attachment_name in analysis.email[KEY_LOG_ENTRY]["attachment_names"]:
+        assert not os.path.isabs(attachment_name)
+        assert "{0}{1}{0}".format(os.sep, FILE_SUBDIR) not in attachment_name
+
+    # the combined buffer should have been created and should contain the decoded html part;
+    # before the fix the doubled path caused the html part to be silently skipped
+    combined_files = [o for o in root_analysis.all_observables
+                      if o.type == F_FILE and o.file_name.endswith(".combined")]
+    assert combined_files, "combined email file was not created"
+    with open(combined_files[0].full_path, "rb") as fp:
+        combined_content = fp.read()
+    assert b"197.210.28.107" in combined_content
+
 
 @pytest.mark.integration
 def test_mailbox_whitelisted(root_analysis, datadir):

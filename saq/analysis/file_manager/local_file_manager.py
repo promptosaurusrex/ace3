@@ -89,7 +89,8 @@ class LocalFileManager(FileManagerInterface):
             Full path to the file
         """
         if os.path.dirname(relative_path) == self.file_dir:
-            return os.path.join(self.file_dir, relative_path)
+            # already a full path within the files dir
+            return relative_path
         else:
             target_path = os.path.join(self.file_dir, relative_path)
             os.makedirs(os.path.dirname(target_path), exist_ok=True)
