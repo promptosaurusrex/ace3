@@ -1,6 +1,7 @@
 import socket
 
 import pytest
+import yara
 import yara_scanner
 
 from saq.configuration.config import get_analysis_module_config
@@ -135,6 +136,65 @@ class TestYaraScannerMetaTagsUnit:
 
         assert result == AnalysisExecutionResult.COMPLETED
         assert scan_called["called"] is False
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — scan timeouts must be swallowed and logged as warnings
+# ---------------------------------------------------------------------------
+class TestYaraScannerTimeout:
+    """A scan timeout from the yara scanner server must not escape execute_analysis."""
+
+    def _create_module(self, root):
+        module = YaraScanner_v3_4(
+            context=create_test_context(root=root),
+            config=get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4),
+        )
+        return AnalysisModuleAdapter(module)
+
+    @pytest.mark.unit
+    def test_yara_timeout_is_caught(self, monkeypatch, caplog, root_analysis):
+        """yara.TimeoutError from scan_file is handled by the timeout handler, not the
+        generic error handler.
+
+        The generic `except Exception` handler also swallows the exception and returns
+        COMPLETED, so the meaningful distinction is that the timeout is handled by the
+        dedicated handler — which logs the specific timeout warning and does NOT call
+        report_exception (i.e. it does not generate an error report).
+        """
+        # guard the premise of this test: yara.TimeoutError is not the builtin
+        assert not issubclass(yara.TimeoutError, TimeoutError)
+
+        file_path = root_analysis.create_file_path("test.txt")
+        with open(file_path, "wb") as fp:
+            fp.write(b"Hello, world!\n")
+
+        observable = root_analysis.add_file_observable(file_path)
+
+        def mock_scan_file(path, base_dir=None, socket_dir=None, meta_tags=None):
+            raise yara.TimeoutError("scanning timed out")
+
+        monkeypatch.setattr(yara_scanner, "scan_file", mock_scan_file)
+
+        report_exception_called = {"called": False}
+
+        def mock_report_exception(*args, **kwargs):
+            report_exception_called["called"] = True
+            return ""
+
+        monkeypatch.setattr(
+            "saq.modules.file_analysis.yara.report_exception", mock_report_exception
+        )
+
+        adapter = self._create_module(root_analysis)
+        with caplog.at_level("WARNING"):
+            result = adapter.execute_analysis(observable)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        # the timeout must be handled by the dedicated handler, not reported as an error
+        assert report_exception_called["called"] is False
+        assert any(
+            "yara scanner server timed out" in record.message for record in caplog.records
+        )
 
 
 # ---------------------------------------------------------------------------
