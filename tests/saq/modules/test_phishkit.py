@@ -481,9 +481,57 @@ def test_phishkit_analyzer_execute_analysis_file_success(monkeypatch, test_conte
         assert analysis.job_id == "file-job-123"
         assert analysis.scan_type == SCAN_TYPE_FILE
         # Don't check exact output_dir since it uses temp directory
-        
+
     finally:
         # Clean up
+        if os.path.exists(test_file_path):
+            os.unlink(test_file_path)
+
+@pytest.mark.integration
+def test_phishkit_analyzer_accepts_html_body_misdetected_as_text_plain(monkeypatch, test_context):
+    """Regression: an HTML email body that is a bare fragment is misdetected by
+    libmagic as text/plain. EmailAnalyzer now names it with a .html extension, so
+    phishkit must accept it via the extension branch even though the mime branch
+    fails. This is the path that renders HTML email bodies."""
+    root = create_root_analysis(analysis_mode='correlation')
+    root.initialize_storage()
+
+    # bare HTML fragment named with a .html extension (what EmailAnalyzer produces)
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False) as f:
+        f.write('<div id="isPasted"><span>Hello</span></div>')
+        test_file_path = f.name
+
+    try:
+        file_observable = root.add_file_observable(test_file_path)
+        file_observable.add_directive(DIRECTIVE_RENDER)
+
+        # libmagic misdetects the fragment as text/plain (NOT in valid_mime_types)
+        file_type_analysis = FileTypeAnalysis()
+        file_type_analysis.details = {'type': 'ASCII text', 'mime': 'text/plain'}
+        file_observable.add_analysis(file_type_analysis)
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+
+        monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_file_extensions', ['.html'])
+        monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_mime_types', ['text/html'])
+
+        monkeypatch.setattr("saq.modules.phishkit.scan_file", lambda *a, **k: "file-job-html")
+        monkeypatch.setattr("saq.modules.phishkit.PhishkitAnalyzer.delay_analysis", lambda *a, **k: AnalysisExecutionResult.INCOMPLETE)
+        monkeypatch.setattr("saq.util.filesystem.create_temporary_directory", lambda: "/tmp/test-html-output")
+        monkeypatch.setattr(analyzer, "wait_for_analysis", lambda observable, analysis_type: file_type_analysis)
+
+        result = analyzer.execute_analysis(file_observable)
+
+        # accepted via the extension branch despite the text/plain mime
+        assert result == AnalysisExecutionResult.INCOMPLETE
+        analysis = file_observable.get_and_load_analysis(PhishkitAnalysis)
+        assert analysis is not None
+        assert analysis.job_id == "file-job-html"
+        assert analysis.scan_type == SCAN_TYPE_FILE
+
+    finally:
         if os.path.exists(test_file_path):
             os.unlink(test_file_path)
 

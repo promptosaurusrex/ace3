@@ -4,12 +4,14 @@ import gzip
 import json
 import os
 import shutil
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 import pytest
 import pytz
 
 from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_config, get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_EMAIL_LOGGER, ANALYSIS_TYPE_BRO_SMTP, ANALYSIS_TYPE_MAILBOX, DB_BROCESS, DB_EMAIL_ARCHIVE, FILE_SUBDIR, DIRECTIVE_ARCHIVE, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, EVENT_TIME_FORMAT_JSON_TZ, F_EMAIL_ADDRESS, F_EMAIL_CC, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_FROM, F_EMAIL_TO, F_FILE, F_MESSAGE_ID, F_URL, create_email_conversation, create_email_delivery
+from saq.constants import ANALYSIS_MODULE_EMAIL_LOGGER, ANALYSIS_TYPE_BRO_SMTP, ANALYSIS_TYPE_MAILBOX, DB_BROCESS, DB_EMAIL_ARCHIVE, FILE_SUBDIR, DIRECTIVE_ARCHIVE, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, DIRECTIVE_RENDER, EVENT_TIME_FORMAT_JSON_TZ, F_EMAIL_ADDRESS, F_EMAIL_CC, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_FROM, F_EMAIL_TO, F_FILE, F_MESSAGE_ID, F_URL, create_email_conversation, create_email_delivery
 from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.crypto import decrypt
 from saq.database.model import load_alert
@@ -744,17 +746,71 @@ def test_basic_email_parsing(root_analysis, datadir):
 
     file_observables = email_analysis.get_observables_by_type(F_FILE)
     assert (set([_.file_name for _ in file_observables]) ==
-                        set(['splunk_logging.email.rfc822.unknown_text_plain_000',
-                            'splunk_logging.email.rfc822.unknown_text_html_000',
+                        set(['splunk_logging.email.rfc822.unknown_text_plain_000.txt',
+                            'splunk_logging.email.rfc822.unknown_text_html_000.html',
                             'splunk_logging.email.rfc822.headers',
                             'splunk_logging.email.rfc822.combined']))
 
     for file_observable in file_observables:
-        if file_observable.value == 'splunk_logging.email.rfc822.unknown_text_plain_000':
+        if file_observable.value == 'splunk_logging.email.rfc822.unknown_text_plain_000.txt':
             assert file_observable.has_directive(DIRECTIVE_EXTRACT_URLS)
             assert file_observable.has_directive(DIRECTIVE_PREVIEW)
-        elif file_observable.value == 'splunk_logging.email.rfc822.unknown_text_html_000':
+        elif file_observable.value == 'splunk_logging.email.rfc822.unknown_text_html_000.html':
             assert file_observable.has_directive(DIRECTIVE_EXTRACT_URLS)
+
+@pytest.mark.integration
+def test_html_fragment_body_gets_html_extension(root_analysis):
+    """Regression: an HTML email body that is a bare fragment (starts with <div>,
+    no <!DOCTYPE>/<html> wrapper) is misdetected by libmagic as text/plain. The
+    extracted body must still be named with a content-type-derived extension
+    (.html) so phishkit's html/pdf extension allow-list renders it instead of
+    silently skipping it. See the analyzed alert 6fac833d-... for the original miss."""
+
+    # synthesize a minimal email whose text/html part is a bare HTML fragment
+    msg = MIMEMultipart('alternative')
+    msg['From'] = 'attacker@example.com'
+    msg['To'] = 'victim@company.com'
+    msg['Subject'] = 'fragment body'
+    msg['Message-ID'] = '<fragment-body-test@example.com>'
+    msg.attach(MIMEText('plain text body', 'plain'))
+    # no doctype / <html> / <head> — exactly what defeats libmagic's HTML sniffing
+    msg.attach(MIMEText('<div id="isPasted"><span>Hello</span></div>', 'html'))
+
+    email_path = os.path.join(get_temp_dir(), 'fragment.email.rfc822')
+    with open(email_path, 'wb') as fp:
+        fp.write(msg.as_bytes())
+
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(email_path)
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    file_observable = root_analysis.get_observable(file_observable.uuid)
+    assert file_observable
+    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    assert isinstance(email_analysis, EmailAnalysis)
+
+    file_observables = email_analysis.get_observables_by_type(F_FILE)
+
+    # the HTML body must carry a real .html extension and the render directive
+    html_body = next((o for o in file_observables if 'unknown_text_html_000' in o.file_name), None)
+    assert html_body is not None
+    assert html_body.file_name.endswith('.html')
+    assert html_body.has_directive(DIRECTIVE_RENDER)
+
+    # the plain text body gets a .txt extension and the preview directive
+    plain_body = next((o for o in file_observables if 'unknown_text_plain_000' in o.file_name), None)
+    assert plain_body is not None
+    assert plain_body.file_name.endswith('.txt')
+    assert plain_body.has_directive(DIRECTIVE_PREVIEW)
 
 @pytest.mark.integration
 def test_long_filename_does_not_crash_analyzer(root_analysis, datadir):
@@ -1043,16 +1099,16 @@ def test_basic_smtp_email_parsing(root_analysis, datadir):
 
     file_observables = email_analysis.get_observables_by_type(F_FILE)
     assert (set([_.file_name for _ in file_observables]) ==
-                        set(['smtp.email.rfc822.unknown_text_plain_000',
-                            'smtp.email.rfc822.unknown_text_html_000',
+                        set(['smtp.email.rfc822.unknown_text_plain_000.txt',
+                            'smtp.email.rfc822.unknown_text_html_000.html',
                             'smtp.email.rfc822.headers',
                             'smtp.email.rfc822.combined']))
 
     for file_observable in file_observables:
-        if file_observable.value == 'smtp.email.rfc822.unknown_text_plain_000':
+        if file_observable.value == 'smtp.email.rfc822.unknown_text_plain_000.txt':
             assert file_observable.has_directive(DIRECTIVE_EXTRACT_URLS)
             assert file_observable.has_directive(DIRECTIVE_PREVIEW)
-        elif file_observable.value == 'smtp.email.rfc822.unknown_text_html_000':
+        elif file_observable.value == 'smtp.email.rfc822.unknown_text_html_000.html':
             assert file_observable.has_directive(DIRECTIVE_EXTRACT_URLS)
 
 @pytest.mark.integration
