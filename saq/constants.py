@@ -321,12 +321,12 @@ DIRECTIVE_REMEDIATE = 'remediate'
 DIRECTIVE_RENAME_ANALYSIS = 'rename_analysis'
 DIRECTIVE_RESOLVE_ASSET = 'resolve_asset'
 DIRECTIVE_SANDBOX = 'sandbox'
+DIRECTIVE_SANDBOX_FORCE = 'sandbox_force'
 DIRECTIVE_SCAN_URLSCAN = 'scan_urlscan'
 DIRECTIVE_SUBMIT_AS_NEW = 'submit_as_new'
 DIRECTIVE_TRACKED = 'tracked'
 DIRECTIVE_TRIAGE = 'triage'
 DIRECTIVE_VIEW_IN_BROWSER = 'view_in_browser'
-DIRECTIVE_VMRAY = 'vmray'
 DIRECTIVE_WHITELISTED = 'whitelisted'
 DIRECTIVE_YARA_META_PREFIX = "yara_meta:"
 
@@ -359,12 +359,12 @@ DIRECTIVE_DESCRIPTIONS = {
     DIRECTIVE_RENAME_ANALYSIS: 'indicates that the description of the root analysis object should be updated with analysis results',
     DIRECTIVE_RESOLVE_ASSET: 'indicates that ACE should treat this IP address as an asset and try to figure out the details',
     DIRECTIVE_SANDBOX: 'run the observable through a sandbox',
+    DIRECTIVE_SANDBOX_FORCE: 'force this observable into a sandbox even if its file type would normally be skipped',
     DIRECTIVE_SCAN_URLSCAN: 'scans the target with urlscan',
     DIRECTIVE_SUBMIT_AS_NEW: 'submit the observable as new with flag to bypass any existing analysis',
     DIRECTIVE_TRACKED: 'indicates this observable should be tracked across different analysis requests',
     DIRECTIVE_TRIAGE: 'send this observable to tria.ge for analysis',
     DIRECTIVE_VIEW_IN_BROWSER: 'allows a file observable to be opened inside the browser',
-    DIRECTIVE_VMRAY: 'send this observable to vmray for analysis',
     DIRECTIVE_WHITELISTED: 'indicates this observable was whitelisted, causing the entire analysis to also become whitelisted',
 }
 
@@ -385,9 +385,9 @@ GUI_DIRECTIVES = [
     DIRECTIVE_NO_SANDBOX,
     DIRECTIVE_PHISHKIT,
     DIRECTIVE_SANDBOX,
+    DIRECTIVE_SANDBOX_FORCE,
     DIRECTIVE_SCAN_URLSCAN,
     DIRECTIVE_TRIAGE,
-    DIRECTIVE_VMRAY,
 ]
 
 def register_directive(directive: str, description: str, gui: bool = False):
