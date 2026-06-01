@@ -1,6 +1,6 @@
 import pytest
 
-from saq.constants import F_FILE, F_HOSTNAME, F_IPV4, SUMMARY_DETAIL_FORMAT_JINJA
+from saq.constants import F_FILE, F_FILE_LOCATION, F_HOSTNAME, F_IPV4, SUMMARY_DETAIL_FORMAT_JINJA
 from saq.observables.mapping import (
     ObservableMapping,
     RelationshipMapping,
@@ -280,6 +280,26 @@ def test_extract_observables_skips_unresolved_value():
     )
     assert len(extracted) == 1
     assert extracted[0].observable.value == "workstation.example.com"
+
+
+@pytest.mark.unit
+def test_extract_observables_skips_blank_field_in_value_template():
+    """A present-but-empty field in an ALL-mode value template skips the mapping (the
+    coalesce-to-"" case that produced 'HOST@' file_location observables)."""
+    mappings = [
+        ObservableMapping(fields=["hostname", "file_path"], type=F_FILE_LOCATION,
+                          value="{{ hostname }}@{{ file_path }}"),
+    ]
+    # file_path present but empty -> skipped
+    extracted, _, _ = extract_observables_from_event(
+        {"hostname": "PCN31337", "file_path": ""}, mappings)
+    assert len(extracted) == 0
+
+    # both present -> one valid observable
+    extracted, _, _ = extract_observables_from_event(
+        {"hostname": "PCN31337", "file_path": r"C:\users\lol.txt"}, mappings)
+    assert len(extracted) == 1
+    assert extracted[0].observable.value == r"PCN31337@C:\users\lol.txt"
 
 
 @pytest.mark.unit

@@ -470,7 +470,12 @@ class FileLocationObservable(Observable):
     @Observable.value.setter
     def value(self, new_value):
         self._value = new_value
-        self._hostname, self._full_path = parse_file_location(self.value)
+        parsed = parse_file_location(self.value)
+        if len(parsed) != 2:
+            raise ObservableValueError(f"invalid file_location (missing @): {new_value}")
+        self._hostname, self._full_path = parsed
+        if not self._hostname.strip() or not self._full_path.strip():
+            raise ObservableValueError(f"file_location missing hostname or path: {new_value}")
 
     @property
     def hostname(self):
