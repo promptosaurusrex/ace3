@@ -9,6 +9,7 @@ from saq.constants import (
     ANALYSIS_MODULE_YARA_SCANNER_V3_4,
     DIRECTIVE_NO_SCAN,
     F_SIGNATURE_ID,
+    F_YARA_RULE,
     AnalysisExecutionResult,
 )
 from saq.modules.adapter import AnalysisModuleAdapter
@@ -398,3 +399,139 @@ class TestYaraSignatureIdEmission:
         sig_observables = [o for o in analysis.observables if o.type == F_SIGNATURE_ID]
         assert len(sig_observables) == 1
         assert sig_observables[0].value == rule_uuid
+
+
+def _yara_match(rule_name, meta=None, strings=None, tags=None):
+    """Build a yara scan result dict as returned by the scanner."""
+    return {
+        "rule": rule_name,
+        "meta": meta or {},
+        "tags": tags or [],
+        "strings": strings or [],
+    }
+
+
+class TestYaraEnabledMeta:
+    """A rule whose `enabled` meta is falsy is ignored as if it never matched."""
+
+    def _create_module(self, root):
+        module = YaraScanner_v3_4(
+            context=create_test_context(root=root),
+            config=get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4),
+        )
+        return AnalysisModuleAdapter(module)
+
+    def _run(self, monkeypatch, root_analysis, matches):
+        file_path = root_analysis.create_file_path("test.txt")
+        with open(file_path, "wb") as fp:
+            fp.write(b"Hello, world!\n")
+        observable = root_analysis.add_file_observable(file_path)
+
+        monkeypatch.setattr(
+            yara_scanner, "scan_file",
+            lambda path, base_dir=None, socket_dir=None, meta_tags=None: matches,
+        )
+
+        adapter = self._create_module(root_analysis)
+        result = adapter.execute_analysis(observable)
+        assert result == AnalysisExecutionResult.COMPLETED
+        return observable
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("enabled_value", [False, "false", "False", "no", "off", "disabled", 0])
+    def test_disabled_rule_produces_no_analysis(self, monkeypatch, root_analysis, enabled_value):
+        """A file matching only a disabled rule behaves exactly like no match: no analysis."""
+        matches = [_yara_match("disabled_rule", meta={"enabled": enabled_value})]
+        observable = self._run(monkeypatch, root_analysis, matches)
+
+        assert observable.get_and_load_analysis(YaraScanResults_v3_4) is None
+        assert not root_analysis.has_detections()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("enabled_value", [True, "true", "yes", 1])
+    def test_enabled_rule_is_processed(self, monkeypatch, root_analysis, enabled_value):
+        """An explicitly-enabled rule (or one with no `enabled` meta) is processed normally."""
+        matches = [_yara_match("enabled_rule", meta={"enabled": enabled_value})]
+        observable = self._run(monkeypatch, root_analysis, matches)
+
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        assert analysis is not None
+        assert root_analysis.has_detections()
+
+    @pytest.mark.unit
+    def test_missing_enabled_meta_defaults_to_enabled(self, monkeypatch, root_analysis):
+        matches = [_yara_match("default_rule")]
+        observable = self._run(monkeypatch, root_analysis, matches)
+
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        assert analysis is not None
+        assert root_analysis.has_detections()
+
+    @pytest.mark.unit
+    def test_mixed_enabled_and_disabled(self, monkeypatch, root_analysis):
+        """Only the enabled rule survives filtering; the disabled one yields nothing."""
+        matches = [
+            _yara_match("disabled_rule", meta={"enabled": False}),
+            _yara_match("enabled_rule"),
+        ]
+        observable = self._run(monkeypatch, root_analysis, matches)
+
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        assert analysis is not None
+        assert [r["rule"] for r in analysis.scan_results] == ["enabled_rule"]
+        rule_values = {o.value for o in analysis.observables if o.type == F_YARA_RULE}
+        assert rule_values == {"enabled_rule"}
+
+
+class TestYaraQueueMeta:
+    """A rule's `queue` meta rides along on the detection point it creates."""
+
+    def _create_module(self, root):
+        module = YaraScanner_v3_4(
+            context=create_test_context(root=root),
+            config=get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4),
+        )
+        return AnalysisModuleAdapter(module)
+
+    def _run(self, monkeypatch, root_analysis, matches):
+        file_path = root_analysis.create_file_path("test.txt")
+        with open(file_path, "wb") as fp:
+            fp.write(b"Hello, world!\n")
+        observable = root_analysis.add_file_observable(file_path)
+
+        monkeypatch.setattr(
+            yara_scanner, "scan_file",
+            lambda path, base_dir=None, socket_dir=None, meta_tags=None: matches,
+        )
+
+        adapter = self._create_module(root_analysis)
+        result = adapter.execute_analysis(observable)
+        assert result == AnalysisExecutionResult.COMPLETED
+        return observable
+
+    @pytest.mark.unit
+    def test_queue_meta_attached_to_detection_point(self, monkeypatch, root_analysis):
+        matches = [_yara_match("routed_rule", meta={"queue": "experimental"})]
+        self._run(monkeypatch, root_analysis, matches)
+
+        detection_points = root_analysis.all_detection_points
+        assert len(detection_points) == 1
+        assert detection_points[0].queue == "experimental"
+
+    @pytest.mark.unit
+    def test_no_queue_meta_leaves_detection_unrouted(self, monkeypatch, root_analysis):
+        matches = [_yara_match("plain_rule")]
+        self._run(monkeypatch, root_analysis, matches)
+
+        detection_points = root_analysis.all_detection_points
+        assert len(detection_points) == 1
+        assert detection_points[0].queue is None
+
+    @pytest.mark.unit
+    def test_no_alert_rule_with_queue_creates_no_detection(self, monkeypatch, root_analysis):
+        """A no_alert rule adds no detection point, so its queue meta is moot."""
+        matches = [_yara_match("quiet_rule", meta={"modifiers": "no_alert", "queue": "experimental"})]
+        self._run(monkeypatch, root_analysis, matches)
+
+        assert root_analysis.all_detection_points == []
+        assert not root_analysis.has_detections()

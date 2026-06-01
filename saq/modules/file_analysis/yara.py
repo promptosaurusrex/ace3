@@ -32,6 +32,34 @@ import yara_scanner
 from saq.util.strings import format_item_list_for_summary
 
 
+# meta values returned by yara-python can be bool, int, or str depending on how the analyst
+# wrote them in the rule (e.g. `enabled = false` vs `enabled = "false"`)
+_FALSE_META_VALUES = {"false", "no", "0", "off", "disabled"}
+
+
+def _rule_enabled(match_result: dict) -> bool:
+    """Returns False only if the rule's `enabled` meta is set to a falsy value. Defaults to True."""
+    meta = match_result.get("meta") or {}
+    if "enabled" not in meta:
+        return True
+
+    value = meta["enabled"]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() not in _FALSE_META_VALUES
+
+
+def _rule_queue(match_result: dict) -> str | None:
+    """Returns the non-empty `queue` meta value for a rule, or None if not specified."""
+    queue = (match_result.get("meta") or {}).get("queue")
+    if queue is None:
+        return None
+    queue = str(queue).strip()
+    return queue or None
+
+
 class YaraScanResults_v3_4(Analysis):
     """What yara rules match this file?"""
 
@@ -256,6 +284,13 @@ class YaraScanner_v3_4(AnalysisModule):
 
             #if self.scanner.scan(local_file_path):
             if matches_found:
+                # drop matches from rules an analyst has disabled in place via `enabled = false`.
+                # a file matching only disabled rules then behaves exactly like no match at all.
+                result = [r for r in result if _rule_enabled(r)]
+                if not result:
+                    logging.debug("all yara matches for {} were from disabled rules".format(local_file_path))
+                    return AnalysisExecutionResult.COMPLETED
+
                 logging.info("got yara results for {}".format(local_file_path))
                 analysis = self.create_analysis(_file)
                 assert isinstance(analysis, YaraScanResults_v3_4)
@@ -417,9 +452,13 @@ class YaraScanner_v3_4(AnalysisModule):
                                     logging.error(f"unable to add observable value {observable.value}: {e}")
 
 
-            # if this yara rule did not have the no_alert modifier then it becomes a detection point
+            # if this yara rule did not have the no_alert modifier then it becomes a detection point.
+            # a `queue` meta value rides along on the detection point; the engine resolves the alert
+            # queue centrally once all analysis is complete (see analysis_orchestrator).
             if yara_result['rule'] not in no_alert_rules:
-                rule_observable.add_detection_point("{} matched yara rule {}".format(_file, yara_result['rule']))
+                rule_observable.add_detection_point(
+                    "{} matched yara rule {}".format(_file, yara_result['rule']),
+                    queue=_rule_queue(yara_result))
 
             # yara rules can get generated automatically from SIP data using the ace export-sip-yara-rules output_dir command
             # so if the name of the rule starts with SIP_ then we also want to add indicators as observables
