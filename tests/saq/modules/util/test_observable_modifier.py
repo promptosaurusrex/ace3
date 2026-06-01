@@ -17,6 +17,7 @@ from saq.constants import (
     F_FQDN,
     F_SIGNATURE_ID,
     F_URL,
+    F_USER,
     AnalysisExecutionResult,
 )
 from saq.modules.adapter import AnalysisModuleAdapter
@@ -3498,6 +3499,80 @@ def test_tree_condition_descendants_scope_excludes_self():
         details_match={"flag": re.compile(r"^yes$")},
     )
     assert tc.evaluate(target, root) is False
+
+
+@pytest.mark.unit
+def test_tree_condition_descendants_observable_match_no_analysis_on_descendant():
+    """A descendants + observable_match condition (no analysis_type) must match a
+    descendant observable that has NO analysis of its own.
+
+    Regression for the "Tag Crowdstrike hosts belonging to analysts" race: a user
+    observable emitted by a Falcon analysis on the host is invisible to the
+    analysis-centric descendant traversal until it acquires its own analysis, by
+    which point the host is no longer re-queued for pre-phase re-evaluation. The
+    observable-centric path must surface it immediately.
+    """
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    host = root.add_observable_by_spec(F_URL, "https://host.example/")
+
+    class HostEnrichmentStub(Analysis):
+        pass
+
+    enrichment = HostEnrichmentStub()
+    enrichment.details = {}
+    enrichment.details_modified = True
+    host.add_analysis(enrichment)
+
+    # descendant user observable with NO analysis of its own (the bug condition)
+    user = enrichment.add_observable_by_spec(F_USER, "Hen137347")
+    assert not user.all_analysis
+
+    tc = TreeCondition(
+        analysis_type=None,
+        scope="descendants",
+        observable_match={
+            "type": re.compile(r"^user$"),
+            "value": re.compile(r"(?i)^Hen137347$"),
+        },
+    )
+    assert tc.evaluate(host, root) is True
+
+    # sanity: the old analysis-centric traversal cannot see an analysis-less child
+    from saq.modules.util.observable_modifier import _get_descendant_analyses
+    assert all(a.observable is not user for a in _get_descendant_analyses(host))
+
+
+@pytest.mark.unit
+def test_tree_condition_descendants_observable_match_value_outside_pattern():
+    """Descendants observable_match must not match when the descendant observable's
+    value falls outside the allowlist pattern."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    host = root.add_observable_by_spec(F_URL, "https://host.example/")
+
+    class HostEnrichmentStub2(Analysis):
+        pass
+
+    enrichment = HostEnrichmentStub2()
+    enrichment.details = {}
+    enrichment.details_modified = True
+    host.add_analysis(enrichment)
+
+    # a non-allowlisted user
+    enrichment.add_observable_by_spec(F_USER, "nottracked99")
+
+    tc = TreeCondition(
+        analysis_type=None,
+        scope="descendants",
+        observable_match={
+            "type": re.compile(r"^user$"),
+            "value": re.compile(r"(?i)^Hen137347$"),
+        },
+    )
+    assert tc.evaluate(host, root) is False
 
 
 @pytest.mark.unit

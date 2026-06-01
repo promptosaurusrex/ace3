@@ -101,6 +101,26 @@ class TreeCondition:
         return not result if self.negate else result
 
     def _evaluate_inner(self, observable: Observable, root: RootAnalysis) -> bool:
+        # A descendants condition that matches purely on observable properties
+        # (no analysis_type, no details_match) must consider descendant
+        # observables directly -- including ones with no analysis of their own.
+        # The analysis-centric traversal below only sees an observable once it
+        # has acquired an analysis, which races against pre-phase rule
+        # evaluation: a child observable is invisible until its own enrichment
+        # runs, by which point the host observable may no longer be re-queued
+        # for re-evaluation.
+        if self.scope == "descendants" and self.observable_match and not self.analysis_type and not self.details_match:
+            matches = 0
+            for obs in _get_descendant_observables(observable):
+                if not self._check_observable(obs):
+                    continue
+                matches += 1
+                if self.match_count is None:
+                    return True
+            if self.match_count is None:
+                return False
+            return matches == self.match_count
+
         if self.scope == "ancestors":
             analyses = _get_ancestor_analyses(observable)
         elif self.scope == "descendants":
@@ -213,6 +233,29 @@ def _get_descendant_analyses(observable: Observable) -> Generator[Analysis, None
         yield analysis
         for child in analysis.observables:
             stack.extend(child.all_analysis)
+
+
+def _get_descendant_observables(observable: Observable) -> Generator[Observable, None, None]:
+    """Yield all observables that are descendants of this observable.
+
+    A descendant observable was (transitively) produced by an analysis on this
+    observable. Unlike _get_descendant_analyses, this walks the observable tree
+    directly, so it surfaces descendant observables that do NOT (yet) have an
+    analysis of their own -- which an analysis-centric traversal cannot see. The
+    starting observable itself is NOT included.
+    """
+    visited = set()
+    stack = []
+    for self_analysis in observable.all_analysis:
+        stack.extend(self_analysis.observables)
+    while stack:
+        obs = stack.pop()
+        if id(obs) in visited:
+            continue
+        visited.add(id(obs))
+        yield obs
+        for analysis in obs.all_analysis:
+            stack.extend(analysis.observables)
 
 
 @dataclass
