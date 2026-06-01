@@ -172,6 +172,7 @@ def test_phishkit_custom_requirement_denies_matching_url(tmp_path):
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     url = root.add_observable_by_spec(F_URL, "https://login.windows.net/common/oauth2")
+    url.add_directive(DIRECTIVE_CRAWL)
 
     analyzer = _analyzer_with_deny_patterns(tmp_path, root, ["login.windows.net"])
 
@@ -184,6 +185,7 @@ def test_phishkit_custom_requirement_allows_non_matching_url(tmp_path):
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     url = root.add_observable_by_spec(F_URL, "https://winecellarsbycoastalblog.com/ls/click")
+    url.add_directive(DIRECTIVE_CRAWL)
 
     analyzer = _analyzer_with_deny_patterns(tmp_path, root, ["login.windows.net", "microsoft.com"])
 
@@ -196,6 +198,7 @@ def test_phishkit_custom_requirement_case_insensitive(tmp_path):
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     url = root.add_observable_by_spec(F_URL, "https://LOGIN.Microsoftonline.COM/authorize")
+    url.add_directive(DIRECTIVE_CRAWL)
 
     analyzer = _analyzer_with_deny_patterns(tmp_path, root, ["login.microsoftonline.com"])
 
@@ -209,6 +212,7 @@ def test_phishkit_custom_requirement_empty_deny_list(tmp_path):
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     url = root.add_observable_by_spec(F_URL, "https://login.windows.net/common")
+    url.add_directive(DIRECTIVE_CRAWL)
 
     config_file = tmp_path / "phishkit_config.yaml"
     config_file.write_text(_yaml.safe_dump({"skip_body_url_patterns": ["unrelated.com"]}))
@@ -229,6 +233,7 @@ def test_phishkit_custom_requirement_missing_yaml_file(tmp_path):
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     url = root.add_observable_by_spec(F_URL, "https://login.windows.net/common")
+    url.add_directive(DIRECTIVE_CRAWL)
 
     analyzer = PhishkitAnalyzer(
         get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
@@ -249,6 +254,7 @@ def test_phishkit_custom_requirement_invalid_deny_pattern_type(tmp_path):
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     url = root.add_observable_by_spec(F_URL, "https://login.windows.net/common")
+    url.add_directive(DIRECTIVE_CRAWL)
 
     config_file = tmp_path / "phishkit_config.yaml"
     config_file.write_text(_yaml.safe_dump({"deny_crawl_url_patterns": "login.windows.net"}))
@@ -322,24 +328,58 @@ def test_phishkit_analyzer_execute_analysis_url_success(monkeypatch, test_contex
 
 
 @pytest.mark.integration
-def test_phishkit_analyzer_execute_analysis_url_no_directive(test_context):
-    """Test URL analysis skipped when no directive present."""
+def test_phishkit_custom_requirement_url_requires_crawl_directive(test_context):
+    """A URL without the crawl directive is rejected by custom_requirement, not
+    execute_analysis. Gating here (before accepts() checks for prior analysis)
+    means no "no analysis" sentinel is recorded, so the module is re-dispatched
+    if the crawl directive is added later (e.g. by a late observable modifier
+    rule). This is the regression guard for the crawl-directive race."""
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
-    
-    # Create URL observable without directive
+
     url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
-    
+
     analyzer = PhishkitAnalyzer(
         get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
         context=create_test_context(root=root))
-    result = analyzer.execute_analysis(url_observable)
-    
-    assert result == AnalysisExecutionResult.COMPLETED
-    
-    # No analysis should be created
-    analysis = url_observable.get_and_load_analysis(PhishkitAnalysis)
-    assert analysis is None
+
+    # without the directive the module is skipped and, crucially, records nothing
+    assert analyzer.custom_requirement(url_observable) is False
+    assert url_observable.get_and_load_analysis(PhishkitAnalysis) is None
+
+    # once the directive lands, the module accepts the observable
+    url_observable.add_directive(DIRECTIVE_CRAWL)
+    assert analyzer.custom_requirement(url_observable) is True
+
+
+@pytest.mark.integration
+def test_phishkit_custom_requirement_file_requires_render_directive(test_context):
+    """A file without the render directive is rejected by custom_requirement
+    (same sentinel-avoidance rationale as the URL crawl gate)."""
+    root = create_root_analysis(analysis_mode='correlation')
+    root.initialize_storage()
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False) as f:
+        f.write('<html><body>test</body></html>')
+        test_file_path = f.name
+
+    try:
+        file_observable = root.add_file_observable(test_file_path)
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+
+        # no render directive -> rejected, nothing recorded
+        assert analyzer.custom_requirement(file_observable) is False
+        assert file_observable.get_and_load_analysis(PhishkitAnalysis) is None
+
+        # render directive in correlation mode -> accepted
+        file_observable.add_directive(DIRECTIVE_RENDER)
+        assert analyzer.custom_requirement(file_observable) is True
+    finally:
+        if os.path.exists(test_file_path):
+            os.unlink(test_file_path)
 
 
 @pytest.mark.integration
