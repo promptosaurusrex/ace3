@@ -473,6 +473,26 @@ def test_one_file_in_zip_detection(datadir):
     assert analysis.has_tag("one_in_zip")
 
 
+@pytest.mark.unit
+def test_file_type_image_yara_meta(datadir):
+    """FileTypeAnalyzer stamps image files with yara_meta:type=image (and non-images without it)."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    image = root.add_file_observable(datadir / "2910293944.gif")
+    non_image = root.add_file_observable(datadir / "evil.zip")
+
+    analyzer = AnalysisModuleAdapter(FileTypeAnalyzer(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config(ANALYSIS_MODULE_FILE_TYPE)))
+
+    assert analyzer.execute_analysis(image) == AnalysisExecutionResult.COMPLETED
+    assert "yara_meta:type=image" in image.directives
+    assert "type=image" in image.yara_meta_tags
+
+    assert analyzer.execute_analysis(non_image) == AnalysisExecutionResult.COMPLETED
+    assert "yara_meta:type=image" not in non_image.directives
+
+
 
 
 
