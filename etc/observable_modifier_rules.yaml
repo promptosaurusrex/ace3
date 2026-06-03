@@ -51,6 +51,11 @@
 #           observable_match:
 #             file_name: ".*\\.html$"  # regex match on properties of the matching analysis's observable
 #             # supported properties: type, value, file_name (via getattr)
+#           produces_observable:        # match an observable the analysis PRODUCED
+#                                       # (vs observable_match, which matches the analysis's own observable)
+#             type: email_from          # required; subtype-aware (e.g. email_address also matches email_from)
+#             value: "@example\\.com$"  # optional regex on the produced observable's value
+#             # with negate: true -> the analysis did NOT produce a matching observable
 #
 #     actions:
 #       add_directives: [extract_iocs]

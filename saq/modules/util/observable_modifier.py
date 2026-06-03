@@ -89,6 +89,12 @@ class TreeCondition:
     scope: str = "ancestors"  # "ancestors", "descendants", "global", "self", "parent", or "siblings"
     details_match: dict[str, re.Pattern] = field(default_factory=dict)
     observable_match: dict[str, re.Pattern] = field(default_factory=dict)
+    # require the matched analysis to have PRODUCED an observable whose type is a
+    # subtype of produces_observable_type and (if set) whose value matches
+    # produces_observable_value. Unlike observable_match (which inspects the
+    # analysis's own observable), this inspects analysis.observables.
+    produces_observable_type: Optional[str] = None
+    produces_observable_value: Optional[re.Pattern] = None
     negate: bool = False
     # if set, require exactly this many matching analyses. None means "at least one"
     # (the historical default). Used to scope rules to top-level contexts — e.g.
@@ -125,6 +131,9 @@ class TreeCondition:
             if self.observable_match:
                 if not self._check_observable(analysis.observable):
                     continue
+            if self.produces_observable_type is not None:
+                if not self._check_produces_observable(analysis):
+                    continue
             matches += 1
             if self.match_count is None:
                 return True
@@ -142,6 +151,19 @@ class TreeCondition:
             if not pattern.search(str(value)):
                 return False
         return True
+
+    def _check_produces_observable(self, analysis) -> bool:
+        """True if the analysis produced an observable whose type is a subtype of
+        produces_observable_type and (if set) whose value matches produces_observable_value."""
+        hierarchy = get_type_hierarchy()
+        for produced in analysis.observables:
+            if not hierarchy.is_subtype(produced.type, self.produces_observable_type):
+                continue
+            if self.produces_observable_value is not None:
+                if not self.produces_observable_value.search(str(produced.value)):
+                    continue
+            return True
+        return False
 
     def _check_details(self, details: dict) -> bool:
         if not details:
@@ -578,6 +600,26 @@ class ObservableModifierAnalyzer(AnalysisModule):
                 )
                 return None
 
+        produces_observable_raw = tc_data.get("produces_observable") or {}
+        produces_observable_type = None
+        produces_observable_value = None
+        if produces_observable_raw:
+            produces_observable_type = produces_observable_raw.get("type")
+            if not produces_observable_type:
+                logging.warning(
+                    f"produces_observable missing required 'type' in tree_condition for rule '{rule_name}'"
+                )
+                return None
+            raw_value = produces_observable_raw.get("value")
+            if raw_value is not None:
+                try:
+                    produces_observable_value = re.compile(str(raw_value))
+                except re.error as e:
+                    logging.warning(
+                        f"invalid produces_observable value regex '{raw_value}' in rule '{rule_name}': {e}"
+                    )
+                    return None
+
         negate = bool(tc_data.get("negate", False))
 
         match_count = tc_data.get("match_count")
@@ -600,6 +642,8 @@ class ObservableModifierAnalyzer(AnalysisModule):
             scope=scope,
             details_match=compiled_details_match,
             observable_match=compiled_observable_match,
+            produces_observable_type=produces_observable_type,
+            produces_observable_value=produces_observable_value,
             negate=negate,
             match_count=match_count,
         )
