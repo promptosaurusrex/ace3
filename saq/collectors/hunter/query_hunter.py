@@ -621,11 +621,20 @@ class QueryHunt(Hunt):
             if not events:
                 continue
 
-            content = render_jinja_template(
-                sd_config.content,
-                {"events": events},
-                strict=(sd_config.required_fields is None),
-            )
+            # A missing field under strict mode raises UndefinedError. Mirror every other
+            # summary-detail path and skip just this block (rather than killing the hunt).
+            try:
+                content = render_jinja_template(
+                    sd_config.content,
+                    {"events": events},
+                    strict=(sd_config.required_fields is None),
+                )
+            except UndefinedError:
+                logging.warning(
+                    "grouped jinja summary detail skipped (missing field) for content=%s in hunt %s",
+                    sd_config.content, self.name, exc_info=True,
+                )
+                continue
 
             if content is None or not content.strip():
                 continue

@@ -591,6 +591,37 @@ def test_process_summary_details_jinja_missing_field_strict_skipped():
 
 
 @pytest.mark.unit
+def test_process_summary_details_grouped_jinja_missing_field_skipped():
+    """Grouped Jinja with a missing field under strict mode skips the block, does not raise.
+
+    Regression: previously the grouped-Jinja path did not catch UndefinedError, so a missing
+    dict key (e.g. an event lacking a referenced field) raised out of process_summary_details
+    and killed the whole hunt/alert instead of dropping just this summary detail.
+    """
+    configs = [
+        SummaryDetailConfig(
+            content="{% for e in events %}{{ e.always }}/{{ e.sometimes }} {% endfor %}",
+            format=SUMMARY_DETAIL_FORMAT_JINJA,
+            grouped=True,
+        ),
+    ]
+    # second event is missing 'sometimes' -> UndefinedError in strict mode
+    results = [
+        {"always": "a", "sometimes": "x"},
+        {"always": "b"},
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    # must not raise
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 0
+
+
+@pytest.mark.unit
 def test_process_summary_details_jinja_with_required_fields_permissive():
     """Test Jinja format with required_fields set — permissive mode renders missing as empty."""
     configs = [
