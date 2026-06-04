@@ -733,6 +733,82 @@ def test_process_summary_details_required_fields_missing_skips():
 
 
 @pytest.mark.unit
+def test_process_summary_details_required_fields_empty_value_skips():
+    """Test that a present-but-empty required field skips the event (empty list/str/dict)."""
+    configs = [
+        SummaryDetailConfig(
+            content="{{ name }}",
+            required_fields=["correlate"],
+        ),
+    ]
+    results = [
+        {"name": "empty-list", "correlate": []},       # present but empty -> skip
+        {"name": "empty-str", "correlate": ""},        # present but empty -> skip
+        {"name": "whitespace", "correlate": "   "},    # whitespace-only -> skip
+        {"name": "empty-dict", "correlate": {}},       # present but empty -> skip
+        {"name": "none", "correlate": None},           # None -> skip
+        {"name": "has-data", "correlate": [{"x": 1}]}, # non-empty -> keep
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert details == ["has-data"]
+
+
+@pytest.mark.unit
+def test_process_summary_details_required_fields_zero_and_false_are_present():
+    """Test that numeric 0 and boolean False count as present (real values, not empty)."""
+    configs = [
+        SummaryDetailConfig(
+            content="{{ name }}",
+            required_fields=["flag"],
+        ),
+    ]
+    results = [
+        {"name": "zero", "flag": 0},
+        {"name": "false", "flag": False},
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert details == ["zero", "false"]
+
+
+@pytest.mark.unit
+def test_process_summary_details_grouped_jinja_required_fields_all_empty_suppresses_pane():
+    """Test grouped + Jinja: when every event's required field is empty, no pane is emitted."""
+    configs = [
+        SummaryDetailConfig(
+            content="{% for event in events %}{{ event.host }}\n{% endfor %}",
+            format=SUMMARY_DETAIL_FORMAT_JINJA,
+            grouped=True,
+            required_fields=["correlate"],
+        ),
+    ]
+    results = [
+        {"host": "server1", "correlate": []},
+        {"host": "server2", "correlate": []},
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    # all events filtered out -> grouped Jinja returns early, no detail added
+    assert details == []
+
+
+@pytest.mark.unit
 def test_process_summary_details_default_behavior_unchanged():
     """Test that default behavior (no required_fields) is unchanged — unresolved skips."""
     configs = [

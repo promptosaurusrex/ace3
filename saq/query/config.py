@@ -36,7 +36,13 @@ class SummaryDetailConfig(BaseModel):
     limit: int = SUMMARY_DETAIL_LIMIT_DEFAULT
     grouped: bool = False
     dedup_fields: Optional[list[str]] = None
-    required_fields: Optional[list[str]] = None
+    required_fields: Optional[list[str]] = Field(
+        default=None,
+        description="Field names that must be present AND non-empty for an event to contribute "
+                    "to this summary detail. Empty values (None, '', [], {}) count as missing, "
+                    "so the pane/row is suppressed. Uses key lookup (literal event[name]), not "
+                    "dotted traversal.",
+    )
 
     @field_validator("format")
     @classmethod

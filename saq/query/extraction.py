@@ -247,11 +247,31 @@ def _process_mapping_values(
         ))
 
 
+def _required_value_is_empty(value) -> bool:
+    """A required field counts as missing when its value is blank/empty.
+
+    None, empty/whitespace-only strings, and empty list/dict/tuple/set are
+    treated as empty. Numeric 0 and boolean False are real values (present).
+    """
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    if isinstance(value, (list, dict, tuple, set)):
+        return len(value) == 0
+    return False
+
+
 def event_has_required_fields(event: dict, required_fields: list[str]) -> bool:
-    """Check if the event has all required fields present."""
+    """Check that each required field is present AND non-empty.
+
+    A field that is absent, None, an empty string, or an empty
+    list/dict/tuple/set does not satisfy the requirement — the event is
+    skipped. Numeric 0 / boolean False count as present.
+    """
     for field_spec in required_fields:
-        success, _ = extract_event_value(event, FIELD_LOOKUP_TYPE_KEY, field_spec)
-        if not success:
+        success, value = extract_event_value(event, FIELD_LOOKUP_TYPE_KEY, field_spec)
+        if not success or _required_value_is_empty(value):
             return False
     return True
 
