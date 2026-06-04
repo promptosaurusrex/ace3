@@ -384,6 +384,28 @@ Some predefined interpretations of timestamps are made available.
 - `epoch_ns`: epoch in nanoseconds
 - `iso8601`: ISO 8601 format 
 
+### Mapping list fields to observables
+
+A `property` transformation with `property_type: list` stores a list of dicts on the event
+(for example, the rows returned by a correlating query). To turn a sub-field of every item in
+such a list into observables, use a `*` wildcard segment in an `observable_mapping` entry with
+`field_lookup_type: dot`:
+
+```yaml
+observable_mapping:
+  - fields: ["correlated_logs.*.username"]
+    field_lookup_type: dot
+    limit: 16
+    type: user
+```
+
+The `*` iterates every item in `correlated_logs` and plucks `username` from each, creating one
+observable per item. List items missing that sub-key are skipped, an empty list yields no
+observables, and a missing top-level list key is treated as the field not being present. The
+optional `limit` caps how many observables a single entry emits (it also applies to list-valued
+fields and Jinja `value` templates that expand to many values). This avoids hand-enumerating
+`correlated_logs.0.username`, `correlated_logs.1.username`, ... for each index.
+
 # Implementation Notes
 
 - The new `correlate` functionality runs in between converting an event into a submission.

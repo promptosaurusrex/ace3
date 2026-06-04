@@ -153,6 +153,11 @@ class ObservableMapping(BaseObservableMapping):
         default_factory=list,
         description="The relationships to add to the observable"
     )
+    limit: Optional[int] = Field(
+        default=None, ge=1,
+        description="Cap the number of observables this mapping emits from a list-valued field, "
+                    "a '*' wildcard path, or a Jinja value template. None means no cap."
+    )
 
     @model_validator(mode='after')
     def validate_fields_mode_any_with_value(self):
