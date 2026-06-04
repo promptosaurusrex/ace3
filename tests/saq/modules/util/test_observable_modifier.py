@@ -3526,7 +3526,7 @@ def test_tree_condition_descendants_observable_match_no_analysis_on_descendant()
     host.add_analysis(enrichment)
 
     # descendant user observable with NO analysis of its own (the bug condition)
-    user = enrichment.add_observable_by_spec(F_USER, "Hen137347")
+    user = enrichment.add_observable_by_spec(F_USER, "usr1234")
     assert not user.all_analysis
 
     tc = TreeCondition(
@@ -3534,7 +3534,7 @@ def test_tree_condition_descendants_observable_match_no_analysis_on_descendant()
         scope="descendants",
         observable_match={
             "type": re.compile(r"^user$"),
-            "value": re.compile(r"(?i)^Hen137347$"),
+            "value": re.compile(r"(?i)^usr1234$"),
         },
     )
     assert tc.evaluate(host, root) is True
@@ -3569,7 +3569,7 @@ def test_tree_condition_descendants_observable_match_value_outside_pattern():
         scope="descendants",
         observable_match={
             "type": re.compile(r"^user$"),
-            "value": re.compile(r"(?i)^Hen137347$"),
+            "value": re.compile(r"(?i)^usr1234$"),
         },
     )
     assert tc.evaluate(host, root) is False
