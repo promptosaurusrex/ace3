@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
+from saq.collectors.hunter.correlation.cache import CorrelateQueryRecorder
 from saq.collectors.hunter.correlation.commands import _resolve_time_range, execute_command
 from saq.collectors.hunter.correlation.registry import (
     QuerySource,
@@ -409,3 +410,73 @@ class TestResolveTimeRange:
         start, end = _resolve_time_range(cmd, event, "stream", hunt_start, hunt_end, "splunk")
         assert start == hunt_start - datetime.timedelta(hours=3)
         assert end == hunt_end + datetime.timedelta(hours=1)
+
+
+@pytest.mark.unit
+class TestQueryRecorder:
+    """Capture/replay of rendered correlate query results via CorrelateQueryRecorder."""
+
+    def _cmd(self):
+        # rendered query differs per event (interpolates _event.host), like the azure hunt
+        return CommandConfig(
+            type="query",
+            source="test_source",
+            query="search host={{ _event.host }}",
+            time_range=None,
+        )
+
+    def test_replay_hit_skips_live_query(self, tmpdir):
+        source = MockQuerySource(results=[{"should": "not be used"}])
+        register_query_source("test_source", source)
+        recorder = CorrelateQueryRecorder(replay=[
+            {"source": "test_source", "query": "search host=web1", "results": [{"host": "web1", "saved": True}]},
+        ])
+
+        with patch("saq.collectors.hunter.correlation.commands.get_cached_result", return_value=None), \
+             patch("saq.collectors.hunter.correlation.commands.set_cached_result"):
+            result = execute_command(
+                self._cmd(), {"host": "web1"}, [], "event", [], local_time(), str(tmpdir),
+                query_recorder=recorder,
+            )
+
+        assert json.loads(result) == {"host": "web1", "saved": True}
+        assert len(source.calls) == 0  # data source never hit on a replay hit
+
+    def test_replay_miss_falls_back_to_live_and_records(self, tmpdir):
+        source = MockQuerySource(results=[{"host": "web2", "live": True}])
+        register_query_source("test_source", source)
+        # replay seeded, but for a different rendered query -> miss -> live + warn
+        recorder = CorrelateQueryRecorder(replay=[
+            {"source": "test_source", "query": "search host=web1", "results": [{"host": "web1"}]},
+        ])
+
+        with patch("saq.collectors.hunter.correlation.commands.get_cached_result", return_value=None), \
+             patch("saq.collectors.hunter.correlation.commands.set_cached_result"):
+            result = execute_command(
+                self._cmd(), {"host": "web2"}, [], "event", [], local_time(), str(tmpdir),
+                query_recorder=recorder,
+            )
+
+        assert json.loads(result) == {"host": "web2", "live": True}
+        assert len(source.calls) == 1
+        assert source.calls[0]["query"] == "search host=web2"
+        # the live result is captured under its rendered query, keyed alongside replay
+        exported = {r["query"]: r["results"] for r in recorder.export()}
+        assert exported["search host=web2"] == [{"host": "web2", "live": True}]
+
+    def test_pure_capture_records_rendered_query(self, tmpdir):
+        source = MockQuerySource(results=[{"host": "web3"}])
+        register_query_source("test_source", source)
+        recorder = CorrelateQueryRecorder()  # no replay -> pure capture
+
+        with patch("saq.collectors.hunter.correlation.commands.get_cached_result", return_value=None), \
+             patch("saq.collectors.hunter.correlation.commands.set_cached_result"):
+            execute_command(
+                self._cmd(), {"host": "web3"}, [], "event", [], local_time(), str(tmpdir),
+                query_recorder=recorder,
+            )
+
+        assert len(source.calls) == 1
+        assert recorder.export() == [
+            {"source": "test_source", "query": "search host=web3", "results": [{"host": "web3"}]},
+        ]

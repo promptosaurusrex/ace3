@@ -271,6 +271,21 @@ def parse_args():
              "Use this to iterate on correlate: YAML against a previously captured event list.",
     )
     parser.add_argument(
+        "--save-correlate-results",
+        type=str,
+        metavar="FILE",
+        help="Save the correlate (follow-up) query results from the response to the given JSON file.",
+    )
+    parser.add_argument(
+        "--correlate-results-file",
+        type=str,
+        metavar="FILE",
+        help="Path to a JSON file of saved correlate query results (from --save-correlate-results). "
+             "When set, the correlation engine replays matching follow-up queries instead of re-running "
+             "them; queries not present are run live. Use this to iterate on summary_details / correlate "
+             "logic without re-querying the data source.",
+    )
+    parser.add_argument(
         "-o", "--output-file", help="Save the raw JSON to the given file."
     )
     parser.add_argument(
@@ -360,6 +375,21 @@ def validate_args(args: argparse.Namespace) -> None:
                 f"--query-results-file must contain a JSON list of event objects, got {type(loaded).__name__}"
             )
 
+    # --correlate-results-file replays saved follow-up queries; validate it up front.
+    if args.correlate_results_file:
+        if not os.path.isfile(args.correlate_results_file):
+            raise ValueError(f"--correlate-results-file path does not exist: {args.correlate_results_file}")
+        try:
+            with open(args.correlate_results_file, "r") as fp:
+                loaded = json.load(fp)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"--correlate-results-file is not valid JSON: {e}") from e
+        if not isinstance(loaded, dict) or not isinstance(loaded.get("queries"), list):
+            raise ValueError(
+                "--correlate-results-file must be a JSON object with a 'queries' list "
+                "(as produced by --save-correlate-results)"
+            )
+
     # `-s` is optional now, but `-e` without `-s` is only valid for query hunts where we can
     # synthesize start_time from time_ranges. `-s` without `-e` is never useful — reject it.
     if args.start_time and not args.end_time:
@@ -438,6 +468,7 @@ def validate_hunt(
     query_results: Optional[list] = None,
     package_root: Optional[str] = None,
     time_range_overrides: Optional[dict[str, str]] = None,
+    correlate_results: Optional[dict] = None,
 ) -> bool:
     compiled = compile_hunt(file_path, package_root=package_root)
 
@@ -459,6 +490,8 @@ def validate_hunt(
             execution_arguments["query_results"] = query_results
         if time_range_overrides:
             execution_arguments["time_range_overrides"] = time_range_overrides
+        if correlate_results is not None:
+            execution_arguments["correlate_results"] = correlate_results
         json_data["execution_arguments"] = execution_arguments
 
     # Configure SSL verification
@@ -654,6 +687,12 @@ def main():
         with open(args.query_results_file, "r") as fp:
             query_results_override = json.load(fp)
 
+    # Load saved correlate query results for replay (validated in validate_args).
+    correlate_results_override = None
+    if args.correlate_results_file:
+        with open(args.correlate_results_file, "r") as fp:
+            correlate_results_override = json.load(fp)
+
     for file_path in file_paths:
         try:
             # When -e is supplied without -s, synthesize a start_time spanning the widest
@@ -685,6 +724,7 @@ def main():
                 query_results_override,
                 args.package_root,
                 time_range_overrides or None,
+                correlate_results_override,
             )
         except Exception:
             has_failures = True
@@ -738,6 +778,19 @@ def main():
                     json.dump(original, fp, indent=4, sort_keys=True)
                 print(
                     f"\033[92msaved {len(original)} original events to {args.save_original_results}\033[0m"
+                )
+
+        # Correlate (follow-up) query results ride the top level of the response so they
+        # can be saved for offline replay even when correlation filtered out every event.
+        if args.save_correlate_results:
+            correlate = result.get("correlate_results")
+            if not correlate or not correlate.get("queries"):
+                print("\033[93mNo correlate results in response (hunt may not run correlate queries)\033[0m")
+            else:
+                with open(args.save_correlate_results, "w") as fp:
+                    json.dump(correlate, fp, indent=4, sort_keys=True)
+                print(
+                    f"\033[92msaved {len(correlate['queries'])} correlate query results to {args.save_correlate_results}\033[0m"
                 )
 
         if args.print_original_results:

@@ -1,12 +1,13 @@
 import datetime
 import json
+import logging
 import os
 import subprocess
 from typing import Optional
 
 from jinja2.sandbox import SandboxedEnvironment
 
-from saq.collectors.hunter.correlation.cache import get_cached_result, set_cached_result
+from saq.collectors.hunter.correlation.cache import CorrelateQueryRecorder, get_cached_result, set_cached_result
 from saq.collectors.hunter.correlation.expressions import build_jinja_context
 from saq.collectors.hunter.correlation.registry import get_query_source
 from saq.collectors.hunter.correlation.schema import CommandConfig, PredefinedCommandConfig
@@ -28,6 +29,7 @@ def execute_command(
     config: dict | None = None,
     current_source: Optional[str] = None,
     hunt_end_time: Optional[datetime.datetime] = None,
+    query_recorder: Optional[CorrelateQueryRecorder] = None,
 ) -> str:
     """Execute a command and return its output as a string.
 
@@ -49,6 +51,8 @@ def execute_command(
             the YAML omits them.
         hunt_end_time: End of the hunt's query window; a relative `after` is anchored
             to this. Defaults to hunt_start_time (a zero-width window).
+        query_recorder: Optional recorder that captures (and optionally replays)
+            rendered query results so analysts can iterate offline.
 
     Returns:
         Command output as a string.
@@ -56,9 +60,9 @@ def execute_command(
     if hunt_end_time is None:
         hunt_end_time = hunt_start_time
     if command.type == "defined":
-        return _execute_defined(command, event, events, transform_type, predefined_commands, hunt_start_time, hunt_end_time, temp_dir, stream_query_cache, secrets, config, current_source)
+        return _execute_defined(command, event, events, transform_type, predefined_commands, hunt_start_time, hunt_end_time, temp_dir, stream_query_cache, secrets, config, current_source, query_recorder)
     elif command.type == "query":
-        return _execute_query(command, event, events, transform_type, hunt_start_time, hunt_end_time, stream_query_cache, secrets, config, current_source)
+        return _execute_query(command, event, events, transform_type, hunt_start_time, hunt_end_time, stream_query_cache, secrets, config, current_source, query_recorder)
     elif command.type == "executable":
         return _execute_executable(command, event, events, transform_type, temp_dir, secrets, config)
     else:
@@ -78,6 +82,7 @@ def _execute_defined(
     secrets: dict | None = None,
     config: dict | None = None,
     current_source: Optional[str] = None,
+    query_recorder: Optional[CorrelateQueryRecorder] = None,
 ) -> str:
     """Execute a predefined command by name."""
     predef = None
@@ -90,7 +95,7 @@ def _execute_defined(
         raise ValueError(f"predefined command not found: {command.name!r}")
 
     resolved = predef.to_command_config(command.arguments)
-    return execute_command(resolved, event, events, transform_type, predefined_commands, hunt_start_time, temp_dir, stream_query_cache, secrets, config, current_source, hunt_end_time=hunt_end_time)
+    return execute_command(resolved, event, events, transform_type, predefined_commands, hunt_start_time, temp_dir, stream_query_cache, secrets, config, current_source, hunt_end_time=hunt_end_time, query_recorder=query_recorder)
 
 
 def _execute_query(
@@ -104,6 +109,7 @@ def _execute_query(
     secrets: dict | None = None,
     config: dict | None = None,
     current_source: Optional[str] = None,
+    query_recorder: Optional[CorrelateQueryRecorder] = None,
 ) -> str:
     """Execute a query command."""
     # For stream transforms, memoize the result
@@ -119,19 +125,32 @@ def _execute_query(
         if cached is not None:
             return cached
 
-    # Build time range
-    start_time, end_time = _resolve_time_range(command, event, transform_type, hunt_start_time, hunt_end_time, current_source)
-
-    # Render query with jinja
+    # Render query with jinja. Done before resolving the time range / hitting the
+    # data source so the rendered text can key the recorder's capture/replay store.
     context = build_jinja_context(event, events, secrets, config)
     query_str = _jinja_env.from_string(command.query).render(**context)
 
-    timeout = parse_timespec(command.timeout)
+    # Replay a previously-saved result for this exact rendered query, if available.
+    output = None
+    if query_recorder is not None:
+        output = query_recorder.lookup(command.source, query_str)
+        if output is None and query_recorder.replay_active:
+            logging.warning(
+                "no saved correlate result for query against %s; running live: %.120s",
+                command.source, query_str,
+            )
 
-    source = get_query_source(command.source)
-    results = source.execute_query(query_str, start_time, end_time, timeout, source_options=command.source_options)
+    if output is None:
+        # Build time range and run the query live.
+        start_time, end_time = _resolve_time_range(command, event, transform_type, hunt_start_time, hunt_end_time, current_source)
+        timeout = parse_timespec(command.timeout)
+        source = get_query_source(command.source)
+        results = source.execute_query(query_str, start_time, end_time, timeout, source_options=command.source_options)
+        output = "\n".join(json.dumps(row) for row in results)
 
-    output = "\n".join(json.dumps(row) for row in results)
+    # Record the result (from replay or live) so it can be saved for later reuse.
+    if query_recorder is not None:
+        query_recorder.record(command.source, query_str, output)
 
     # Store in persistent cache
     if command.cache:

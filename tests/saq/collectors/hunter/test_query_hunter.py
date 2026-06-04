@@ -4534,3 +4534,93 @@ def test_create_root_analysis_skips_unresolved_playbook_url(monkeypatch, tmpdir)
     # field present — playbook_url is set
     root = hunt.create_root_analysis({"playbook_id": "pb42"})
     assert root.extensions[KEY_PLAYBOOK_URL] == "https://playbooks.example.com/pb42"
+
+def test_process_query_results_correlate_capture_and_replay(monkeypatch):
+    """A correlate query's results are captured on a live run (exposed via
+    hunt.correlate_query_results) and replayed offline when _correlate_replay_results
+    is seeded, so the data source is never hit."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.registry import (
+        QuerySource,
+        clear_query_sources,
+        register_query_source,
+    )
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    class _Source(QuerySource):
+        default_time_field = "_time"
+        default_time_format = "iso8601"
+
+        def __init__(self, results):
+            self.results = results
+            self.calls = []
+
+        def execute_query(self, query, start_time, end_time, timeout, source_options=None):
+            self.calls.append(query)
+            return list(self.results)
+
+    correlate = CorrelateConfig.model_validate({
+        "logic": [
+            {
+                "transform": {
+                    "type": "event",
+                    "method": "property",
+                    "property_name": "lookup",
+                    "property_type": "list",
+                    "command": {
+                        "type": "query",
+                        "source": "test_source",
+                        "query": "search host={{ _event.host }}",
+                        "time_range": {"before": "1h", "after": "1h"},
+                    },
+                },
+            },
+        ],
+    })
+
+    input_events = [{"src": "1.2.3.4", "host": "web1", "_time": "2024-06-01T11:00:00+00:00"}]
+
+    clear_query_sources()
+    try:
+        # --- live run: capture ---
+        source = _Source(results=[{"found": True}])
+        register_query_source("test_source", source)
+        hunt = default_hunt(
+            manager=MockManager(),
+            name="capture",
+            analysis_mode=ANALYSIS_MODE_CORRELATION,
+            group_by=None,
+            observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+            correlate=correlate,
+        )
+        hunt.process_query_results([dict(e) for e in input_events])
+
+        assert len(source.calls) == 1
+        assert source.calls[0] == "search host=web1"
+        captured = hunt.correlate_query_results
+        assert captured["version"] == 1
+        assert captured["queries"] == [
+            {"source": "test_source", "query": "search host=web1", "results": [{"found": True}]},
+        ]
+
+        # --- replay run: offline, no live query ---
+        replay_source = _Source(results=[{"should": "not be used"}])
+        clear_query_sources()
+        register_query_source("test_source", replay_source)
+        hunt2 = default_hunt(
+            manager=MockManager(),
+            name="replay",
+            analysis_mode=ANALYSIS_MODE_CORRELATION,
+            group_by=None,
+            observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+            correlate=correlate,
+        )
+        hunt2._correlate_replay_results = captured["queries"]
+        submissions = hunt2.process_query_results([dict(e) for e in input_events])
+
+        assert len(replay_source.calls) == 0  # fully offline
+        assert submissions is not None and len(submissions) == 1
+    finally:
+        clear_query_sources()
