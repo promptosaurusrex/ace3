@@ -265,16 +265,8 @@ class PhishkitAnalyzer(AnalysisModule):
     def custom_requirement(self, observable: Observable) -> bool:
         """Custom requirement for phishkit analysis.
 
-        The crawl/render directive gating lives here rather than in
-        execute_analysis on purpose. accepts() consults custom_requirement
-        BEFORE it checks for an already-recorded analysis, so returning False
-        here means the engine never runs the module and never records the
-        "no analysis" sentinel. That sentinel is permanent and would block any
-        later re-dispatch; by gating in custom_requirement instead, an
-        observable that gains the directive later (e.g. from an observable
-        modifier rule whose tree conditions only resolve after we first see the
-        observable) is re-queued via EVENT_DIRECTIVE_ADDED and we get a real
-        second pass. This mirrors the legacy crawlphish module's gating.
+        Note that the crawl/render directive gating lives here on purpose to
+        allow observables to gain the crawl/render directives by other modules.
         """
         if observable.type == F_URL:
             # urls require crawl directives
