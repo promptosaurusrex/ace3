@@ -101,14 +101,9 @@ class TreeCondition:
         return not result if self.negate else result
 
     def _evaluate_inner(self, observable: Observable, root: RootAnalysis) -> bool:
-        # A descendants condition that matches purely on observable properties
-        # (no analysis_type, no details_match) must consider descendant
-        # observables directly -- including ones with no analysis of their own.
-        # The analysis-centric traversal below only sees an observable once it
-        # has acquired an analysis, which races against pre-phase rule
-        # evaluation: a child observable is invisible until its own enrichment
-        # runs, by which point the host observable may no longer be re-queued
-        # for re-evaluation.
+        # NOTE there is special logic here to deal with observables that don't
+        # have an analysis of their own yet since the rest of the logic is
+        # "analysis-centric traversal".
         if self.scope == "descendants" and self.observable_match and not self.analysis_type and not self.details_match:
             matches = 0
             for obs in _get_descendant_observables(observable):
@@ -236,14 +231,7 @@ def _get_descendant_analyses(observable: Observable) -> Generator[Analysis, None
 
 
 def _get_descendant_observables(observable: Observable) -> Generator[Observable, None, None]:
-    """Yield all observables that are descendants of this observable.
-
-    A descendant observable was (transitively) produced by an analysis on this
-    observable. Unlike _get_descendant_analyses, this walks the observable tree
-    directly, so it surfaces descendant observables that do NOT (yet) have an
-    analysis of their own -- which an analysis-centric traversal cannot see. The
-    starting observable itself is NOT included.
-    """
+    """Yield all observables that are descendants of this observable."""
     visited = set()
     stack = []
     for self_analysis in observable.all_analysis:
