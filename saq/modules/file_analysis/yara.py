@@ -453,8 +453,6 @@ class YaraScanner_v3_4(AnalysisModule):
 
 
             # if this yara rule did not have the no_alert modifier then it becomes a detection point.
-            # a `queue` meta value rides along on the detection point; the engine resolves the alert
-            # queue centrally once all analysis is complete (see analysis_orchestrator).
             if yara_result['rule'] not in no_alert_rules:
                 rule_observable.add_detection_point(
                     "{} matched yara rule {}".format(_file, yara_result['rule']),
