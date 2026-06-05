@@ -514,6 +514,17 @@ def _correct_file_extension(file_path: str) -> str:
 
     logging.info(f"mime type: {mime_type} for {file_path}")
 
+    # libmagic frequently misclassifies HTML fragments (no <!doctype>/<html> wrapper) and
+    # other text-based formats as text/plain. "Correcting" such a file to .txt would make the
+    # browser render the raw source instead of the page, since Chrome derives the MIME type for
+    # file:// URLs from the extension. Never downgrade an existing extension on a low-confidence
+    # text/plain guess — trust the extension the caller already assigned (e.g. EmailAnalyzer's
+    # .html for an HTML email body).
+    _, existing_extension = os.path.splitext(file_path)
+    if mime_type == "text/plain" and existing_extension:
+        logging.info(f"keeping existing extension {existing_extension} for text/plain {file_path}")
+        return file_path
+
     file_extension = mimetypes.guess_extension(mime_type)
     if not file_extension:
         return file_path
