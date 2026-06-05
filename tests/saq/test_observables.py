@@ -1,8 +1,7 @@
 import pytest
 
 from saq.analysis import RootAnalysis, Observable
-from saq.constants import F_EMAIL_ADDRESS, F_EMAIL_DELIVERY, F_IPV4, F_MESSAGE_ID, F_USER, F_YARA_STRING
-from saq.observables import create_observable
+from saq.constants import F_EMAIL_ADDRESS, F_EMAIL_DELIVERY, F_FILE_LOCATION, F_IPV4, F_MESSAGE_ID, F_USER, F_YARA_STRING
 
 @pytest.mark.unit
 def test_observables():
@@ -43,6 +42,24 @@ def test_email_delivery(value, expected_result):
     else:
         assert o.message_id == expected_result[0]
         assert o.email_address == expected_result[1]
+
+
+@pytest.mark.parametrize('value,expected', [
+    (r'PCN31337@C:\users\lol.txt', ('PCN31337', r'C:\users\lol.txt')),  # valid
+    ('PCN31337@', None),             # invalid: no path
+    ('@C:\\users\\lol.txt', None),   # invalid: no hostname
+    ('PCN31337', None),              # invalid: no @ separator
+    ('@', None),                     # invalid: neither
+])
+@pytest.mark.unit
+def test_file_location(value, expected):
+    root = RootAnalysis()
+    o = root.add_observable_by_spec(F_FILE_LOCATION, value)
+    if expected is None:
+        assert o is None
+    else:
+        assert o.hostname == expected[0]
+        assert o.full_path == expected[1]
 
 
 @pytest.mark.parametrize('initial_value,expected_value', [

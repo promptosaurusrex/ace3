@@ -27,6 +27,18 @@ from saq.query.template_rendering import (
 )
 
 
+def _is_blank_value(value) -> bool:
+    """A field counts as absent for mapping resolution if it is None, an empty/whitespace
+    string, or an empty collection — matching resolve_fields' 'present and non-null' contract."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, dict)):
+        return len(value) == 0
+    return False
+
+
 def _interpolate_strict(template: str, event: dict) -> list[str]:
     """Strict-mode multi-render that rejects the whole template on any missing field.
 
@@ -131,8 +143,8 @@ def extract_observables_from_event(
 
         def _is_field_present(field_name, _event=event, _mapping=mapping):
             try:
-                success, _ = extract_event_value(_event, _mapping.field_lookup_type, field_name)
-                return success
+                success, value = extract_event_value(_event, _mapping.field_lookup_type, field_name)
+                return success and not _is_blank_value(value)
             except PathAccessError:
                 return False
 
