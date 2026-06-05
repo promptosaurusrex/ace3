@@ -14,7 +14,10 @@ from saq.constants import (
     DIRECTIVE_OCR,
     DIRECTIVE_YARA_META_PREFIX,
     F_EMAIL_ADDRESS,
+    F_EMAIL_FROM,
+    F_EMAIL_TO,
     F_FQDN,
+    F_MESSAGE_ID,
     F_SIGNATURE_ID,
     F_URL,
     AnalysisExecutionResult,
@@ -1175,6 +1178,185 @@ def test_tree_condition_ancestor_match():
     result = adapter.analyze(target_observable, final_analysis=True)
     assert result == AnalysisExecutionResult.INCOMPLETE
     assert target_observable.has_directive("extract_iocs")
+
+
+def _build_email_tree(produce_message_id=False, from_value="hr@bv.com", message_id_value="<abc@bv.com>"):
+    """Build root -> target url observable with a TestEmailAnalysis (scope self) that
+    produces typed observables (email_from, optionally message_id). Returns
+    (root, target_observable, module_path)."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    target = root.add_observable_by_spec(F_URL, "https://example.com/page.html")
+
+    class TestEmailAnalysis(Analysis):
+        pass
+
+    analysis = TestEmailAnalysis()
+    analysis.details = {}
+    analysis.details_modified = True
+    target.add_analysis(analysis)
+    analysis.add_observable_by_spec(F_EMAIL_FROM, from_value)
+    analysis.add_observable_by_spec(F_EMAIL_TO, "robertsd@bv.com")
+    if produce_message_id:
+        analysis.add_observable_by_spec(F_MESSAGE_ID, message_id_value)
+
+    module_path = f"{TestEmailAnalysis.__module__}:{TestEmailAnalysis.__name__}"
+    return root, target, module_path
+
+
+def _produces_rule(module_path, produces_observable, negate=False):
+    return [{
+        "name": "produces_observable test",
+        "conditions": {
+            "observable_types": ["url"],
+            "tree_conditions": [{
+                "analysis_type": module_path,
+                "scope": "self",
+                "negate": negate,
+                "produces_observable": produces_observable,
+            }],
+        },
+        "actions": {"add_directives": ["matched"]},
+    }]
+
+
+@pytest.mark.unit
+def test_tree_condition_produces_observable_positive():
+    """Matches when the analysis produced an observable of the given type (no value regex)."""
+    root, target, module_path = _build_email_tree()
+    adapter = _create_analyzer_with_rules(root, _produces_rule(module_path, {"type": "email_from"}))
+    adapter.execute_analysis(target)
+    adapter.analyze(target, final_analysis=True)
+    assert target.has_directive("matched")
+
+
+@pytest.mark.unit
+def test_tree_condition_produces_observable_value_match():
+    """Matches when a produced observable's value matches the value regex."""
+    root, target, module_path = _build_email_tree(from_value="hr@bv.com")
+    adapter = _create_analyzer_with_rules(
+        root, _produces_rule(module_path, {"type": "email_from", "value": r"(?i)@bv\.com>?$"}))
+    adapter.execute_analysis(target)
+    adapter.analyze(target, final_analysis=True)
+    assert target.has_directive("matched")
+
+
+@pytest.mark.unit
+def test_tree_condition_produces_observable_value_no_match():
+    """Does not match when no produced observable's value matches the value regex."""
+    root, target, module_path = _build_email_tree(from_value="attacker@evil.com")
+    adapter = _create_analyzer_with_rules(
+        root, _produces_rule(module_path, {"type": "email_from", "value": r"(?i)@bv\.com>?$"}))
+    adapter.execute_analysis(target)
+    adapter.analyze(target, final_analysis=True)
+    assert not target.has_directive("matched")
+
+
+@pytest.mark.unit
+def test_tree_condition_produces_observable_negate_absence():
+    """Negated produces_observable matches when the analysis produced no such observable."""
+    root, target, module_path = _build_email_tree(produce_message_id=False)
+    adapter = _create_analyzer_with_rules(
+        root, _produces_rule(module_path, {"type": "message_id"}, negate=True))
+    adapter.execute_analysis(target)
+    adapter.analyze(target, final_analysis=True)
+    assert target.has_directive("matched")
+
+
+@pytest.mark.unit
+def test_tree_condition_produces_observable_negate_present():
+    """Negated produces_observable does NOT match when the analysis did produce the observable."""
+    root, target, module_path = _build_email_tree(produce_message_id=True)
+    adapter = _create_analyzer_with_rules(
+        root, _produces_rule(module_path, {"type": "message_id"}, negate=True))
+    adapter.execute_analysis(target)
+    adapter.analyze(target, final_analysis=True)
+    assert not target.has_directive("matched")
+
+
+@pytest.mark.unit
+def test_tree_condition_produces_observable_malformed_message_id():
+    """Negating a well-formed message_id (value regex) still matches a malformed one."""
+    root, target, module_path = _build_email_tree(produce_message_id=True, message_id_value="unknown")
+    adapter = _create_analyzer_with_rules(
+        root, _produces_rule(module_path, {"type": "message_id", "value": r"<.+@.+>$"}, negate=True))
+    adapter.execute_analysis(target)
+    adapter.analyze(target, final_analysis=True)
+    assert target.has_directive("matched")
+
+
+@pytest.mark.unit
+def test_tree_condition_produces_observable_subtype_aware():
+    """produces_observable is subtype-aware: type email_address matches a produced email_from."""
+    from saq.observables.type_hierarchy import get_type_hierarchy
+    if not get_type_hierarchy().is_subtype("email_from", "email_address"):
+        pytest.skip("email_from -> email_address not loaded in this environment")
+
+    # parent type matches the subtype observable
+    root, target, module_path = _build_email_tree()
+    adapter = _create_analyzer_with_rules(root, _produces_rule(module_path, {"type": "email_address"}))
+    adapter.execute_analysis(target)
+    adapter.analyze(target, final_analysis=True)
+    assert target.has_directive("matched")
+
+    # a sibling subtype (email_to) of the parent does NOT match the produced email_from
+    root2, target2, module_path2 = _build_email_tree(from_value="hr@bv.com")
+    adapter2 = _create_analyzer_with_rules(
+        root2, _produces_rule(module_path2, {"type": "email_from", "value": r"(?i)^robertsd@"}))
+    adapter2.execute_analysis(target2)
+    adapter2.analyze(target2, final_analysis=True)
+    # robertsd is the email_to value, not email_from -> no email_from matches that value
+    assert not target2.has_directive("matched")
+
+
+@pytest.mark.unit
+def test_parse_produces_observable_invalid_value_regex(caplog):
+    """Invalid value regex in produces_observable should skip the rule with a warning."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "bad produces_observable regex",
+        "conditions": {
+            "tree_conditions": [{
+                "analysis_type": "test:TestAnalysis",
+                "produces_observable": {"type": "message_id", "value": "[bad("},
+            }],
+        },
+        "actions": {"add_directives": ["should_not_appear"]},
+    }]
+    with caplog.at_level(logging.WARNING):
+        adapter = _create_analyzer_with_rules(root, rules)
+        adapter.execute_analysis(observable)
+        result = adapter.analyze(observable, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert not observable.has_directive("should_not_appear")
+    assert any("invalid" in msg.lower() for msg in [r.message for r in caplog.records])
+
+
+@pytest.mark.unit
+def test_parse_produces_observable_missing_type(caplog):
+    """produces_observable without a 'type' should skip the rule with a warning."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "produces_observable missing type",
+        "conditions": {
+            "tree_conditions": [{
+                "analysis_type": "test:TestAnalysis",
+                "produces_observable": {"value": r"<.+@.+>$"},
+            }],
+        },
+        "actions": {"add_directives": ["should_not_appear"]},
+    }]
+    with caplog.at_level(logging.WARNING):
+        adapter = _create_analyzer_with_rules(root, rules)
+        adapter.execute_analysis(observable)
+        result = adapter.analyze(observable, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert not observable.has_directive("should_not_appear")
+    assert any("produces_observable" in r.message for r in caplog.records)
 
 
 @pytest.mark.unit
