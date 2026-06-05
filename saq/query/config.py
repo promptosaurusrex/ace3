@@ -39,9 +39,7 @@ class SummaryDetailConfig(BaseModel):
     required_fields: Optional[list[str]] = Field(
         default=None,
         description="Field names that must be present AND non-empty for an event to contribute "
-                    "to this summary detail. Empty values (None, '', [], {}) count as missing, "
-                    "so the pane/row is suppressed. Uses key lookup (literal event[name]), not "
-                    "dotted traversal.",
+                    "to this summary detail.",
     )
 
     @field_validator("format")
