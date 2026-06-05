@@ -87,23 +87,7 @@ def _load_details_for_match(analysis: Analysis, details_cache: Optional[dict]) -
     """Return an analysis's details for ``details_match``, loading from disk at most
     once per root analysis.
 
-    ``Analysis.load_details()`` re-reads the details file and re-parses the JSON on
-    every call (no in-memory short-circuit), and the engine flushes details
-    (``analysis.details = {}``) after nearly every module execution. Because the
-    observable modifier returns INCOMPLETE and re-evaluates every candidate
-    observable on each final-analysis re-sweep, the same EmailAnalysis /
-    RdapAnalysis details were otherwise being re-read from disk dozens of times per
-    root. This caches the loaded details for the duration of one root.
-
-    ``details_cache`` maps ``external_details_path -> (details_size, details)`` (or
-    is None, which preserves the original load-every-time behavior for callers/tests
-    that don't supply a cache). Invalidation is by ``details_size``: ``save()``
-    refreshes it on every write, so a deferred analysis that re-saves with new
-    content (e.g. RdapAnalysis filling in age_created_in_days on a later pass) gets a
-    new size, misses the cache, and is reloaded. On a cache hit we deliberately do
-    NOT call load_details(), so ``analysis.details`` stays flushed and the engine's
-    persistence/memory state is untouched -- the returned dict is passed straight to
-    _check_details and ``analysis.details`` is never relied on after this call.
+    We use a cache for this to avoid constant reloading.
     """
     path = analysis.external_details_path
     if details_cache is not None and path is not None:
@@ -449,8 +433,6 @@ class ObservableModifierAnalyzer(AnalysisModule):
         self._rule_eval_stats: dict[str, dict[str, dict]] = {}
         # per-root analysis-details cache for details_match conditions.
         # outer key = root.uuid, inner = dict[external_details_path -> (details_size, details)].
-        # Loaded once per root and popped in execute_post_analysis. See
-        # _load_details_for_match for the load-once / size-invalidation rationale.
         self._details_cache: dict[str, dict] = {}
 
     @classmethod
