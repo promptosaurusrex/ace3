@@ -468,7 +468,7 @@ def process_grouped_summary_detail(
 
         if len(lines) >= sd_config.limit:
             if not limit_warned:
-                logging.warning(
+                logging.error(
                     "summary detail limit (%s) reached for definition content=%s",
                     sd_config.limit, sd_config.content,
                 )

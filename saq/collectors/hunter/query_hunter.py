@@ -630,7 +630,7 @@ class QueryHunt(Hunt):
                     strict=(sd_config.required_fields is None),
                 )
             except UndefinedError:
-                logging.warning(
+                logging.error(
                     "grouped jinja summary detail skipped (missing field) for content=%s in hunt %s",
                     sd_config.content, self.name, exc_info=True,
                 )
