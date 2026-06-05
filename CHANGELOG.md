@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.60] - 2026-06-05
+
+- [fix issue with create_file_path](https://github.com/ACE-Collective/ace3/pull/281)
+- [catch correct exception type](https://github.com/ACE-Collective/ace3/pull/282)
+- [Adds sandbox_force directive](https://github.com/ACE-Collective/ace3/pull/283)
+- [Moves phishkit directive checks into custom_requirement](https://github.com/ACE-Collective/ace3/pull/284)
+- [Fixes race condition with descendants scope](https://github.com/ACE-Collective/ace3/pull/285)
+- [Properly render HTML email body fragments](https://github.com/ACE-Collective/ace3/pull/286)
+- [Only add valid file_location observables](https://github.com/ACE-Collective/ace3/pull/287)
+- [Adds Yara enabled and queue meta parameters](https://github.com/ACE-Collective/ace3/pull/288)
+- [Caches analysis details for observable modifier rules](https://github.com/ACE-Collective/ace3/pull/290)
+- [Adds type=image yara meta type tag](https://github.com/ACE-Collective/ace3/pull/291)
+- [Adds produces_observable to observable modifier rules](https://github.com/ACE-Collective/ace3/pull/292)
+- [Updates summary details required_fields to check for empty fields](https://github.com/ACE-Collective/ace3/pull/293)
+- [Catches Jinja UndefinedError so alerts still happen](https://github.com/ACE-Collective/ace3/pull/294)
+- [Supports observable_mapping of lists of dicts](https://github.com/ACE-Collective/ace3/pull/295)
+- [Adds ability for validate-hunt to save correlated query results](https://github.com/ACE-Collective/ace3/pull/296)
+
 ## [3.0.59] - 2026-05-27
 
 - [move analysis cache to separate database](https://github.com/ACE-Collective/ace3/pull/279)
