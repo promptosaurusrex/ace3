@@ -124,6 +124,21 @@ class TreeCondition:
         return not result if self.negate else result
 
     def _evaluate_inner(self, observable: Observable, root: RootAnalysis, details_cache: Optional[dict] = None) -> bool:
+        # NOTE there is special logic here to deal with observables that don't
+        # have an analysis of their own yet since the rest of the logic is
+        # "analysis-centric traversal".
+        if self.scope == "descendants" and self.observable_match and not self.analysis_type and not self.details_match:
+            matches = 0
+            for obs in _get_descendant_observables(observable):
+                if not self._check_observable(obs):
+                    continue
+                matches += 1
+                if self.match_count is None:
+                    return True
+            if self.match_count is None:
+                return False
+            return matches == self.match_count
+
         if self.scope == "ancestors":
             analyses = _get_ancestor_analyses(observable)
         elif self.scope == "descendants":
@@ -252,6 +267,22 @@ def _get_descendant_analyses(observable: Observable) -> Generator[Analysis, None
         yield analysis
         for child in analysis.observables:
             stack.extend(child.all_analysis)
+
+
+def _get_descendant_observables(observable: Observable) -> Generator[Observable, None, None]:
+    """Yield all observables that are descendants of this observable."""
+    visited = set()
+    stack = []
+    for self_analysis in observable.all_analysis:
+        stack.extend(self_analysis.observables)
+    while stack:
+        obs = stack.pop()
+        if id(obs) in visited:
+            continue
+        visited.add(id(obs))
+        yield obs
+        for analysis in obs.all_analysis:
+            stack.extend(analysis.observables)
 
 
 @dataclass
