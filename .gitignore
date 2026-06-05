@@ -174,7 +174,6 @@ htmlcov/
 
 .saq_alerts/
 notes/
-docs/
 
 # vscode
 .vscode/
@@ -190,3 +189,4 @@ integrations/
 # local area for hosting local development/testing stuff
 workspace/
 ssh/
+local/

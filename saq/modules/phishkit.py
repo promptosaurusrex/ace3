@@ -263,8 +263,15 @@ class PhishkitAnalyzer(AnalysisModule):
         return [F_URL, F_FILE]
 
     def custom_requirement(self, observable: Observable) -> bool:
-        """Custom requirement for phishkit analysis."""
+        """Custom requirement for phishkit analysis.
+
+        Note that the crawl/render directive gating lives here on purpose to
+        allow observables to gain the crawl/render directives by other modules.
+        """
         if observable.type == F_URL:
+            # urls require crawl directives
+            if not observable.has_directive(DIRECTIVE_CRAWL):
+                return False
             url_lc = observable.value.lower()
             for pattern in self._deny_crawl_patterns:
                 if pattern in url_lc:
@@ -275,6 +282,9 @@ class PhishkitAnalyzer(AnalysisModule):
                     return False
             return True
         elif observable.type == F_FILE:
+            # files require render directives
+            if not observable.has_directive(DIRECTIVE_RENDER):
+                return False
             # phishkit file rendering only meaningful in correlation mode
             return self.get_root().analysis_mode == ANALYSIS_MODE_CORRELATION
         else:
@@ -491,12 +501,12 @@ class PhishkitAnalyzer(AnalysisModule):
         return AnalysisExecutionResult.COMPLETED
 
     def execute_analysis(self, observable) -> AnalysisExecutionResult:
+        # The crawl (URL) and render (FILE) directive gates live in
+        # custom_requirement so we never record a permanent "no analysis"
+        # sentinel before the directive lands. See custom_requirement above.
+
         # if the observable is a file, we need to check if the file type is enabled for scanning
         if observable.type == F_FILE:
-            if not observable.has_directive(DIRECTIVE_RENDER):
-                logging.debug(f"skipping file {observable} - render directive not found")
-                return AnalysisExecutionResult.COMPLETED
-
             # by default we do not accept files for phishkit analysis
             file_accepted = False
 
@@ -517,12 +527,6 @@ class PhishkitAnalyzer(AnalysisModule):
 
             if not file_accepted:
                 logging.debug(f"file {observable} not accepted for phishkit analysis")
-                return AnalysisExecutionResult.COMPLETED
-
-        if observable.type == F_URL:
-            # urls require crawl directives
-            if not observable.has_directive(DIRECTIVE_CRAWL):
-                logging.debug(f"skipping URL {observable} - crawl directive not found")
                 return AnalysisExecutionResult.COMPLETED
 
         analysis = self.create_analysis(observable)

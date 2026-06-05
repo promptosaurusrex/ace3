@@ -293,4 +293,7 @@ class FileTypeAnalyzer(AnalysisModule):
         if analysis.is_email_file:
             _file.add_tag('email')
 
+        if analysis.details['mime'].startswith('image/'):
+            _file.add_yara_meta("type", "image")
+
         return AnalysisExecutionResult.COMPLETED

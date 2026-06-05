@@ -83,12 +83,35 @@ def get_nested_value(data, dot_path: str):
     return candidates if has_fanout else candidates[0]
 
 
+def _load_details_for_match(analysis: Analysis, details_cache: Optional[dict]) -> dict:
+    """Return an analysis's details for ``details_match``, loading from disk at most
+    once per root analysis.
+
+    We use a cache for this to avoid constant reloading.
+    """
+    path = analysis.external_details_path
+    if details_cache is not None and path is not None:
+        entry = details_cache.get(path)
+        if entry is not None and entry[0] == analysis.details_size:
+            return entry[1]
+    analysis.load_details()
+    if details_cache is not None and path is not None and analysis.details:
+        details_cache[path] = (analysis.details_size, analysis.details)
+    return analysis.details
+
+
 @dataclass
 class TreeCondition:
     analysis_type: str
     scope: str = "ancestors"  # "ancestors", "descendants", "global", "self", "parent", or "siblings"
     details_match: dict[str, re.Pattern] = field(default_factory=dict)
     observable_match: dict[str, re.Pattern] = field(default_factory=dict)
+    # require the matched analysis to have PRODUCED an observable whose type is a
+    # subtype of produces_observable_type and (if set) whose value matches
+    # produces_observable_value. Unlike observable_match (which inspects the
+    # analysis's own observable), this inspects analysis.observables.
+    produces_observable_type: Optional[str] = None
+    produces_observable_value: Optional[re.Pattern] = None
     negate: bool = False
     # if set, require exactly this many matching analyses. None means "at least one"
     # (the historical default). Used to scope rules to top-level contexts — e.g.
@@ -96,11 +119,11 @@ class TreeCondition:
     # contains exactly one instance of the analysis type.
     match_count: Optional[int] = None
 
-    def evaluate(self, observable: Observable, root: RootAnalysis) -> bool:
-        result = self._evaluate_inner(observable, root)
+    def evaluate(self, observable: Observable, root: RootAnalysis, details_cache: Optional[dict] = None) -> bool:
+        result = self._evaluate_inner(observable, root, details_cache)
         return not result if self.negate else result
 
-    def _evaluate_inner(self, observable: Observable, root: RootAnalysis) -> bool:
+    def _evaluate_inner(self, observable: Observable, root: RootAnalysis, details_cache: Optional[dict] = None) -> bool:
         # NOTE there is special logic here to deal with observables that don't
         # have an analysis of their own yet since the rest of the logic is
         # "analysis-centric traversal".
@@ -134,11 +157,14 @@ class TreeCondition:
             if self.analysis_type and analysis.module_path != self.analysis_type:
                 continue
             if self.details_match:
-                analysis.load_details()
-                if not self._check_details(analysis.details):
+                details = _load_details_for_match(analysis, details_cache)
+                if not self._check_details(details):
                     continue
             if self.observable_match:
                 if not self._check_observable(analysis.observable):
+                    continue
+            if self.produces_observable_type is not None:
+                if not self._check_produces_observable(analysis):
                     continue
             matches += 1
             if self.match_count is None:
@@ -157,6 +183,19 @@ class TreeCondition:
             if not pattern.search(str(value)):
                 return False
         return True
+
+    def _check_produces_observable(self, analysis) -> bool:
+        """True if the analysis produced an observable whose type is a subtype of
+        produces_observable_type and (if set) whose value matches produces_observable_value."""
+        hierarchy = get_type_hierarchy()
+        for produced in analysis.observables:
+            if not hierarchy.is_subtype(produced.type, self.produces_observable_type):
+                continue
+            if self.produces_observable_value is not None:
+                if not self.produces_observable_value.search(str(produced.value)):
+                    continue
+            return True
+        return False
 
     def _check_details(self, details: dict) -> bool:
         if not details:
@@ -289,7 +328,7 @@ class RuleConditions:
                 return False
         return True
 
-    def evaluate(self, observable: Observable, root: RootAnalysis) -> bool:
+    def evaluate(self, observable: Observable, root: RootAnalysis, details_cache: Optional[dict] = None) -> bool:
         # Cheapest checks first for short-circuit efficiency
 
         # Observable type check (subtype-aware: a rule targeting "email_address"
@@ -352,7 +391,7 @@ class RuleConditions:
 
         # Tree conditions (most expensive — disk I/O)
         for tc in self.tree_conditions:
-            if not tc.evaluate(observable, root):
+            if not tc.evaluate(observable, root, details_cache):
                 return False
 
         return True
@@ -445,6 +484,9 @@ class ObservableModifierAnalyzer(AnalysisModule):
         # outer key = root.uuid, inner key = rule.uuid, value =
         # {"name": str, "count": int, "total_seconds": float, "max_seconds": float}
         self._rule_eval_stats: dict[str, dict[str, dict]] = {}
+        # per-root analysis-details cache for details_match conditions.
+        # outer key = root.uuid, inner = dict[external_details_path -> (details_size, details)].
+        self._details_cache: dict[str, dict] = {}
 
     @classmethod
     def get_config_class(cls) -> Type[AnalysisModuleConfig]:
@@ -609,6 +651,26 @@ class ObservableModifierAnalyzer(AnalysisModule):
                 )
                 return None
 
+        produces_observable_raw = tc_data.get("produces_observable") or {}
+        produces_observable_type = None
+        produces_observable_value = None
+        if produces_observable_raw:
+            produces_observable_type = produces_observable_raw.get("type")
+            if not produces_observable_type:
+                logging.warning(
+                    f"produces_observable missing required 'type' in tree_condition for rule '{rule_name}'"
+                )
+                return None
+            raw_value = produces_observable_raw.get("value")
+            if raw_value is not None:
+                try:
+                    produces_observable_value = re.compile(str(raw_value))
+                except re.error as e:
+                    logging.warning(
+                        f"invalid produces_observable value regex '{raw_value}' in rule '{rule_name}': {e}"
+                    )
+                    return None
+
         negate = bool(tc_data.get("negate", False))
 
         match_count = tc_data.get("match_count")
@@ -631,6 +693,8 @@ class ObservableModifierAnalyzer(AnalysisModule):
             scope=scope,
             details_match=compiled_details_match,
             observable_match=compiled_observable_match,
+            produces_observable_type=produces_observable_type,
+            produces_observable_value=produces_observable_value,
             negate=negate,
             match_count=match_count,
         )
@@ -660,7 +724,9 @@ class ObservableModifierAnalyzer(AnalysisModule):
         """
         start = time.perf_counter()
         try:
-            return rule.conditions.evaluate(observable, root)
+            return rule.conditions.evaluate(
+                observable, root, details_cache=self._details_cache.setdefault(root.uuid, {})
+            )
         finally:
             elapsed = time.perf_counter() - start
             try:
@@ -840,6 +906,8 @@ class ObservableModifierAnalyzer(AnalysisModule):
         """
         try:
             root = self.get_root()
+            # drop the root's details cache so it stays bounded to one root
+            self._details_cache.pop(root.uuid, None)
             stats = self._rule_eval_stats.pop(root.uuid, {})
             for rule_uuid, s in stats.items():
                 count = s["count"]

@@ -25,12 +25,12 @@ class DetectionManager:
         """Returns True if this object has at least one detection point, False otherwise."""
         return len(self._detections) != 0
 
-    def add_detection_point(self, description: str, details=None) -> DetectionPoint:
+    def add_detection_point(self, description: str, details=None, queue=None) -> DetectionPoint:
         """Adds the given detection point to this object."""
         assert isinstance(description, str)
         assert description
 
-        detection = DetectionPoint(description, details)
+        detection = DetectionPoint(description, details, queue)
 
         if detection in self._detections:
             return detection

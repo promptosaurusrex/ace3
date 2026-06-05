@@ -1,6 +1,7 @@
 import email
 import hashlib
 import logging
+import mimetypes
 import os
 import re
 import shutil
@@ -399,7 +400,7 @@ class EmailAnalysis(Analysis):
     @property
     def body_html(self) -> str:
         body_observable = next(
-            (o for o in self.observables if o.type == F_FILE and o.file_name.endswith('unknown_text_html_000')), None)
+            (o for o in self.observables if o.type == F_FILE and 'unknown_text_html_000' in o.file_name), None)
 
         if body_observable:
             path = body_observable.full_path
@@ -412,7 +413,7 @@ class EmailAnalysis(Analysis):
     @property
     def body_text(self) -> str:
         body_observable = next(
-            (o for o in self.observables if o.type == F_FILE and o.file_name.endswith('unknown_text_plain_000')), None)
+            (o for o in self.observables if o.type == F_FILE and 'unknown_text_plain_000' in o.file_name), None)
 
         if body_observable:
             path = body_observable.full_path
@@ -492,8 +493,8 @@ class EmailAnalysis(Analysis):
         """Returns the list of the attachment filenames."""
         return [
             attachment.file_path for attachment in self.attachments
-            if not attachment.file_path.endswith('unknown_text_plain_000')
-            and not attachment.file_path.endswith('unknown_text_html_000')
+            if 'unknown_text_plain_000' not in attachment.file_path
+            and 'unknown_text_html_000' not in attachment.file_path
             and not attachment.file_path.endswith('rfc822.headers')
         ]
 
@@ -1044,6 +1045,10 @@ class EmailAnalyzer(AnalysisModule):
 
                 file_name = None
 
+                # for unnamed inline parts derive a real extension from the
+                # part's *declared* content type
+                unknown_ext = mimetypes.guess_extension(target.get_content_type()) or ''
+
                 # do not extract the target email
                 if target.get_content_type() == 'message/rfc822':
                     # the actual message-id will be in one of the payloads of the email
@@ -1074,8 +1079,8 @@ class EmailAnalyzer(AnalysisModule):
                     file_name = re.sub(r'[\r\n]', '', file_name)
 
                 else:
-                    file_name = '{}.unknown_{}_{}_000'.format(_file.file_path, target.get_content_maintype(), 
-                                                                           target.get_content_subtype())
+                    file_name = '{}.unknown_{}_{}_000{}'.format(_file.file_path, target.get_content_maintype(),
+                                                                           target.get_content_subtype(), unknown_ext)
 
                 # sanitize the file name
                 sanitized_file_name = re.sub(r'_+', '_', re.sub(r'\.\.', '_', re.sub(r'/', '_', file_name)))
@@ -1084,8 +1089,8 @@ class EmailAnalyzer(AnalysisModule):
                     file_name = sanitized_file_name
 
                 if not file_name:
-                    file_name = '{}.unknown_{}_{}_000'.format(_file.file_path, target.get_content_maintype(), 
-                                                                           target.get_content_subtype())
+                    file_name = '{}.unknown_{}_{}_000{}'.format(_file.file_path, target.get_content_maintype(),
+                                                                           target.get_content_subtype(), unknown_ext)
 
                 # make sure the file name isn't too long
                 if len(file_name) > 120:

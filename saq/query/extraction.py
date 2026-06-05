@@ -27,6 +27,18 @@ from saq.query.template_rendering import (
 )
 
 
+def _is_blank_value(value) -> bool:
+    """A field counts as absent for mapping resolution if it is None, an empty/whitespace
+    string, or an empty collection — matching resolve_fields' 'present and non-null' contract."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, dict)):
+        return len(value) == 0
+    return False
+
+
 def _interpolate_strict(template: str, event: dict) -> list[str]:
     """Strict-mode multi-render that rejects the whole template on any missing field.
 
@@ -89,6 +101,11 @@ def interpret_event_value(observable_mapping: ObservableMapping, event: dict, fi
     else:
         result = observed_value
 
+    # cap how many observables this mapping emits from a list-valued field, a
+    # '*' wildcard path, or a Jinja value template that expanded to many values
+    if observable_mapping.limit is not None:
+        result = result[: observable_mapping.limit]
+
     # if any of the results are bytes, convert them into strings using utf-8
     return [_.decode("utf-8", errors="ignore") if isinstance(_, bytes) else str(_) for _ in result]
 
@@ -131,8 +148,8 @@ def extract_observables_from_event(
 
         def _is_field_present(field_name, _event=event, _mapping=mapping):
             try:
-                success, _ = extract_event_value(_event, _mapping.field_lookup_type, field_name)
-                return success
+                success, value = extract_event_value(_event, _mapping.field_lookup_type, field_name)
+                return success and not _is_blank_value(value)
             except PathAccessError:
                 return False
 
@@ -247,11 +264,31 @@ def _process_mapping_values(
         ))
 
 
+def _required_value_is_empty(value) -> bool:
+    """A required field counts as missing when its value is blank/empty.
+
+    None, empty/whitespace-only strings, and empty list/dict/tuple/set are
+    treated as empty. Numeric 0 and boolean False are real values (present).
+    """
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    if isinstance(value, (list, dict, tuple, set)):
+        return len(value) == 0
+    return False
+
+
 def event_has_required_fields(event: dict, required_fields: list[str]) -> bool:
-    """Check if the event has all required fields present."""
+    """Check that each required field is present AND non-empty.
+
+    A field that is absent, None, an empty string, or an empty
+    list/dict/tuple/set does not satisfy the requirement — the event is
+    skipped. Numeric 0 / boolean False count as present.
+    """
     for field_spec in required_fields:
-        success, _ = extract_event_value(event, FIELD_LOOKUP_TYPE_KEY, field_spec)
-        if not success:
+        success, value = extract_event_value(event, FIELD_LOOKUP_TYPE_KEY, field_spec)
+        if not success or _required_value_is_empty(value):
             return False
     return True
 
@@ -411,11 +448,20 @@ def process_grouped_summary_detail(
         if not events:
             return
 
-        content = render_jinja_template(
-            sd_config.content,
-            {"events": events},
-            strict=(sd_config.required_fields is None),
-        )
+        # A missing field under strict mode raises UndefinedError. Mirror render_sd_content
+        # and skip just this block (rather than letting the error kill the whole analysis).
+        try:
+            content = render_jinja_template(
+                sd_config.content,
+                {"events": events},
+                strict=(sd_config.required_fields is None),
+            )
+        except UndefinedError:
+            logging.warning(
+                "grouped jinja summary detail skipped (missing field) for content=%s",
+                sd_config.content, exc_info=True,
+            )
+            return
         if content is None or not content.strip():
             return
 
@@ -459,7 +505,7 @@ def process_grouped_summary_detail(
 
         if len(lines) >= sd_config.limit:
             if not limit_warned:
-                logging.warning(
+                logging.error(
                     "summary detail limit (%s) reached for definition content=%s",
                     sd_config.limit, sd_config.content,
                 )

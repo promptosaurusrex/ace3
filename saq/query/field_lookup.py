@@ -14,15 +14,21 @@ Two lookup modes:
 - :data:`FIELD_LOOKUP_TYPE_DOT` — glom dotted-path traversal. Use for
   nested-dict events where ``event["device"]["hostname"]`` is the access
   pattern.
+
+A dotted path may include a ``*`` wildcard segment to iterate every item of a
+list field and pluck a sub-key from each — e.g. ``logs.*.cid`` returns the
+``cid`` of every dict in ``event["logs"]``. List items missing the trailing
+sub-key are silently skipped; an empty list yields ``[]``; a missing top-level
+list key is treated as field-not-present. ``*`` only applies to ``dot`` lookups.
 """
 
-from typing import List
-
-from glom import Path, PathAccessError, glom
+from glom import Coalesce, Path, PathAccessError, SKIP, T, glom
 
 
 FIELD_LOOKUP_TYPE_KEY = "key"
 FIELD_LOOKUP_TYPE_DOT = "dot"
+
+WILDCARD = "*"
 
 
 _MISSING = object()
@@ -40,31 +46,55 @@ def extract_event_value(event: dict, lookup_type: str, field_path: str) -> tuple
         return (True, resolved_value)
 
     # FIELD_LOOKUP_TYPE_DOT
-    components = _build_path_components(field_path)
-    if components is None:
+    spec = _build_glom_spec(field_path)
+    if spec is None:
         return (False, None)
     try:
-        return (True, glom(event, Path(*components)))
+        return (True, glom(event, spec))
     except PathAccessError:
         return (False, None)
 
 
-def _build_path_components(path: str) -> List[object] | None:
-    """Split ``path`` on ``.`` and coerce integer-looking segments to int indices.
+def _coerce(part: str) -> object:
+    """Coerce an integer-looking path segment to an int index, else leave as a key."""
+    try:
+        return int(part)
+    except ValueError:
+        return part
+
+
+def _build_glom_spec(path: str):
+    """Build a glom spec from a dotted ``path``, supporting a ``*`` wildcard segment.
 
     Returns ``None`` if any segment is empty or whitespace-only (so empty paths
-    and stray double-dots are rejected).
+    and stray double-dots are rejected). A path without ``*`` produces a flat
+    ``Path`` (backward compatible). A ``*`` segment becomes a branch spec that
+    iterates the list and resolves the remaining path against each item, dropping
+    items where it doesn't resolve.
     """
-    components: List[object] = []
+    parts: list[str] = []
     for raw_part in path.split("."):
         part = raw_part.strip()
         if not part:
             return None
-        try:
-            components.append(int(part))
-        except ValueError:
-            components.append(part)
-    return components
+        parts.append(part)
+    return _spec_from_parts(parts)
+
+
+def _spec_from_parts(parts: list[str]):
+    """Recursively turn path segments into a glom spec, branching at each ``*``."""
+    if WILDCARD not in parts:
+        return Path(*[_coerce(p) for p in parts])
+
+    idx = parts.index(WILDCARD)
+    before, after = parts[:idx], parts[idx + 1:]
+    inner = _spec_from_parts(after) if after else T
+    # Coalesce(..., default=SKIP) drops list items that don't resolve the inner
+    # spec instead of raising, so a sub-key absent from some items is non-fatal.
+    branch = [Coalesce(inner, default=SKIP)]
+    if before:
+        return (Path(*[_coerce(p) for p in before]), branch)
+    return branch
 
 
 __all__ = [

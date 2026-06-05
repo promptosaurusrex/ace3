@@ -11,7 +11,7 @@ from collections import UserList
 from typing import List, Union
 from urlfinderlib import find_urls, is_url
 
-from saq.constants import DIRECTIVE_NO_SANDBOX, DIRECTIVE_SANDBOX, F_FILE, F_MD5, F_SHA256
+from saq.constants import DIRECTIVE_NO_SANDBOX, DIRECTIVE_SANDBOX, DIRECTIVE_SANDBOX_FORCE, F_FILE, F_MD5, F_SHA256
 from saq.modules import AnalysisModule
 from saq.proxy import proxies
 
@@ -153,6 +153,18 @@ class SandboxAnalysisModule(AnalysisModule):
 
         logging.info(f"{file_path} is not a supported file type for {type(self)} analysis")
         return False
+
+    def should_sandbox_file(self, observable, file_path):
+        """Returns True if the given file should be submitted to a sandbox.
+
+        A file qualifies if it is a recognized sandboxable type, or if it has been
+        explicitly forced via DIRECTIVE_SANDBOX_FORCE (e.g. an analyst-initiated upload),
+        which bypasses the file-type filter so normally-skipped types (HTML, JS, etc.)
+        can be sandboxed on demand."""
+        if observable.has_directive(DIRECTIVE_SANDBOX_FORCE):
+            return True
+
+        return self.is_sandboxable_file(file_path)
 
     def hash_has_been_analyzed(self, target_type: str, target_value: str) -> bool:
         """Checks if the file for the given hash has already been analyzed using the current sandbox analysis module.

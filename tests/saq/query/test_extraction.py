@@ -1,6 +1,6 @@
 import pytest
 
-from saq.constants import F_FILE, F_HOSTNAME, F_IPV4, SUMMARY_DETAIL_FORMAT_JINJA
+from saq.constants import F_FILE, F_FILE_LOCATION, F_HOSTNAME, F_IPV4, SUMMARY_DETAIL_FORMAT_JINJA
 from saq.observables.mapping import (
     ObservableMapping,
     RelationshipMapping,
@@ -71,6 +71,116 @@ def test_extract_observables_dot_lookup():
 
     assert len(extracted) == 1
     assert extracted[0].observable.value == "alice.example.com"
+
+
+@pytest.mark.unit
+def test_interpret_event_value_wildcard_plucks_each_item():
+    """A '*' wildcard segment plucks the sub-key from every item in a list field."""
+    mapping = ObservableMapping(
+        fields=["logs.*.cid"],
+        field_lookup_type="dot",
+        type=F_HOSTNAME,
+    )
+    event = {"logs": [{"cid": "a"}, {"cid": "b"}, {"cid": "c"}]}
+    result = interpret_event_value(mapping, event, field_override="logs.*.cid")
+    assert result == ["a", "b", "c"]
+
+
+@pytest.mark.unit
+def test_interpret_event_value_wildcard_with_limit():
+    """limit caps how many observables a wildcard expansion emits."""
+    mapping = ObservableMapping(
+        fields=["logs.*.cid"],
+        field_lookup_type="dot",
+        type=F_HOSTNAME,
+        limit=2,
+    )
+    event = {"logs": [{"cid": "a"}, {"cid": "b"}, {"cid": "c"}, {"cid": "d"}, {"cid": "e"}]}
+    result = interpret_event_value(mapping, event, field_override="logs.*.cid")
+    assert result == ["a", "b"]
+
+
+@pytest.mark.unit
+def test_interpret_event_value_wildcard_skips_items_missing_subkey():
+    """Items missing the trailing sub-key are dropped, the rest are kept."""
+    mapping = ObservableMapping(
+        fields=["logs.*.cid"],
+        field_lookup_type="dot",
+        type=F_HOSTNAME,
+    )
+    event = {"logs": [{"cid": "a"}, {"other": "x"}, {"cid": "c"}]}
+    result = interpret_event_value(mapping, event, field_override="logs.*.cid")
+    assert result == ["a", "c"]
+
+
+@pytest.mark.unit
+def test_interpret_event_value_wildcard_empty_list():
+    """A wildcard over an empty list yields no values (and does not raise)."""
+    mapping = ObservableMapping(
+        fields=["logs.*.cid"],
+        field_lookup_type="dot",
+        type=F_HOSTNAME,
+    )
+    event = {"logs": []}
+    result = interpret_event_value(mapping, event, field_override="logs.*.cid")
+    assert result == []
+
+
+@pytest.mark.unit
+def test_interpret_event_value_trailing_wildcard_returns_each_item():
+    """A trailing '*' returns each list item as-is."""
+    mapping = ObservableMapping(
+        fields=["ips.*"],
+        field_lookup_type="dot",
+        type=F_IPV4,
+    )
+    event = {"ips": ["1.1.1.1", "2.2.2.2"]}
+    result = interpret_event_value(mapping, event, field_override="ips.*")
+    assert result == ["1.1.1.1", "2.2.2.2"]
+
+
+@pytest.mark.unit
+def test_extract_observables_wildcard_creates_one_per_item():
+    """End-to-end: a wildcard mapping creates one observable per list item."""
+    mappings = [
+        ObservableMapping(
+            fields=["logs.*.ip"],
+            field_lookup_type="dot",
+            type=F_IPV4,
+            limit=2,
+        )
+    ]
+    event = {"logs": [{"ip": "1.1.1.1"}, {"ip": "2.2.2.2"}, {"ip": "3.3.3.3"}]}
+
+    extracted, _, _ = extract_observables_from_event(event, mappings)
+
+    assert [e.observable.value for e in extracted] == ["1.1.1.1", "2.2.2.2"]
+
+
+@pytest.mark.unit
+def test_extract_observables_wildcard_missing_top_key_skipped():
+    """A wildcard whose top-level list key is absent produces nothing (fields_mode=all)."""
+    mappings = [
+        ObservableMapping(
+            fields=["logs.*.ip"],
+            field_lookup_type="dot",
+            type=F_IPV4,
+        )
+    ]
+    event = {"unrelated": "value"}
+
+    extracted, _, _ = extract_observables_from_event(event, mappings)
+
+    assert extracted == []
+
+
+@pytest.mark.unit
+def test_interpret_event_value_limit_caps_list_valued_field():
+    """limit also caps a plain list-valued field (not just wildcards)."""
+    mapping = ObservableMapping(fields=["ips"], type=F_IPV4, limit=2)
+    event = {"ips": ["1.1.1.1", "2.2.2.2", "3.3.3.3"]}
+    result = interpret_event_value(mapping, event)
+    assert result == ["1.1.1.1", "2.2.2.2"]
 
 
 @pytest.mark.unit
@@ -280,6 +390,26 @@ def test_extract_observables_skips_unresolved_value():
     )
     assert len(extracted) == 1
     assert extracted[0].observable.value == "workstation.example.com"
+
+
+@pytest.mark.unit
+def test_extract_observables_skips_blank_field_in_value_template():
+    """A present-but-empty field in an ALL-mode value template skips the mapping (the
+    coalesce-to-"" case that produced 'HOST@' file_location observables)."""
+    mappings = [
+        ObservableMapping(fields=["hostname", "file_path"], type=F_FILE_LOCATION,
+                          value="{{ hostname }}@{{ file_path }}"),
+    ]
+    # file_path present but empty -> skipped
+    extracted, _, _ = extract_observables_from_event(
+        {"hostname": "PCN31337", "file_path": ""}, mappings)
+    assert len(extracted) == 0
+
+    # both present -> one valid observable
+    extracted, _, _ = extract_observables_from_event(
+        {"hostname": "PCN31337", "file_path": r"C:\users\lol.txt"}, mappings)
+    assert len(extracted) == 1
+    assert extracted[0].observable.value == r"PCN31337@C:\users\lol.txt"
 
 
 @pytest.mark.unit
@@ -591,6 +721,37 @@ def test_process_summary_details_jinja_missing_field_strict_skipped():
 
 
 @pytest.mark.unit
+def test_process_summary_details_grouped_jinja_missing_field_skipped():
+    """Grouped Jinja with a missing field under strict mode skips the block, does not raise.
+
+    Regression: previously the grouped-Jinja path did not catch UndefinedError, so a missing
+    dict key (e.g. an event lacking a referenced field) raised out of process_summary_details
+    and killed the whole hunt/alert instead of dropping just this summary detail.
+    """
+    configs = [
+        SummaryDetailConfig(
+            content="{% for e in events %}{{ e.always }}/{{ e.sometimes }} {% endfor %}",
+            format=SUMMARY_DETAIL_FORMAT_JINJA,
+            grouped=True,
+        ),
+    ]
+    # second event is missing 'sometimes' -> UndefinedError in strict mode
+    results = [
+        {"always": "a", "sometimes": "x"},
+        {"always": "b"},
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    # must not raise
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 0
+
+
+@pytest.mark.unit
 def test_process_summary_details_jinja_with_required_fields_permissive():
     """Test Jinja format with required_fields set — permissive mode renders missing as empty."""
     configs = [
@@ -730,6 +891,82 @@ def test_process_summary_details_required_fields_missing_skips():
 
     assert len(details) == 1
     assert details[0] == "10.0.0.2"
+
+
+@pytest.mark.unit
+def test_process_summary_details_required_fields_empty_value_skips():
+    """Test that a present-but-empty required field skips the event (empty list/str/dict)."""
+    configs = [
+        SummaryDetailConfig(
+            content="{{ name }}",
+            required_fields=["correlate"],
+        ),
+    ]
+    results = [
+        {"name": "empty-list", "correlate": []},       # present but empty -> skip
+        {"name": "empty-str", "correlate": ""},        # present but empty -> skip
+        {"name": "whitespace", "correlate": "   "},    # whitespace-only -> skip
+        {"name": "empty-dict", "correlate": {}},       # present but empty -> skip
+        {"name": "none", "correlate": None},           # None -> skip
+        {"name": "has-data", "correlate": [{"x": 1}]}, # non-empty -> keep
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert details == ["has-data"]
+
+
+@pytest.mark.unit
+def test_process_summary_details_required_fields_zero_and_false_are_present():
+    """Test that numeric 0 and boolean False count as present (real values, not empty)."""
+    configs = [
+        SummaryDetailConfig(
+            content="{{ name }}",
+            required_fields=["flag"],
+        ),
+    ]
+    results = [
+        {"name": "zero", "flag": 0},
+        {"name": "false", "flag": False},
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert details == ["zero", "false"]
+
+
+@pytest.mark.unit
+def test_process_summary_details_grouped_jinja_required_fields_all_empty_suppresses_pane():
+    """Test grouped + Jinja: when every event's required field is empty, no pane is emitted."""
+    configs = [
+        SummaryDetailConfig(
+            content="{% for event in events %}{{ event.host }}\n{% endfor %}",
+            format=SUMMARY_DETAIL_FORMAT_JINJA,
+            grouped=True,
+            required_fields=["correlate"],
+        ),
+    ]
+    results = [
+        {"host": "server1", "correlate": []},
+        {"host": "server2", "correlate": []},
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    # all events filtered out -> grouped Jinja returns early, no detail added
+    assert details == []
 
 
 @pytest.mark.unit

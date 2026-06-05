@@ -14,7 +14,10 @@ from saq.constants import (
     DIRECTIVE_OCR,
     DIRECTIVE_YARA_META_PREFIX,
     F_EMAIL_ADDRESS,
+    F_EMAIL_FROM,
+    F_EMAIL_TO,
     F_FQDN,
+    F_MESSAGE_ID,
     F_SIGNATURE_ID,
     F_URL,
     F_USER,
@@ -29,6 +32,7 @@ from saq.modules.util.observable_modifier import (
     RuleActions,
     RuleConditions,
     TreeCondition,
+    _load_details_for_match,
     get_nested_value,
 )
 from tests.saq.helpers import create_root_analysis
@@ -1175,6 +1179,185 @@ def test_tree_condition_ancestor_match():
     result = adapter.analyze(target_observable, final_analysis=True)
     assert result == AnalysisExecutionResult.INCOMPLETE
     assert target_observable.has_directive("extract_iocs")
+
+
+def _build_email_tree(produce_message_id=False, from_value="hr@bv.com", message_id_value="<abc@bv.com>"):
+    """Build root -> target url observable with a TestEmailAnalysis (scope self) that
+    produces typed observables (email_from, optionally message_id). Returns
+    (root, target_observable, module_path)."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    target = root.add_observable_by_spec(F_URL, "https://example.com/page.html")
+
+    class TestEmailAnalysis(Analysis):
+        pass
+
+    analysis = TestEmailAnalysis()
+    analysis.details = {}
+    analysis.details_modified = True
+    target.add_analysis(analysis)
+    analysis.add_observable_by_spec(F_EMAIL_FROM, from_value)
+    analysis.add_observable_by_spec(F_EMAIL_TO, "robertsd@bv.com")
+    if produce_message_id:
+        analysis.add_observable_by_spec(F_MESSAGE_ID, message_id_value)
+
+    module_path = f"{TestEmailAnalysis.__module__}:{TestEmailAnalysis.__name__}"
+    return root, target, module_path
+
+
+def _produces_rule(module_path, produces_observable, negate=False):
+    return [{
+        "name": "produces_observable test",
+        "conditions": {
+            "observable_types": ["url"],
+            "tree_conditions": [{
+                "analysis_type": module_path,
+                "scope": "self",
+                "negate": negate,
+                "produces_observable": produces_observable,
+            }],
+        },
+        "actions": {"add_directives": ["matched"]},
+    }]
+
+
+@pytest.mark.unit
+def test_tree_condition_produces_observable_positive():
+    """Matches when the analysis produced an observable of the given type (no value regex)."""
+    root, target, module_path = _build_email_tree()
+    adapter = _create_analyzer_with_rules(root, _produces_rule(module_path, {"type": "email_from"}))
+    adapter.execute_analysis(target)
+    adapter.analyze(target, final_analysis=True)
+    assert target.has_directive("matched")
+
+
+@pytest.mark.unit
+def test_tree_condition_produces_observable_value_match():
+    """Matches when a produced observable's value matches the value regex."""
+    root, target, module_path = _build_email_tree(from_value="hr@bv.com")
+    adapter = _create_analyzer_with_rules(
+        root, _produces_rule(module_path, {"type": "email_from", "value": r"(?i)@bv\.com>?$"}))
+    adapter.execute_analysis(target)
+    adapter.analyze(target, final_analysis=True)
+    assert target.has_directive("matched")
+
+
+@pytest.mark.unit
+def test_tree_condition_produces_observable_value_no_match():
+    """Does not match when no produced observable's value matches the value regex."""
+    root, target, module_path = _build_email_tree(from_value="attacker@evil.com")
+    adapter = _create_analyzer_with_rules(
+        root, _produces_rule(module_path, {"type": "email_from", "value": r"(?i)@bv\.com>?$"}))
+    adapter.execute_analysis(target)
+    adapter.analyze(target, final_analysis=True)
+    assert not target.has_directive("matched")
+
+
+@pytest.mark.unit
+def test_tree_condition_produces_observable_negate_absence():
+    """Negated produces_observable matches when the analysis produced no such observable."""
+    root, target, module_path = _build_email_tree(produce_message_id=False)
+    adapter = _create_analyzer_with_rules(
+        root, _produces_rule(module_path, {"type": "message_id"}, negate=True))
+    adapter.execute_analysis(target)
+    adapter.analyze(target, final_analysis=True)
+    assert target.has_directive("matched")
+
+
+@pytest.mark.unit
+def test_tree_condition_produces_observable_negate_present():
+    """Negated produces_observable does NOT match when the analysis did produce the observable."""
+    root, target, module_path = _build_email_tree(produce_message_id=True)
+    adapter = _create_analyzer_with_rules(
+        root, _produces_rule(module_path, {"type": "message_id"}, negate=True))
+    adapter.execute_analysis(target)
+    adapter.analyze(target, final_analysis=True)
+    assert not target.has_directive("matched")
+
+
+@pytest.mark.unit
+def test_tree_condition_produces_observable_malformed_message_id():
+    """Negating a well-formed message_id (value regex) still matches a malformed one."""
+    root, target, module_path = _build_email_tree(produce_message_id=True, message_id_value="unknown")
+    adapter = _create_analyzer_with_rules(
+        root, _produces_rule(module_path, {"type": "message_id", "value": r"<.+@.+>$"}, negate=True))
+    adapter.execute_analysis(target)
+    adapter.analyze(target, final_analysis=True)
+    assert target.has_directive("matched")
+
+
+@pytest.mark.unit
+def test_tree_condition_produces_observable_subtype_aware():
+    """produces_observable is subtype-aware: type email_address matches a produced email_from."""
+    from saq.observables.type_hierarchy import get_type_hierarchy
+    if not get_type_hierarchy().is_subtype("email_from", "email_address"):
+        pytest.skip("email_from -> email_address not loaded in this environment")
+
+    # parent type matches the subtype observable
+    root, target, module_path = _build_email_tree()
+    adapter = _create_analyzer_with_rules(root, _produces_rule(module_path, {"type": "email_address"}))
+    adapter.execute_analysis(target)
+    adapter.analyze(target, final_analysis=True)
+    assert target.has_directive("matched")
+
+    # a sibling subtype (email_to) of the parent does NOT match the produced email_from
+    root2, target2, module_path2 = _build_email_tree(from_value="hr@bv.com")
+    adapter2 = _create_analyzer_with_rules(
+        root2, _produces_rule(module_path2, {"type": "email_from", "value": r"(?i)^robertsd@"}))
+    adapter2.execute_analysis(target2)
+    adapter2.analyze(target2, final_analysis=True)
+    # robertsd is the email_to value, not email_from -> no email_from matches that value
+    assert not target2.has_directive("matched")
+
+
+@pytest.mark.unit
+def test_parse_produces_observable_invalid_value_regex(caplog):
+    """Invalid value regex in produces_observable should skip the rule with a warning."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "bad produces_observable regex",
+        "conditions": {
+            "tree_conditions": [{
+                "analysis_type": "test:TestAnalysis",
+                "produces_observable": {"type": "message_id", "value": "[bad("},
+            }],
+        },
+        "actions": {"add_directives": ["should_not_appear"]},
+    }]
+    with caplog.at_level(logging.WARNING):
+        adapter = _create_analyzer_with_rules(root, rules)
+        adapter.execute_analysis(observable)
+        result = adapter.analyze(observable, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert not observable.has_directive("should_not_appear")
+    assert any("invalid" in msg.lower() for msg in [r.message for r in caplog.records])
+
+
+@pytest.mark.unit
+def test_parse_produces_observable_missing_type(caplog):
+    """produces_observable without a 'type' should skip the rule with a warning."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "produces_observable missing type",
+        "conditions": {
+            "tree_conditions": [{
+                "analysis_type": "test:TestAnalysis",
+                "produces_observable": {"value": r"<.+@.+>$"},
+            }],
+        },
+        "actions": {"add_directives": ["should_not_appear"]},
+    }]
+    with caplog.at_level(logging.WARNING):
+        adapter = _create_analyzer_with_rules(root, rules)
+        adapter.execute_analysis(observable)
+        result = adapter.analyze(observable, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert not observable.has_directive("should_not_appear")
+    assert any("produces_observable" in r.message for r in caplog.records)
 
 
 @pytest.mark.unit
@@ -4676,3 +4859,207 @@ def test_no_match_observable_sealed_completed():
     assert adapter.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
     assert adapter.analyze(observable, final_analysis=True) == AnalysisExecutionResult.COMPLETED
     assert observable.get_and_load_analysis(ObservableModifierAnalysis) is None
+
+
+# ============================================================
+# Per-root analysis-details cache (_load_details_for_match)
+# ============================================================
+
+
+class _StubDetailsAnalysis:
+    """Minimal stand-in for an Analysis exposing only what
+    _load_details_for_match touches, with a load_details() that counts disk
+    reads and repopulates details from a simulated on-disk copy."""
+
+    def __init__(self, external_details_path, details_size, disk_details):
+        self.external_details_path = external_details_path
+        self.details_size = details_size
+        self.details = {}
+        self._disk_details = disk_details
+        self.load_count = 0
+
+    def load_details(self):
+        self.load_count += 1
+        self.details = self._disk_details
+        return True
+
+
+@pytest.mark.unit
+def test_load_details_for_match_caches_within_root():
+    """A saved analysis is read from disk once; later sweeps (even after the
+    engine flushes details back to {}) are served from the cache."""
+    cache = {}
+    analysis = _StubDetailsAnalysis("EmailAnalysis_abc.json", 100, {"email": {"from_address": "x@y.com"}})
+
+    first = _load_details_for_match(analysis, cache)
+    assert first == {"email": {"from_address": "x@y.com"}}
+    assert analysis.load_count == 1
+
+    # simulate the engine flushing details between observable_modifier sweeps
+    analysis.details = {}
+    second = _load_details_for_match(analysis, cache)
+    assert second == {"email": {"from_address": "x@y.com"}}
+    assert analysis.load_count == 1  # served from cache, no second disk read
+
+
+@pytest.mark.unit
+def test_load_details_for_match_invalidates_on_size_change():
+    """A deferred analysis that re-saves with new content (new details_size)
+    must be reloaded, not served stale from the cache (e.g. RdapAnalysis filling
+    in age_created_in_days on a later pass)."""
+    cache = {}
+    analysis = _StubDetailsAnalysis("RdapAnalysis_abc.json", 100, {"age_created_in_days": "30"})
+
+    assert _load_details_for_match(analysis, cache)["age_created_in_days"] == "30"
+    assert analysis.load_count == 1
+
+    # deferred re-save: details change, size changes, disk copy updated
+    analysis.details = {}
+    analysis.details_size = 140
+    analysis._disk_details = {"age_created_in_days": "3"}
+
+    refreshed = _load_details_for_match(analysis, cache)
+    assert refreshed["age_created_in_days"] == "3"  # reloaded, not stale
+    assert analysis.load_count == 2
+
+
+@pytest.mark.unit
+def test_load_details_for_match_no_cache_loads_every_time():
+    """With details_cache=None the legacy behavior is preserved: load every call."""
+    analysis = _StubDetailsAnalysis("EmailAnalysis_abc.json", 100, {"k": "v"})
+    _load_details_for_match(analysis, None)
+    analysis.details = {}
+    _load_details_for_match(analysis, None)
+    assert analysis.load_count == 2
+
+
+@pytest.mark.unit
+def test_load_details_for_match_unsaved_analysis_not_cached():
+    """An analysis whose details were never saved (external_details_path is None)
+    is never cached -- there is no stable disk key to invalidate against."""
+    cache = {}
+    analysis = _StubDetailsAnalysis(None, None, {"k": "v"})
+    _load_details_for_match(analysis, cache)
+    analysis.details = {}
+    _load_details_for_match(analysis, cache)
+    assert analysis.load_count == 2
+    assert cache == {}
+
+
+def _build_root_with_flushed_email_analysis(from_address="soc@vendor.com"):
+    """Build a root with a target URL observable under an EmailAnalysis whose
+    details have been flushed to disk (so external_details_path / details_size are
+    set and access goes through the disk-read path). Returns
+    (root, target_observable, email_analysis, module_path)."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    parent_observable = root.add_observable_by_spec(F_FQDN, "email.vendor.com")
+
+    class TestEmailAnalysis(Analysis):
+        pass
+
+    email_analysis = TestEmailAnalysis()
+    email_analysis.details = {"email": {"from_address": from_address}}
+    email_analysis.details_modified = True
+    parent_observable.add_analysis(email_analysis)
+    target_observable = email_analysis.add_observable_by_spec(F_URL, "https://example.com/page.html")
+
+    # flush to disk: sets external_details_path + details_size and clears details
+    root.analysis_tree_manager.flush_analysis_details(email_analysis)
+    assert email_analysis.external_details_path is not None
+    assert email_analysis.details == {}
+
+    module_path = f"{TestEmailAnalysis.__module__}:{TestEmailAnalysis.__name__}"
+    return root, target_observable, email_analysis, module_path
+
+
+@pytest.mark.integration
+def test_details_cache_loads_once_across_resweeps():
+    """A non-matching details_match rule re-evaluates on every sweep (it never
+    enters emitted_uuids), but the cache means its EmailAnalysis details are read
+    from disk only once across many evaluations."""
+    root, target_observable, email_analysis, module_path = _build_root_with_flushed_email_analysis()
+
+    calls = {"n": 0}
+    real_load = email_analysis.load_details
+
+    def counting_load():
+        calls["n"] += 1
+        return real_load()
+
+    email_analysis.load_details = counting_load
+
+    rules = [{
+        "name": "non-matching details rule",
+        "phase": "pre",
+        "conditions": {
+            "observable_types": ["url"],
+            "tree_conditions": [{
+                "analysis_type": module_path,
+                "details_match": {"email.from_address": r"NOMATCH@nowhere\.com"},
+            }],
+        },
+        "actions": {"add_directives": ["extract_iocs"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    for _ in range(5):
+        adapter.execute_analysis(target_observable)
+
+    # rule never matches -> no directive; details loaded from disk exactly once
+    assert not target_observable.has_directive("extract_iocs")
+    assert calls["n"] == 1
+
+
+@pytest.mark.integration
+def test_details_cache_matching_rule_parity():
+    """A matching details_match rule still fires correctly when served via the cache."""
+    root, target_observable, email_analysis, module_path = _build_root_with_flushed_email_analysis(
+        from_address="soc@vendor.com"
+    )
+    rules = [{
+        "name": "matching details rule",
+        "phase": "pre",
+        "conditions": {
+            "observable_types": ["url"],
+            "tree_conditions": [{
+                "analysis_type": module_path,
+                "details_match": {"email.from_address": r"soc@vendor\.com"},
+            }],
+        },
+        "actions": {"add_directives": ["extract_iocs"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(target_observable)
+    assert target_observable.has_directive("extract_iocs")
+
+
+@pytest.mark.integration
+def test_details_cache_cleared_in_post_analysis():
+    """The per-root details cache is populated during evaluation and dropped in
+    execute_post_analysis so it stays bounded to a single root."""
+    root, target_observable, email_analysis, module_path = _build_root_with_flushed_email_analysis()
+    rules = [{
+        "name": "details rule",
+        "phase": "pre",
+        "conditions": {
+            "observable_types": ["url"],
+            "tree_conditions": [{
+                "analysis_type": module_path,
+                "details_match": {"email.from_address": r"NOMATCH@nowhere\.com"},
+            }],
+        },
+        "actions": {"add_directives": ["extract_iocs"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(target_observable)
+
+    analyzer = adapter._module
+    # cache was populated for this root (the flushed EmailAnalysis details got cached)
+    assert root.uuid in analyzer._details_cache
+    assert analyzer._details_cache[root.uuid]  # non-empty: a path was cached
+
+    adapter.execute_post_analysis()
+    assert root.uuid not in analyzer._details_cache

@@ -142,8 +142,8 @@ class RootAnalysisAdapter:
     def set_details_modified(self):
         return self._root.set_details_modified()
 
-    def add_detection_point(self, description, details=None):
-        return self._root.add_detection_point(description, details)
+    def add_detection_point(self, description, details=None, queue=None):
+        return self._root.add_detection_point(description, details, queue)
 
     def has_tag(self, tag: str) -> bool:
         return self._root.has_tag(tag)

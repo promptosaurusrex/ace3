@@ -743,6 +743,26 @@ class TestCorrectFileExtension:
         assert not os.path.exists(file_path)
 
     @pytest.mark.unit
+    def test_correct_file_extension_keeps_html_when_misdetected_as_text_plain(self, tmpdir):
+        """Regression: an HTML email body that is a bare fragment is misdetected by libmagic
+        as text/plain. _correct_file_extension must NOT downgrade the .html extension to .txt,
+        otherwise the scanner navigates to a .txt file:// URL and the browser renders the raw
+        HTML source instead of the page."""
+        from phishkit import _correct_file_extension
+
+        file_path = str(tmpdir.join("body.unknown_text_html_000.html"))
+        with open(file_path, "w") as f:
+            f.write('<div id="isPasted"><span>Hello</span></div>')
+
+        with patch("phishkit.magic") as mock_magic:
+            mock_magic.from_file.return_value = "text/plain"
+            result = _correct_file_extension(file_path)
+
+        # extension preserved, file not renamed
+        assert result == file_path
+        assert os.path.exists(file_path)
+
+    @pytest.mark.unit
     def test_correct_file_extension_no_mime(self, tmpdir):
         from phishkit import _correct_file_extension
 
