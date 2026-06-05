@@ -4227,6 +4227,41 @@ def test_summary_details_grouped_jinja_dedup_per_submission(monkeypatch):
 
 
 @pytest.mark.unit
+def test_summary_details_grouped_jinja_missing_field_does_not_kill_alert(monkeypatch):
+    """A missing field in a grouped Jinja summary detail (strict mode) must drop just that
+    block and still produce the alert — not raise out of process_query_results.
+
+    Regression: with no required_fields the grouped-Jinja render runs under StrictUndefined,
+    so an event lacking a referenced key raised UndefinedError that bubbled up and killed the
+    whole hunt instead of isolating the failure to the summary detail.
+    """
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_grouped_jinja_missing",
+        group_by="ALL",
+        summary_details=[
+            SummaryDetailConfig(
+                # references event.sometimes, which the second event lacks -> UndefinedError
+                content="{% for event in events %}{{ event.always }}/{{ event.sometimes }}\n{% endfor %}",
+                format=SUMMARY_DETAIL_FORMAT_JINJA,
+                grouped=True,
+            ),
+        ],
+    )
+    # must not raise
+    submissions = hunt.process_query_results([
+        {"always": "a", "sometimes": "x"},
+        {"always": "b"},
+    ])
+    assert len(submissions) == 1
+    # the faulty block is dropped, but the alert still fires
+    assert len(submissions[0].root.summary_details) == 0
+
+
+@pytest.mark.unit
 def test_query_with_suffix():
     """test that query_suffix is appended to the query with a newline separator"""
     hunt = default_hunt(query="index=test sourcetype=test", query_suffix="| stats count")

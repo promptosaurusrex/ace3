@@ -443,11 +443,20 @@ def process_grouped_summary_detail(
         if not events:
             return
 
-        content = render_jinja_template(
-            sd_config.content,
-            {"events": events},
-            strict=(sd_config.required_fields is None),
-        )
+        # A missing field under strict mode raises UndefinedError. Mirror render_sd_content
+        # and skip just this block (rather than letting the error kill the whole analysis).
+        try:
+            content = render_jinja_template(
+                sd_config.content,
+                {"events": events},
+                strict=(sd_config.required_fields is None),
+            )
+        except UndefinedError:
+            logging.warning(
+                "grouped jinja summary detail skipped (missing field) for content=%s",
+                sd_config.content, exc_info=True,
+            )
+            return
         if content is None or not content.strip():
             return
 
@@ -491,7 +500,7 @@ def process_grouped_summary_detail(
 
         if len(lines) >= sd_config.limit:
             if not limit_warned:
-                logging.warning(
+                logging.error(
                     "summary detail limit (%s) reached for definition content=%s",
                     sd_config.limit, sd_config.content,
                 )
