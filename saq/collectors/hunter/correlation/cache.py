@@ -39,3 +39,49 @@ def set_cached_result(command_args: dict, value: str, ttl_seconds: int):
         logging.info(f"cached result with key {key} for {ttl_seconds} seconds")
     except Exception:
         logging.warning("failed to write to hunt cache", exc_info=True)
+
+
+class CorrelateQueryRecorder:
+    """Captures, and optionally replays, the results of rendered correlate queries.
+
+    Used by the hunt validator (`validate.py --save-correlate-results` /
+    `--correlate-results-file`) so analysts can capture a hunt's follow-up
+    `correlate:` queries once and then iterate offline — e.g. on a summary_details
+    Jinja template — without re-running expensive Splunk/Logscale/Rapid7 queries.
+
+    Capture is always on; replay is active only when seeded with prior results.
+    Entries are keyed on the *rendered* query text plus its source, which uniquely
+    identifies the question actually asked. (The persistent `command.cache` keys on
+    the unrendered template, so it cannot distinguish per-event queries.)
+    """
+
+    def __init__(self, replay: Optional[list[dict]] = None):
+        # (source, rendered_query) -> JSONL output string, matching the format
+        # _execute_query produces ("\n".join(json.dumps(row) ...)).
+        self._replay: dict[tuple[str, str], str] = {}
+        if replay:
+            for record in replay:
+                source = record["source"]
+                query = record["query"]
+                rows = record.get("results", []) or []
+                self._replay[(source, query)] = "\n".join(json.dumps(row) for row in rows)
+        self.replay_active = bool(self._replay)
+        # insertion-ordered dedup store of everything executed/replayed this run
+        self._captured: dict[tuple[str, str], str] = {}
+
+    def lookup(self, source: str, rendered_query: str) -> Optional[str]:
+        """Return the saved JSONL output for a rendered query, or None on miss."""
+        return self._replay.get((source, rendered_query))
+
+    def record(self, source: str, rendered_query: str, output: str):
+        """Record a query's output (first occurrence wins, so replay hits and live
+        runs both keep the export complete and stable)."""
+        self._captured.setdefault((source, rendered_query), output)
+
+    def export(self) -> list[dict]:
+        """Serialize captured results to a list of {source, query, results} records."""
+        exported = []
+        for (source, query), output in self._captured.items():
+            rows = [json.loads(line) for line in output.splitlines() if line.strip()]
+            exported.append({"source": source, "query": query, "results": rows})
+        return exported

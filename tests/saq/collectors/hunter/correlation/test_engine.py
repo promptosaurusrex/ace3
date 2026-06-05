@@ -597,3 +597,88 @@ class TestTransformTraceQueryTimespec:
         transform = result.trace.event_traces[0].steps[0].step
         assert transform.query_start_time == event_time - datetime.timedelta(hours=1)
         assert transform.query_end_time == event_time
+
+
+@pytest.mark.unit
+class TestCorrelateReplay:
+    """Capture-and-replay of follow-up correlate query results (validate.py
+    --save-correlate-results / --correlate-results-file)."""
+
+    def _config(self):
+        # per-event query: each event renders a distinct query, so capture/replay
+        # must key on the rendered text (the existing template-keyed cache cannot).
+        return _make_config([
+            {
+                "transform": {
+                    "type": "event",
+                    "method": "property",
+                    "property_name": "lookup",
+                    "property_type": "list",
+                    "command": {
+                        "type": "query",
+                        "source": "splunk",
+                        "query": "search host={{ _event.host }}",
+                        "time_range": {"before": "1h", "after": "1h"},
+                    },
+                },
+            },
+        ])
+
+    def test_live_run_captures_rendered_queries(self, _clean_registry):
+        splunk = _RecordingSource(results=[{"found": True}])
+        register_query_source("splunk", splunk)
+        hunt_time = datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc)
+        engine = CorrelationEngine(self._config(), [], hunt_time, hunt_source_type="splunk")
+        events = [
+            {"host": "web1", "_time": "2024-06-01T11:00:00+00:00"},
+            {"host": "web2", "_time": "2024-06-01T11:00:00+00:00"},
+        ]
+        result = engine.execute(events)
+
+        # each event got its property and the live source was hit once per event
+        assert all(e["lookup"] == [{"found": True}] for e in result.events)
+        assert len(splunk.calls) == 2
+        captured = {r["query"]: r["results"] for r in result.captured_queries}
+        assert captured == {
+            "search host=web1": [{"found": True}],
+            "search host=web2": [{"found": True}],
+        }
+
+    def test_replay_skips_live_source(self, _clean_registry):
+        # a source that fails if ever called — proves replay is fully offline
+        splunk = _RecordingSource(results=[{"should": "not be used"}])
+        register_query_source("splunk", splunk)
+        replay = [
+            {"source": "splunk", "query": "search host=web1", "results": [{"saved": "web1"}]},
+            {"source": "splunk", "query": "search host=web2", "results": [{"saved": "web2"}]},
+        ]
+        hunt_time = datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc)
+        engine = CorrelationEngine(
+            self._config(), [], hunt_time, hunt_source_type="splunk", correlate_replay=replay,
+        )
+        events = [
+            {"host": "web1", "_time": "2024-06-01T11:00:00+00:00"},
+            {"host": "web2", "_time": "2024-06-01T11:00:00+00:00"},
+        ]
+        result = engine.execute(events)
+
+        assert len(splunk.calls) == 0  # no live queries on a full replay
+        by_host = {e["host"]: e["lookup"] for e in result.events}
+        assert by_host == {"web1": [{"saved": "web1"}], "web2": [{"saved": "web2"}]}
+
+    def test_capture_roundtrips_through_replay(self, _clean_registry):
+        splunk = _RecordingSource(results=[{"found": True}])
+        register_query_source("splunk", splunk)
+        hunt_time = datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc)
+        events = [{"host": "web1", "_time": "2024-06-01T11:00:00+00:00"}]
+
+        # capture from a live run, then replay that capture verbatim
+        live = CorrelationEngine(self._config(), [], hunt_time, hunt_source_type="splunk")
+        captured = live.execute(events).captured_queries
+
+        splunk.calls.clear()
+        replayed = CorrelationEngine(
+            self._config(), [], hunt_time, hunt_source_type="splunk", correlate_replay=captured,
+        ).execute(events)
+        assert len(splunk.calls) == 0
+        assert replayed.events[0]["lookup"] == [{"found": True}]

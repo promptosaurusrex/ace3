@@ -75,6 +75,10 @@ class ExecutionArguments(BaseModel):
     # string in [D:][H:][M:]S format (e.g. "00:10:00"). Replaces the YAML-configured
     # duration_before for that token at execution time.
     time_range_overrides: Optional[dict[str, str]] = None
+    # Optional saved correlate query results ({"version", "queries": [...]}). When set,
+    # the correlation engine replays matching follow-up queries instead of re-running
+    # them, so analysts can iterate on correlate logic / summary templates offline.
+    correlate_results: Optional[dict] = None
 
 
 def _validate_and_execute(target_file_path: str, request_json: dict):
@@ -123,6 +127,12 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
 
     exec_kwargs = {}
     use_query_results_override = execution_arguments.query_results is not None
+
+    # Seed saved correlate query results for replay. Set on the hunt so it reaches the
+    # correlation engine whether correlation runs via the query_results override path or
+    # the normal hunt.execute() path (both funnel through process_query_results).
+    if execution_arguments.correlate_results is not None:
+        hunt._correlate_replay_results = execution_arguments.correlate_results.get("queries")
 
     if isinstance(hunt, QueryHunt) and not use_query_results_override:
         if execution_arguments.start_time is None:
@@ -230,6 +240,7 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
             "logs": formatted_logs,
             "correlation_trace": correlation_trace,
             "original_events": original_events,
+            "correlate_results": getattr(hunt, "correlate_query_results", None),
         }), 200
     finally:
         root_logger.removeHandler(log_handler)

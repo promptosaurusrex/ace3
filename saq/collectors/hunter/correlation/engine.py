@@ -7,6 +7,7 @@ from typing import Optional
 from jinja2.sandbox import SandboxedEnvironment
 
 from saq.collectors.hunter.correlation.actions import ActionResult, execute_action
+from saq.collectors.hunter.correlation.cache import CorrelateQueryRecorder
 from saq.collectors.hunter.correlation.commands import _resolve_time_range, execute_command
 from saq.configuration.config import get_config
 from saq.configuration.encryption import export_encrypted_passwords
@@ -74,6 +75,9 @@ class CorrelationResult:
     # keeps track of the index of the event from the original stream that produced each kept event.
     # Lets callers map a post-correlation event back to its EventTrace.event_index.
     alert_event_origin_indices: list[int] = field(default_factory=list)
+    # rendered query results captured during this run, as [{source, query, results}].
+    # lets the validator save correlate query results for offline replay.
+    captured_queries: list[dict] = field(default_factory=list)
 
 
 class CorrelationEngine:
@@ -87,6 +91,7 @@ class CorrelationEngine:
         hunt_end_time: Optional[datetime.datetime] = None,
         max_result_count: Optional[int] = None,
         hunt_source_type: Optional[str] = None,
+        correlate_replay: Optional[list[dict]] = None,
     ):
         self.config = correlate_config
         self.predefined_commands = predefined_commands or []
@@ -100,6 +105,11 @@ class CorrelationEngine:
         self.max_result_count = max_result_count
         self.timeout = parse_timespec(correlate_config.timeout)
         self.stream_query_cache: dict[str, str] = {}
+        # captures (and optionally replays) rendered query results so the validator
+        # can save correlate queries for fast offline iteration. when seeded with
+        # `correlate_replay`, matching queries return saved results instead of
+        # hitting the data source.
+        self.query_recorder = CorrelateQueryRecorder(replay=correlate_replay)
         # name of the source that produced the current event stream; starts as the
         # hunt's primary type (e.g. "splunk") and updates when a stream-mutate query
         # command replaces the stream from a different source. used to supply
@@ -208,6 +218,7 @@ class CorrelationEngine:
                 ))
                 result.discarded = True
                 result.trace = trace
+                result.captured_queries = self.query_recorder.export()
                 return result
             elif action_result.action_type == "log":
                 alert_events.append((event_index, event))
@@ -220,6 +231,7 @@ class CorrelationEngine:
         result.events = [event for _, event in alert_events]
         result.alert_event_origin_indices = [idx for idx, _ in alert_events]
         result.trace = trace
+        result.captured_queries = self.query_recorder.export()
         return result
 
     @staticmethod
@@ -437,6 +449,7 @@ class CorrelationEngine:
                     self._config,
                     self._current_source,
                     hunt_end_time=self.hunt_end_time,
+                    query_recorder=self.query_recorder,
                 )
 
             # Count result rows from command output

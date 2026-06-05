@@ -757,9 +757,13 @@ class QueryHunt(Hunt):
                 hunt_end_time=getattr(self, "_correlation_hunt_end_time", local_time()),
                 max_result_count=self.max_result_count,
                 hunt_source_type=self.type,
+                correlate_replay=getattr(self, "_correlate_replay_results", None),
             )
             result = engine.execute(query_results)
             self.correlation_trace = result.trace
+            # captured rendered query results, exposed so the validator can save them
+            # for fast offline replay (see validate.py --save-correlate-results)
+            self.correlate_query_results = {"version": 1, "queries": result.captured_queries}
 
             # emit one INFO log line per trace entry so detection engineers can monitor
             # filtering and performance of correlated hunts in real time
