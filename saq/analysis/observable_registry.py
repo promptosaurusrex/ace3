@@ -90,6 +90,15 @@ class ObservableRegistry:
         from saq.analysis.observable import Observable
         assert isinstance(observable, Observable)
 
+        # ACE must never store an observable with an empty value. Generic observable
+        # types (user, and any unknown DefaultObservable type) do not reject empty or
+        # whitespace-only values on their own, so guard here at the single storage
+        # chokepoint that every live add funnels through.
+        value = observable.value
+        if value is None or (isinstance(value, str) and not value.strip()):
+            logging.warning("refusing to add observable type %s with empty value", observable.type)
+            return None
+
         # Check if observable already exists
         for o in self._store.values():
             if o == observable:
