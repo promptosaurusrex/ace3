@@ -1045,11 +1045,8 @@ class EmailAnalyzer(AnalysisModule):
 
                 file_name = None
 
-                # for unnamed inline parts (e.g. the HTML email body), derive a real
-                # extension from the part's *declared* content type. Downstream consumers
-                # such as phishkit's html/pdf allow-list then don't have to depend on
-                # libmagic re-detecting the part — a bare HTML fragment (no doctype/<html>)
-                # is frequently misdetected as text/plain and would otherwise be skipped.
+                # for unnamed inline parts derive a real extension from the
+                # part's *declared* content type
                 unknown_ext = mimetypes.guess_extension(target.get_content_type()) or ''
 
                 # do not extract the target email
