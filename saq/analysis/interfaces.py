@@ -156,7 +156,7 @@ class RootAnalysisInterface(Protocol):
         """Set the details modified flag."""
         ...
 
-    def add_detection_point(self, description, details=None):
+    def add_detection_point(self, description, details=None, queue=None):
         """Add a detection point to the analysis."""
         ...
 

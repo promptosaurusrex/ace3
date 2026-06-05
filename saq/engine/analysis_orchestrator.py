@@ -11,6 +11,7 @@ from saq.configuration.config import (
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
     DISPOSITION_OPEN,
+    QUEUE_DEFAULT,
 )
 from saq.database.model import Alert
 from saq.database.pool import get_db, get_db_connection
@@ -345,7 +346,37 @@ class AnalysisOrchestrator:
             logging.info(
                 f"{execution_context.root} has {reason} - changing mode to {ANALYSIS_MODE_CORRELATION}"
             )
+            # resolve a queue requested by detection meta only on the transition into an alert,
+            # when the full set of pre-alert detections is known (see _apply_detection_queue)
+            if execution_context.root.analysis_mode != ANALYSIS_MODE_CORRELATION:
+                self._apply_detection_queue(execution_context.root)
             execution_context.root.analysis_mode = ANALYSIS_MODE_CORRELATION
+
+    def _apply_detection_queue(self, root):
+        """Route the resulting alert to a queue requested by detection meta (e.g. a yara rule's
+        `queue` meta), but only when EVERY detection point is queue-routed. If any plain
+        (non-routed) detection exists the alert is "real" and stays in the normal queue so analysts
+        see it. An explicitly-set queue (from submission/hunter override) is never clobbered."""
+        if root.queue != QUEUE_DEFAULT:
+            return
+
+        # all_detection_points walks analyses and observables but omits the root's own detection
+        # points, so include them explicitly (modules such as tag.py add detections on the root)
+        detection_points = list(root.all_detection_points) + list(root.detections)
+        if not detection_points:
+            return
+
+        queues = {getattr(dp, "queue", None) for dp in detection_points}
+        if None in queues:
+            # at least one normal detection -> keep the default queue
+            return
+
+        requested = sorted(q for q in queues if q)
+        chosen = requested[0]
+        if len(requested) > 1:
+            logging.warning(f"{root} has multiple detection queues requested {requested}; routing to {chosen}")
+        logging.info(f"routing {root} to queue {chosen} based on detection meta")
+        root.queue = chosen
 
     def _handle_analysis_mode_changes(self, execution_context: EngineExecutionContext):
         """Handle analysis mode changes and their consequences."""
