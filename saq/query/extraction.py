@@ -101,6 +101,11 @@ def interpret_event_value(observable_mapping: ObservableMapping, event: dict, fi
     else:
         result = observed_value
 
+    # cap how many observables this mapping emits from a list-valued field, a
+    # '*' wildcard path, or a Jinja value template that expanded to many values
+    if observable_mapping.limit is not None:
+        result = result[: observable_mapping.limit]
+
     # if any of the results are bytes, convert them into strings using utf-8
     return [_.decode("utf-8", errors="ignore") if isinstance(_, bytes) else str(_) for _ in result]
 

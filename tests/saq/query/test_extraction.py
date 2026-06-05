@@ -74,6 +74,116 @@ def test_extract_observables_dot_lookup():
 
 
 @pytest.mark.unit
+def test_interpret_event_value_wildcard_plucks_each_item():
+    """A '*' wildcard segment plucks the sub-key from every item in a list field."""
+    mapping = ObservableMapping(
+        fields=["logs.*.cid"],
+        field_lookup_type="dot",
+        type=F_HOSTNAME,
+    )
+    event = {"logs": [{"cid": "a"}, {"cid": "b"}, {"cid": "c"}]}
+    result = interpret_event_value(mapping, event, field_override="logs.*.cid")
+    assert result == ["a", "b", "c"]
+
+
+@pytest.mark.unit
+def test_interpret_event_value_wildcard_with_limit():
+    """limit caps how many observables a wildcard expansion emits."""
+    mapping = ObservableMapping(
+        fields=["logs.*.cid"],
+        field_lookup_type="dot",
+        type=F_HOSTNAME,
+        limit=2,
+    )
+    event = {"logs": [{"cid": "a"}, {"cid": "b"}, {"cid": "c"}, {"cid": "d"}, {"cid": "e"}]}
+    result = interpret_event_value(mapping, event, field_override="logs.*.cid")
+    assert result == ["a", "b"]
+
+
+@pytest.mark.unit
+def test_interpret_event_value_wildcard_skips_items_missing_subkey():
+    """Items missing the trailing sub-key are dropped, the rest are kept."""
+    mapping = ObservableMapping(
+        fields=["logs.*.cid"],
+        field_lookup_type="dot",
+        type=F_HOSTNAME,
+    )
+    event = {"logs": [{"cid": "a"}, {"other": "x"}, {"cid": "c"}]}
+    result = interpret_event_value(mapping, event, field_override="logs.*.cid")
+    assert result == ["a", "c"]
+
+
+@pytest.mark.unit
+def test_interpret_event_value_wildcard_empty_list():
+    """A wildcard over an empty list yields no values (and does not raise)."""
+    mapping = ObservableMapping(
+        fields=["logs.*.cid"],
+        field_lookup_type="dot",
+        type=F_HOSTNAME,
+    )
+    event = {"logs": []}
+    result = interpret_event_value(mapping, event, field_override="logs.*.cid")
+    assert result == []
+
+
+@pytest.mark.unit
+def test_interpret_event_value_trailing_wildcard_returns_each_item():
+    """A trailing '*' returns each list item as-is."""
+    mapping = ObservableMapping(
+        fields=["ips.*"],
+        field_lookup_type="dot",
+        type=F_IPV4,
+    )
+    event = {"ips": ["1.1.1.1", "2.2.2.2"]}
+    result = interpret_event_value(mapping, event, field_override="ips.*")
+    assert result == ["1.1.1.1", "2.2.2.2"]
+
+
+@pytest.mark.unit
+def test_extract_observables_wildcard_creates_one_per_item():
+    """End-to-end: a wildcard mapping creates one observable per list item."""
+    mappings = [
+        ObservableMapping(
+            fields=["logs.*.ip"],
+            field_lookup_type="dot",
+            type=F_IPV4,
+            limit=2,
+        )
+    ]
+    event = {"logs": [{"ip": "1.1.1.1"}, {"ip": "2.2.2.2"}, {"ip": "3.3.3.3"}]}
+
+    extracted, _, _ = extract_observables_from_event(event, mappings)
+
+    assert [e.observable.value for e in extracted] == ["1.1.1.1", "2.2.2.2"]
+
+
+@pytest.mark.unit
+def test_extract_observables_wildcard_missing_top_key_skipped():
+    """A wildcard whose top-level list key is absent produces nothing (fields_mode=all)."""
+    mappings = [
+        ObservableMapping(
+            fields=["logs.*.ip"],
+            field_lookup_type="dot",
+            type=F_IPV4,
+        )
+    ]
+    event = {"unrelated": "value"}
+
+    extracted, _, _ = extract_observables_from_event(event, mappings)
+
+    assert extracted == []
+
+
+@pytest.mark.unit
+def test_interpret_event_value_limit_caps_list_valued_field():
+    """limit also caps a plain list-valued field (not just wildcards)."""
+    mapping = ObservableMapping(fields=["ips"], type=F_IPV4, limit=2)
+    event = {"ips": ["1.1.1.1", "2.2.2.2", "3.3.3.3"]}
+    result = interpret_event_value(mapping, event)
+    assert result == ["1.1.1.1", "2.2.2.2"]
+
+
+@pytest.mark.unit
 def test_extract_observables_basic():
     """Test basic observable extraction."""
     mappings = [
