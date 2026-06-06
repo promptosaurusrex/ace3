@@ -1556,6 +1556,44 @@ class TagMapping(Base):
     alert: Mapped["Alert"] = relationship('Alert', backref='tag_mapping', overlaps="tag_mappings")
     tag: Mapped["Tag"] = relationship('Tag', backref='tag_mapping')
 
+class DetectionPoint(Base):
+    """Database representation of an analysis-layer detection point, with signature
+    attribution. Distinct from the analysis-layer saq.analysis.DetectionPoint;
+    consumers needing both import this one as db_DetectionPoint."""
+
+    __tablename__ = 'detection_points'
+    __table_args__ = (
+        # idempotent-upsert key. ALSO serves the "by alert" query (alert_id is the
+        # leftmost column) and satisfies InnoDB's FK-index requirement on alert_id,
+        # so NO separate index on alert_id is needed.
+        UniqueConstraint('alert_id', 'content_hash', name='uq_detection_points_alert_content'),
+        # serves BOTH "by signature_uuid" (leftmost-prefix) and
+        # "by signature_uuid + signature_version" (full key) with one index.
+        Index('ix_detection_points_signature', 'signature_uuid', 'signature_version'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # no standalone index= here: the unique constraint's leftmost prefix already
+    # indexes alert_id (covers the "by alert" query + the FK requirement).
+    alert_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('alerts.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    details: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True)
+    queue: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    signature_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
+    signature_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    # stable identity for idempotent upsert across repeated Alert.sync() calls;
+    # matches DetectionPoint.content_hash in the analysis layer.
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    insert_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+    alert: Mapped["Alert"] = relationship('Alert', backref='detection_points')
+
 class CompanyMapping(Base):
 
     __tablename__ = 'company_mapping'

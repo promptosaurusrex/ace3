@@ -6,6 +6,7 @@ from typing import Type, override
 import msoffcrypto
 from pydantic import Field
 from saq.analysis.analysis import Analysis
+from saq.signatures import EMAIL_ENCRYPTED_DECRYPTED
 from saq.analysis.search import search_down
 from saq.constants import F_FILE, AnalysisExecutionResult
 from saq.cracking import crack_password, generate_wordlist
@@ -263,7 +264,7 @@ class MSOfficeEncryptionAnalyzer(AnalysisModule):
             decrypted_file = analysis.add_file_observable(output_file)
             if decrypted_file:
                 decrypted_file.add_tag('decrypted_msoffice')
-                decrypted_file.add_detection_point("Was able to decrypt based on contents of email.")
+                decrypted_file.add_detection_point("Was able to decrypt based on contents of email.", signature_uuid=EMAIL_ENCRYPTED_DECRYPTED.uuid)
                 decrypted_file.add_yara_meta("type", "document.office")
 
             return AnalysisExecutionResult.COMPLETED

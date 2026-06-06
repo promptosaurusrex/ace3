@@ -433,6 +433,14 @@ class QueryHunt(Hunt):
 
         root.initialize_storage()
 
+        # attribute this hunt-originated alert to the hunt signature (the hunt's uuid)
+        # and its tracked repo commit (signature_version). passed explicitly so it is
+        # not resolved to the built-in ACE_VERSION default.
+        root.add_detection_point(
+            "hunt {} ({}) matched".format(self.name, self.type),
+            signature_uuid=self.uuid,
+            signature_version=self.signature_version)
+
         for tag in self.tags:
             try:
                 tag_values = render_event_template_multi(tag, event, strict=True)

@@ -411,3 +411,29 @@ class TestCollectStats:
         finally:
             _delete_cache_row(delta_small.cache_key)
             _delete_cache_row(delta_big.cache_key)
+
+
+@pytest.mark.integration
+def test_cache_replay_preserves_queue_and_signature():
+    """Guards the cache.py replay-fidelity fix: a detection's queue + signature
+    fields must survive capture->replay, not silently revert to defaults."""
+    from saq.analysis.cache import _apply_root_diff
+    from saq.analysis.detection_point import DetectionPoint
+    from tests.saq.helpers import create_root_analysis
+
+    # a detection with non-default queue + signature, serialized as the cache stores it
+    dp = DetectionPoint("hunt matched", queue="experimental",
+                        signature_uuid="sig-xyz", signature_version="deadbeef")
+    det_dict = dp.json
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    diff = RootDiff()
+    diff.added_detections = [det_dict]
+    _apply_root_diff(root, diff)
+
+    replayed = root.all_detection_points
+    assert len(replayed) == 1
+    assert replayed[0].queue == "experimental"
+    assert replayed[0].signature_uuid == "sig-xyz"
+    assert replayed[0].signature_version == "deadbeef"

@@ -4,6 +4,7 @@ from subprocess import DEVNULL, Popen
 from typing import Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
+from saq.signatures import OLE_EXTRACTED_SUSPECT_FILE
 from saq.constants import AnalysisExecutionResult, F_FILE
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -90,14 +91,14 @@ class ExtractedOLEAnalyzer(AnalysisModule):
             suspect = False
             for suspect_file_type in self.suspect_file_type:
                 if suspect_file_type.lower().strip() in file_type_analysis.file_type.lower():
-                    _file.add_detection_point("OLE attachment has suspect file type {}".format(suspect_file_type))
+                    _file.add_detection_point("OLE attachment has suspect file type {}".format(suspect_file_type), signature_uuid=OLE_EXTRACTED_SUSPECT_FILE.uuid)
                     suspect = True
                     break
 
             if not suspect:
                 for suspect_file_ext in self.suspect_file_ext:
                     if _file.file_path.lower().endswith('.{}'.format(suspect_file_ext)):
-                        _file.add_detection_point("OLE attachment has suspect file ext {}".format(suspect_file_ext))
+                        _file.add_detection_point("OLE attachment has suspect file ext {}".format(suspect_file_ext), signature_uuid=OLE_EXTRACTED_SUSPECT_FILE.uuid)
                         suspect = True
                         break
 
@@ -105,7 +106,7 @@ class ExtractedOLEAnalyzer(AnalysisModule):
             # the file command may return plain text for some js files without extension
             if not suspect:
                 if is_javascript_file(local_file_path):
-                    _file.add_detection_point("OLE attachment {} is a javascript file".format(_file))
+                    _file.add_detection_point("OLE attachment {} is a javascript file".format(_file), signature_uuid=OLE_EXTRACTED_SUSPECT_FILE.uuid)
                     suspect = True
 
             if suspect:

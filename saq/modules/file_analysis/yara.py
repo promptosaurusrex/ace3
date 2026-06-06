@@ -24,6 +24,7 @@ from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.disassembly import disassemble
 from saq.observables.file import FileObservable
+from saq.signatures import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
 from saq.util.filesystem import abs_path
 
 import yara
@@ -58,6 +59,21 @@ def _rule_queue(match_result: dict) -> str | None:
         return None
     queue = str(queue).strip()
     return queue or None
+
+
+def _yara_detection_signature(match_result: dict) -> tuple[str, str]:
+    """Returns (signature_uuid, signature_version) for a yara match detection.
+
+    signature_uuid is the rule's `uuid` meta; warn-but-detect: a rule with no
+    uuid still produces a detection, attributed to the built-in YARA_RULE_MATCH
+    fallback signature. signature_version is the rule repo's commit hash (the
+    `commit` key resolved by the yara_scanner library) or SIGNATURE_VERSION_UNKNOWN
+    when the rule did not come from a git repo."""
+    rule_uuid = (match_result.get("meta") or {}).get("uuid")
+    if not rule_uuid:
+        logging.warning("yara rule %s has no uuid meta - using built-in fallback signature", match_result.get("rule"))
+        rule_uuid = YARA_RULE_MATCH.uuid
+    return rule_uuid, match_result.get("commit") or SIGNATURE_VERSION_UNKNOWN
 
 
 class YaraScanResults_v3_4(Analysis):
@@ -454,9 +470,12 @@ class YaraScanner_v3_4(AnalysisModule):
 
             # if this yara rule did not have the no_alert modifier then it becomes a detection point.
             if yara_result['rule'] not in no_alert_rules:
+                detection_signature_uuid, detection_signature_version = _yara_detection_signature(yara_result)
                 rule_observable.add_detection_point(
                     "{} matched yara rule {}".format(_file, yara_result['rule']),
-                    queue=_rule_queue(yara_result))
+                    queue=_rule_queue(yara_result),
+                    signature_uuid=detection_signature_uuid,
+                    signature_version=detection_signature_version)
 
             # yara rules can get generated automatically from SIP data using the ace export-sip-yara-rules output_dir command
             # so if the name of the rule starts with SIP_ then we also want to add indicators as observables

@@ -448,8 +448,10 @@ class ActionTracker:
     def add_tag(self, t):
         self.tags.append(t)
 
-    def add_detection_point(self, desc):
+    def add_detection_point(self, desc, signature_uuid=None, signature_version=None):
         self.detection_points.append(desc)
+        self.detection_signatures = getattr(self, "detection_signatures", [])
+        self.detection_signatures.append((signature_uuid, signature_version))
 
 
 @pytest.mark.unit
@@ -5063,3 +5065,109 @@ def test_details_cache_cleared_in_post_analysis():
 
     adapter.execute_post_analysis()
     assert root.uuid not in analyzer._details_cache
+
+
+# ============================================================
+# git_dir / signature_version attribution tests
+# ============================================================
+
+def _init_git_repo_at(path):
+    """init a git repo at path with one commit, returns the HEAD sha"""
+    import subprocess
+    env = dict(os.environ)
+    env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "test"
+    env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "test@example.com"
+    subprocess.run(["git", "init", str(path)], check=True, capture_output=True)
+    with open(os.path.join(str(path), ".keep"), "w") as fp:
+        fp.write("x")
+    subprocess.run(["git", "-C", str(path), "add", "."], check=True, capture_output=True, env=env)
+    subprocess.run(["git", "-C", str(path), "commit", "-m", "init"], check=True, capture_output=True, env=env)
+    out = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
+    return out.stdout.strip()
+
+
+@pytest.mark.unit
+def test_observable_modifier_no_git_dir_yields_unknown():
+    from saq.signatures import SIGNATURE_VERSION_UNKNOWN
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://evil.com/malware.exe")
+    rules = [{
+        "name": "suspicious download",
+        "uuid": "11111111-1111-1111-1111-111111111111",
+        "conditions": {"observable_types": ["url"], "value_pattern": r"\.exe$"},
+        "actions": {"add_detection_points": ["matched"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+    adapter.execute_analysis(observable)
+    adapter.analyze(observable, final_analysis=True)
+    dp = observable.detections[0]
+    assert dp.signature_uuid == "11111111-1111-1111-1111-111111111111"
+    assert dp.signature_version == SIGNATURE_VERSION_UNKNOWN
+
+
+@pytest.mark.unit
+def test_observable_modifier_git_dir_stamps_commit(tmpdir):
+    # the rules file lives inside the git repo, so git_dir contains it
+    git_dir = str(tmpdir)
+    sha = _init_git_repo_at(git_dir)
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://evil.com/malware.exe")
+    rules = [{
+        "name": "suspicious download",
+        "uuid": "22222222-2222-2222-2222-222222222222",
+        "conditions": {"observable_types": ["url"], "value_pattern": r"\.exe$"},
+        "actions": {"add_detection_points": ["matched"]},
+    }]
+    # write rules into the git repo and point the analyzer's config there
+    yaml_path = os.path.join(git_dir, "rules.yaml")
+    with open(yaml_path, "w") as f:
+        yaml.dump({"rules": rules}, f)
+
+    context = create_test_context(root=root)
+    config = get_analysis_module_config(ANALYSIS_MODULE_OBSERVABLE_MODIFIER)
+    config.rules_config_path = yaml_path
+    config.git_dir = git_dir
+    analyzer = ObservableModifierAnalyzer(context=context, config=config)
+    adapter = AnalysisModuleAdapter(analyzer)
+
+    adapter.execute_analysis(observable)
+    adapter.analyze(observable, final_analysis=True)
+    dp = observable.detections[0]
+    assert dp.signature_uuid == "22222222-2222-2222-2222-222222222222"
+    assert dp.signature_version == sha
+
+
+@pytest.mark.unit
+def test_observable_modifier_git_dir_not_containing_rules_logs_error(tmpdir, caplog):
+    from saq.signatures import SIGNATURE_VERSION_UNKNOWN
+    git_dir = str(tmpdir.mkdir("repo"))
+    _init_git_repo_at(git_dir)
+    # rules file lives OUTSIDE the git_dir -> validation fails -> unknown
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://evil.com/malware.exe")
+    rules = [{
+        "name": "suspicious download",
+        "uuid": "33333333-3333-3333-3333-333333333333",
+        "conditions": {"observable_types": ["url"], "value_pattern": r"\.exe$"},
+        "actions": {"add_detection_points": ["matched"]},
+    }]
+    yaml_path = os.path.join(str(tmpdir.mkdir("elsewhere")), "rules.yaml")
+    with open(yaml_path, "w") as f:
+        yaml.dump({"rules": rules}, f)
+
+    context = create_test_context(root=root)
+    config = get_analysis_module_config(ANALYSIS_MODULE_OBSERVABLE_MODIFIER)
+    config.rules_config_path = yaml_path
+    config.git_dir = git_dir
+    analyzer = ObservableModifierAnalyzer(context=context, config=config)
+    adapter = AnalysisModuleAdapter(analyzer)
+
+    with caplog.at_level(logging.ERROR):
+        adapter.execute_analysis(observable)
+        adapter.analyze(observable, final_analysis=True)
+    dp = observable.detections[0]
+    assert dp.signature_version == SIGNATURE_VERSION_UNKNOWN
+    assert any("does not contain rules file" in r.message for r in caplog.records)

@@ -3,6 +3,7 @@ import re
 from typing import Type
 from pydantic import Field, ConfigDict
 from saq.analysis.analysis import Analysis
+from saq.signatures import EMAIL_MACRO_NEW_SENDER, EMAIL_SUSPECT_URL_NEW_SENDER
 from saq.analysis.observable import Observable
 from saq.analysis.search import search_down
 from saq.brocess import query_brocess_by_email_conversation, query_brocess_by_source_email
@@ -174,7 +175,7 @@ class EmailConversationAttachmentAnalyzer(AnalysisModule):
 
         #_file.add_tag('suspect')
         _file.add_directive(DIRECTIVE_SANDBOX)
-        _file.add_detection_point("An email from a new sender contained a macro.")
+        _file.add_detection_point("An email from a new sender contained a macro.", signature_uuid=EMAIL_MACRO_NEW_SENDER.uuid)
 
         analysis = self.create_analysis(_file)
         return AnalysisExecutionResult.COMPLETED
@@ -247,7 +248,7 @@ class EmailConversationLinkAnalyzer(AnalysisModule):
             if self.wait_for_analysis(ec, EmailConversationFrequencyAnalysis):
                 if ec.has_tag('new_sender'):
                     # this is a url we would crawl AND it's from a new sender
-                    url.add_detection_point("Suspect URL sent from new sender.")
+                    url.add_detection_point("Suspect URL sent from new sender.", signature_uuid=EMAIL_SUSPECT_URL_NEW_SENDER.uuid)
 
         analysis = self.create_analysis(url)
         return AnalysisExecutionResult.COMPLETED

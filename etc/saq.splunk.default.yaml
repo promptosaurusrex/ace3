@@ -50,7 +50,8 @@ hunt_type_splunk:
   python_module: saq.collectors.hunter.splunk_hunter
   python_class: SplunkHunt
   rule_dirs:
-    - signatures/hunts/splunk
+    - rule_dir: signatures/hunts/splunk
+      git_dir: signatures
   update_frequency: 60
 
 config:

@@ -5,6 +5,7 @@ from subprocess import Popen
 from typing import Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
+from saq.signatures import VBS_HEX_ENCODED_CONTENT
 from saq.constants import DIRECTIVE_SANDBOX, F_FILE, AnalysisExecutionResult
 from saq.environment import get_base_dir
 from saq.modules import AnalysisModule
@@ -156,13 +157,13 @@ class VBScriptAnalyzer(AnalysisModule):
         for length in distribution.keys():
             if int(length) > self.large_hex_string_quantity:
                 if distribution[length] > self.large_hex_string_quantity_count:
-                    _file.add_detection_point("large number of large hex strings of same length")
+                    _file.add_detection_point("large number of large hex strings of same length", signature_uuid=VBS_HEX_ENCODED_CONTENT.uuid)
                     _file.add_directive(DIRECTIVE_SANDBOX)
                     break
 
         # is a large percentage of the file hex strings?
         if (total_count / file_size) >= self.hex_string_percentage_limit:
-            _file.add_detection_point("a large percentage of the file is ascii hex ({0:.2f}%)".format((total_count / file_size) * 100.0))
+            _file.add_detection_point("a large percentage of the file is ascii hex ({0:.2f}%)".format((total_count / file_size) * 100.0), signature_uuid=VBS_HEX_ENCODED_CONTENT.uuid)
             _file.add_directive(DIRECTIVE_SANDBOX)
 
         # if we have a large hex string at all we at least tag it and send it to the sandbox

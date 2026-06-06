@@ -3,6 +3,7 @@ from typing import override
 import redis
 
 from saq.analysis import Analysis
+from saq.signatures import OBSERVABLE_FLAGGED
 from saq.configuration.config import get_config
 from saq.constants import REDIS_DB_FOR_DETECTION_A, AnalysisExecutionResult
 from saq.modules import AnalysisModule
@@ -69,7 +70,7 @@ class ObservableDetectionAnalyzer(AnalysisModule):
         if redis_connection.get(f"{observable.type}:{observable.value}"):
             logging.info(f"observable {observable.type}:{observable.value} is enabled for detection")
             analysis.for_detection = True
-            observable.add_detection_point(f"Observable {observable.type}:{observable.value} is enabled for detection")
+            observable.add_detection_point(f"Observable {observable.type}:{observable.value} is enabled for detection", signature_uuid=OBSERVABLE_FLAGGED.uuid)
             observable.add_tag(f"detect_{observable.type}")
         else:
             logging.debug(f"observable {observable.type}:{observable.value} is not enabled for detection")
