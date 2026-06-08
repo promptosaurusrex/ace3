@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.61] - 2026-06-08
+
+- [Do not add observables without values](https://github.com/ACE-Collective/ace3/pull/298)
+
 ## [3.0.60] - 2026-06-05
 
 - [fix issue with create_file_path](https://github.com/ACE-Collective/ace3/pull/281)
