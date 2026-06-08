@@ -978,8 +978,14 @@ class QueryHunt(Hunt):
         # Attach hunt_metadata to every submission so the trace UI can render hunt context
         # (name, group_by/group_value for the grouping banner) without inferring it from data.
         for submission in submissions:
+            # Render the hunt name (which may itself be a Jinja template) against the
+            # submission's first event — the same event that produced its rendered
+            # description (see create_root_analysis) — so the Correlation Trace UI shows
+            # the evaluated name rather than the raw template.
+            events = submission.root.details.get(QUERY_DETAILS_EVENTS) or []
+            rendered_name = self._render_name(events[0]) if events else self.name
             submission.root.details[QUERY_DETAILS_HUNT_METADATA] = {
-                "name": self.name,
+                "name": rendered_name,
                 "uuid": self.uuid,
                 "type": self.type,
                 "group_by": self.group_by,
