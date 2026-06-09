@@ -1028,6 +1028,46 @@ def test_correlation_trace_scoped_per_alert_with_grouping(monkeypatch):
 
 
 @pytest.mark.unit
+def test_hunt_metadata_name_renders_jinja(monkeypatch):
+    """When the hunt name is itself a Jinja template, hunt_metadata.name should hold
+    the rendered value (consistent with the alert description) rather than the raw
+    template text — otherwise the Correlation Trace UI leaks the raw Jinja."""
+    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
+
+    # Name depends on an event field
+    hunt = default_hunt(
+        manager=MockManager(),
+        name='Foo{{- " BAR" if has_x | list | length > 0 else "" -}}',
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+
+    submissions = hunt.process_query_results([{"src": "1.2.3.4", "has_x": ["yes"]}])
+    assert submissions and len(submissions) == 1
+    hm = submissions[0].root.details["hunt_metadata"]
+    assert hm["name"] == "Foo BAR"
+    assert "{{" not in hm["name"]
+
+
+@pytest.mark.unit
+def test_hunt_metadata_name_plain_name_unchanged(monkeypatch):
+    """A hunt name with no Jinja markers passes through _render_name's fast path and
+    is stored verbatim in hunt_metadata."""
+    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="Plain Hunt Name",
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert submissions and len(submissions) == 1
+    assert submissions[0].root.details["hunt_metadata"]["name"] == "Plain Hunt Name"
+
+
+@pytest.mark.unit
 def test_event_trace_events_position_indexes_into_alert_events(monkeypatch):
     """Each scoped EventTrace should carry an `events_position` field that points at
     the entry in this submission's `details["events"]` list whose dict matches the
