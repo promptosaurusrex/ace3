@@ -1,4 +1,5 @@
 from datetime import datetime
+import ipaddress
 import json
 import pytest
 
@@ -33,3 +34,21 @@ def test_encoding():
 
     with pytest.raises(ValueError):
         json.dumps({"test": Custom()}, cls=_JSONEncoder)
+
+
+@pytest.mark.unit
+def test_encoding_ipaddress():
+    """ipaddress network/address objects (e.g. whoisit RDAP IP results)
+    serialize to their string form."""
+    test_data = {
+        "ipv4_network": ipaddress.IPv4Network("8.8.8.0/24"),
+        "ipv6_network": ipaddress.IPv6Network("2606:4700::/32"),
+        "ipv4_address": ipaddress.IPv4Address("8.8.8.8"),
+        "ipv6_address": ipaddress.IPv6Address("2606:4700:4700::1111"),
+    }
+    assert json.loads(json.dumps(test_data, cls=_JSONEncoder)) == {
+        "ipv4_network": "8.8.8.0/24",
+        "ipv6_network": "2606:4700::/32",
+        "ipv4_address": "8.8.8.8",
+        "ipv6_address": "2606:4700:4700::1111",
+    }

@@ -1,15 +1,25 @@
-"""Module for RDAP analysis of domain names.
+"""Module for RDAP analysis of domain names and IP addresses.
 
 RDAP (RFC 7480-7484, RFC 9083) is ICANN's replacement for WHOIS. We
 prefer RDAP, falling back to legacy WHOIS only when RDAP cannot
 answer — primarily for country-code TLDs (.de, .br, etc.) that have
 not yet stood up an RDAP service.
 
-RDAP and WHOIS are *registry* protocols: they only answer for
-registered domains, never for subdomains. The FQDN observable is
+The module runs on both FQDN and IP observables:
+
+    - For domains, ``whoisit.domain()`` returns registrar / nameserver /
+      registration data.
+    - For IPs, ``whoisit.ip()`` returns the owning network (CIDR), the
+      responsible RIR (ARIN, RIPE, APNIC, LACNIC, AFRINIC), country,
+      allocation dates, and abuse/registrant contacts. All five RIRs
+      serve RDAP for IP queries, so this path is reliable.
+
+RDAP and WHOIS are *registry* protocols: for domains they only answer
+for registered domains, never for subdomains. The FQDN observable is
 therefore first reduced to its registrable domain (eTLD+1) — e.g.
 ``www.example.com`` is queried as ``example.com`` — otherwise the
-registry returns a spurious 404 for the host.
+registry returns a spurious 404 for the host. IP observables are
+queried verbatim (no such reduction).
 
 Outcomes to handle:
 
@@ -49,7 +59,7 @@ from saq.analysis.presenter.analysis_presenter import (
     AnalysisPresenter,
     register_analysis_presenter,
 )
-from saq.constants import F_FQDN, AnalysisExecutionResult
+from saq.constants import F_FQDN, F_IP, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.util.strings import format_item_list_for_summary
 
@@ -69,6 +79,13 @@ KEY_REGISTRAR = "registrar"
 KEY_RDAP_SERVICE_URL = "rdap_service_url"
 KEY_NAME_SERVERS = "name_servers"
 KEY_EMAILS = "emails"
+
+# IP-only fields (populated when the observable is an IP address).
+KEY_NETWORK_CIDR = "network_cidr"
+KEY_NETWORK_NAME = "network_name"
+KEY_COUNTRY = "country"
+KEY_IP_VERSION = "ip_version"
+KEY_ASSIGNMENT_TYPE = "assignment_type"
 
 KEY_RDAP_DATA = "rdap_data"
 KEY_RDAP_RAW_JSON = "rdap_raw_json"
@@ -160,6 +177,12 @@ class RdapAnalysis(Analysis):
             KEY_RDAP_SERVICE_URL: None,
             KEY_NAME_SERVERS: None,
             KEY_EMAILS: None,
+
+            KEY_NETWORK_CIDR: None,
+            KEY_NETWORK_NAME: None,
+            KEY_COUNTRY: None,
+            KEY_IP_VERSION: None,
+            KEY_ASSIGNMENT_TYPE: None,
 
             KEY_RDAP_DATA: None,
             KEY_RDAP_RAW_JSON: None,
@@ -318,6 +341,51 @@ class RdapAnalysis(Analysis):
     def emails(self, value):
         self.details[KEY_EMAILS] = value
 
+    @property
+    def network_cidr(self):
+        """CIDR of the network the IP belongs to (IP lookups only)."""
+        return self.details[KEY_NETWORK_CIDR]
+
+    @network_cidr.setter
+    def network_cidr(self, value):
+        self.details[KEY_NETWORK_CIDR] = value
+
+    @property
+    def network_name(self):
+        """Network/allocation name (IP lookups only)."""
+        return self.details[KEY_NETWORK_NAME]
+
+    @network_name.setter
+    def network_name(self, value):
+        self.details[KEY_NETWORK_NAME] = value
+
+    @property
+    def country(self):
+        """Registered country code for the network (IP lookups only)."""
+        return self.details[KEY_COUNTRY]
+
+    @country.setter
+    def country(self, value):
+        self.details[KEY_COUNTRY] = value
+
+    @property
+    def ip_version(self):
+        """IP version (4 or 6) reported by the RDAP service (IP lookups only)."""
+        return self.details[KEY_IP_VERSION]
+
+    @ip_version.setter
+    def ip_version(self, value):
+        self.details[KEY_IP_VERSION] = value
+
+    @property
+    def assignment_type(self):
+        """Allocation/assignment type, e.g. ``"allocated"`` (IP lookups only)."""
+        return self.details[KEY_ASSIGNMENT_TYPE]
+
+    @assignment_type.setter
+    def assignment_type(self, value):
+        self.details[KEY_ASSIGNMENT_TYPE] = value
+
     def generate_summary(self):
         parts = []
         suffix = ""
@@ -327,6 +395,13 @@ class RdapAnalysis(Analysis):
         if self.error:
             parts.append(f"error: {self.error}")
         else:
+            if self.network_cidr:
+                network = self.network_cidr
+                if self.network_name:
+                    network += f" ({self.network_name})"
+                parts.append(f"network: {network}")
+            if self.country:
+                parts.append(f"country: {self.country}")
             if self.age_created_in_days:
                 parts.append(f"created: {self.age_created_in_days} day(s) ago")
             if self.age_last_updated_in_days:
@@ -359,7 +434,7 @@ class RdapAnalyzer(AnalysisModule):
 
     @property
     def valid_observable_types(self):
-        return F_FQDN
+        return [F_FQDN, F_IP]
 
     def _ensure_rdap_bootstrap(self) -> Optional[str]:
         """Best-effort lazy bootstrap of the IANA RDAP registry. Returns
@@ -380,16 +455,22 @@ class RdapAnalyzer(AnalysisModule):
         now = datetime.now(timezone.utc)
         analysis.datetime_of_analysis = now.isoformat(" ")
 
-        # RDAP/WHOIS only answer for registered domains — query the
-        # registrable domain, not the (possibly subdomain) observable.
-        query_domain = _registrable_domain(observable.value)
+        is_ip = observable.type == F_IP
+        if is_ip:
+            # IPs are queried verbatim; RDAP answers for the network the
+            # address falls in, so no eTLD+1-style reduction applies.
+            query_target = observable.value
+        else:
+            # RDAP/WHOIS only answer for registered domains — query the
+            # registrable domain, not the (possibly subdomain) observable.
+            query_target = _registrable_domain(observable.value)
 
         # ---- RDAP attempt --------------------------------------------------
         bootstrap_error = self._ensure_rdap_bootstrap()
         if bootstrap_error is not None:
             rdap_error: Optional[str] = bootstrap_error
         else:
-            rdap_error = self._try_rdap(observable, query_domain, analysis, now)
+            rdap_error = self._try_rdap(observable, query_target, analysis, now, is_ip)
             if rdap_error is None:
                 analysis.lookup_protocol = "rdap"
                 return AnalysisExecutionResult.COMPLETED
@@ -399,7 +480,7 @@ class RdapAnalyzer(AnalysisModule):
 
         # ---- WHOIS fallback ------------------------------------------------
         analysis.rdap_attempt_error = rdap_error
-        whois_error = self._try_whois(observable, query_domain, analysis, now)
+        whois_error = self._try_whois(observable, query_target, analysis, now)
         if whois_error is None:
             analysis.lookup_protocol = "whois"
             return AnalysisExecutionResult.COMPLETED
@@ -410,12 +491,14 @@ class RdapAnalyzer(AnalysisModule):
     def _try_rdap(
         self,
         observable,
-        query_domain: str,
+        query_target: str,
         analysis: RdapAnalysis,
         now: datetime,
+        is_ip: bool,
     ) -> Optional[str]:
-        """Populate ``analysis`` from an RDAP query for ``query_domain``
-        (the registrable domain reduced from ``observable``).
+        """Populate ``analysis`` from an RDAP query for ``query_target``
+        (the registrable domain reduced from ``observable``, or the raw
+        IP when ``is_ip``).
 
         Returns:
             ``None`` on success;
@@ -426,7 +509,10 @@ class RdapAnalyzer(AnalysisModule):
                 will fall back to WHOIS).
         """
         try:
-            result = whoisit.domain(query_domain, include_raw=True)
+            if is_ip:
+                result = whoisit.ip(query_target, include_raw=True)
+            else:
+                result = whoisit.domain(query_target, include_raw=True)
         except ResourceDoesNotExist as e:
             analysis.error = f"rdap: domain not found: {e}".split(
                 "\n", 1
@@ -442,13 +528,13 @@ class RdapAnalyzer(AnalysisModule):
             )[0].strip()
 
         raw = result.pop("raw", None)
-        # Plain-dict copy of the parsed result so the cached payload is
-        # JSON-clean (datetime values pass through and serialize via the
-        # cache layer's default=str codec).
+        # Plain-dict copy of the parsed result. datetime values and the
+        # ``network`` ipaddress object (IP results) are both handled by ACE's
+        # analysis JSON encoder (saq/json_encoding.py).
         analysis.rdap_data = dict(result)
         analysis.rdap_raw_json = json.dumps(raw, default=str) if raw is not None else None
 
-        analysis.domain_name = result.get("name") or query_domain
+        analysis.domain_name = result.get("name") or query_target
         analysis.registrar = _extract_rdap_registrar(result)
         nameservers = result.get("nameservers") or []
         analysis.name_servers = list(nameservers)
@@ -457,6 +543,16 @@ class RdapAnalyzer(AnalysisModule):
         # (the link analysts can click) and the auth registry under
         # ``rir``. ``url`` is the more useful of the two for an analyst.
         analysis.rdap_service_url = result.get("url") or result.get("rir")
+
+        if is_ip:
+            # ``network`` is an ipaddress.IPv4Network/IPv6Network — stringify
+            # so the stored details stay JSON-clean.
+            network = result.get("network")
+            analysis.network_cidr = str(network) if network is not None else None
+            analysis.network_name = result.get("name") or None
+            analysis.country = result.get("country") or None
+            analysis.ip_version = result.get("ip_version")
+            analysis.assignment_type = result.get("assignment_type") or None
 
         created = result.get("registration_date")
         if isinstance(created, datetime):
