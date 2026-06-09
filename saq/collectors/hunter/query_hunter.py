@@ -744,11 +744,16 @@ class QueryHunt(Hunt):
 
         # Run correlation if configured
         event_action_overrides: dict[int, any] = {}
-        if self.config.correlate is not None:
-            # snapshot the raw events before correlation mutates them in place,
-            # so hunt authors can later inspect what came back from the data source
+
+        # snapshot the raw events before any processing (correlation mutates them in place;
+        # grouping/wrapping happens below) so the validator can report exactly what the data
+        # source returned. captured for correlate hunts (always) and manual/validate runs (so
+        # non-correlate hunts get a faithful top-level original_events too); skipped for normal
+        # production runs that never read it.
+        if self.config.correlate is not None or self.manual_hunt:
             self.original_query_results = copy.deepcopy(query_results)
 
+        if self.config.correlate is not None:
             from saq.collectors.hunter.correlation.engine import CorrelationEngine
             engine = CorrelationEngine(
                 correlate_config=self.config.correlate,
@@ -1094,9 +1099,9 @@ class QueryHunt(Hunt):
                 )
                 submission.root.details[QUERY_DETAILS_CORRELATION_TRACE] = per_alert_trace.model_dump()
 
-        # Attach the original (pre-correlation) events to each submission's details
-        # so hunt authors can later inspect what came back from the data source
-        if self.original_query_results is not None:
+        # Attach the pre-correlation events to each correlated alert so hunt authors can inspect
+        # what came back from the data source before correlation filtered/transformed it.
+        if self.config.correlate is not None and self.original_query_results is not None:
             for submission in submissions:
                 submission.root.details[QUERY_DETAILS_ORIGINAL_EVENTS] = self.original_query_results
 

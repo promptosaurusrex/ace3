@@ -787,8 +787,8 @@ def test_suppressed_property_false_when_group_by_set(monkeypatch):
 @pytest.mark.unit
 def test_process_query_results_captures_original_events(monkeypatch):
     """When correlation is configured, the hunter should snapshot the raw event list
-    before correlation mutates/filters it. When correlation is not configured, the
-    snapshot stays None to avoid an unnecessary deep copy."""
+    before correlation mutates/filters it. For a normal (non-manual) non-correlate hunt
+    the snapshot stays None to avoid an unnecessary deep copy on production runs."""
     import saq.collectors.hunter.query_hunter
     from saq.collectors.hunter.correlation.schema import CorrelateConfig
 
@@ -869,6 +869,42 @@ def test_process_query_results_captures_original_events(monkeypatch):
     no_correlate_subs = no_correlate_hunt.process_query_results([{"src": "1.2.3.4"}])
     assert no_correlate_subs
     for submission in no_correlate_subs:
+        assert "original_events" not in submission.root.details
+
+
+@pytest.mark.unit
+def test_process_query_results_captures_original_events_for_manual_non_correlate(monkeypatch):
+    """A manual/validate run of a non-correlate hunt snapshots the raw query results (so the
+    validator can report exactly what the data source returned), but does NOT duplicate them
+    into every root's details — those events already live in details["events"]."""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="manual_no_correlate",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+    hunt.manual_hunt = True
+    assert hunt.original_query_results is None
+
+    input_events = [{"src": "1.2.3.4"}, {"src": "5.6.7.8"}, {"src": "9.9.9.9"}]
+    submissions = hunt.process_query_results(input_events)
+
+    # snapshot has every raw row, in the original order
+    assert hunt.original_query_results is not None
+    assert [e["src"] for e in hunt.original_query_results] == ["1.2.3.4", "5.6.7.8", "9.9.9.9"]
+
+    # snapshot is a deep copy: mutating the input must not affect it
+    input_events[0]["src"] = "0.0.0.0"
+    assert hunt.original_query_results[0]["src"] == "1.2.3.4"
+
+    # non-correlate roots are NOT bloated with a per-root copy of the originals
+    assert submissions
+    for submission in submissions:
         assert "original_events" not in submission.root.details
 
 

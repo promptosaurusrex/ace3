@@ -766,13 +766,13 @@ def main():
                 print("\033[92mOK: hunt is valid\033[0m")
             continue
 
-        # Original (pre-correlation) results live at the top level of the response and
-        # should be displayed/saved even when no alerts/roots are produced (e.g. when
-        # correlation filters out every event).
+        # Original query results: the server snapshots the raw query results before any
+        # processing and exposes them at the top level for every hunt (correlate or not),
+        # present even when correlation filters out every event.
         if args.save_original_results:
-            original = result.get("original_events")
-            if original is None:
-                print("\033[93mNo original_events in response (hunt may not have a correlate block)\033[0m")
+            original = result.get("original_events") or []
+            if not original:
+                print("\033[93mNo events in response to save\033[0m")
             else:
                 with open(args.save_original_results, "w") as fp:
                     json.dump(original, fp, indent=4, sort_keys=True)
@@ -794,9 +794,9 @@ def main():
                 )
 
         if args.print_original_results:
-            original = result.get("original_events")
-            if original is None:
-                print("\033[93mNo original_events in response (hunt may not have a correlate block)\033[0m")
+            original = result.get("original_events") or []
+            if not original:
+                print("\033[93mNo events in response to print\033[0m")
             else:
                 print()
                 print("\033[1;96mOriginal Query Results:\033[0m")
