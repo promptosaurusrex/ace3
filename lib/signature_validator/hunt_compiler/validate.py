@@ -46,6 +46,23 @@ def _parse_duration(timespec: str) -> timedelta:
     return timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
 
 
+def extract_original_events(result: dict) -> list[dict]:
+    """Return the hunt's raw query results from a validate response.
+
+    Correlate hunts expose them at the top-level "original_events" (a pre-correlation
+    snapshot). Non-correlate hunts have no such snapshot, so reconstruct from each alert's
+    details["events"] — for non-correlate hunts every returned event lands in exactly one
+    root, so the union across roots is the full result set.
+    """
+    original = result.get("original_events")
+    if original is not None:
+        return original
+    events = []
+    for root in result.get("roots", []) or []:
+        events.extend((root.get("details") or {}).get("events", []) or [])
+    return events
+
+
 def _parse_time_range_override(value: str) -> tuple[str, str]:
     """Parse a `--time-range NAME=DURATION` argument into (name, duration_str)."""
     if '=' not in value:
@@ -766,13 +783,13 @@ def main():
                 print("\033[92mOK: hunt is valid\033[0m")
             continue
 
-        # Original (pre-correlation) results live at the top level of the response and
-        # should be displayed/saved even when no alerts/roots are produced (e.g. when
-        # correlation filters out every event).
+        # Original query results: for correlate hunts these are the pre-correlation
+        # snapshot at the top level (present even when correlation filters out every event);
+        # for non-correlate hunts they are reconstructed from each alert's events.
         if args.save_original_results:
-            original = result.get("original_events")
-            if original is None:
-                print("\033[93mNo original_events in response (hunt may not have a correlate block)\033[0m")
+            original = extract_original_events(result)
+            if not original:
+                print("\033[93mNo events in response to save\033[0m")
             else:
                 with open(args.save_original_results, "w") as fp:
                     json.dump(original, fp, indent=4, sort_keys=True)
@@ -794,9 +811,9 @@ def main():
                 )
 
         if args.print_original_results:
-            original = result.get("original_events")
-            if original is None:
-                print("\033[93mNo original_events in response (hunt may not have a correlate block)\033[0m")
+            original = extract_original_events(result)
+            if not original:
+                print("\033[93mNo events in response to print\033[0m")
             else:
                 print()
                 print("\033[1;96mOriginal Query Results:\033[0m")
