@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.62] - 2026-06-09
+
+- [Let partial Phishkit results flow back to ACE](https://github.com/ACE-Collective/ace3/pull/302)
+- [Render hunt title in Correlation Trace](https://github.com/ACE-Collective/ace3/pull/303)
+- [Update RDAP module to support IP addresses](https://github.com/ACE-Collective/ace3/pull/304)
+- [Let --save-original-results work for non-correlated hunts](https://github.com/ACE-Collective/ace3/pull/305)
+
 ## [3.0.61] - 2026-06-08
 
 - [Do not add observables without values](https://github.com/ACE-Collective/ace3/pull/298)
