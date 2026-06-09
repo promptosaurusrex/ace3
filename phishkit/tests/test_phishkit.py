@@ -344,8 +344,14 @@ class TestRunScanner:
     @pytest.mark.unit
     @patch("phishkit._force_stop_container")
     @patch("phishkit._sync_config", return_value=None)
-    def test_run_scanner_timeout_no_proxy_raises(self, mock_sync, mock_force_stop, tmpdir):
-        """Timeout without proxy kills the container then raises TimeoutExpired."""
+    def test_run_scanner_timeout_no_proxy_returns_partial(self, mock_sync, mock_force_stop, tmpdir):
+        """Timeout without proxy kills the container then returns partial results.
+
+        The scanner's SIGTERM handler flushes partial requests.json/dom.html
+        before the container dies; rather than raising those away, _run_scanner
+        persists std.out/exit.code/proxy.json and returns so the caller can still
+        harvest captured-traffic observables.
+        """
         from phishkit import _run_scanner
 
         config_path = self._write_config(tmpdir)
@@ -356,23 +362,35 @@ class TestRunScanner:
         # first communicate call raises; second (post-kill) returns output
         proc.communicate.side_effect = [
             TimeoutExpired(cmd="docker", timeout=10),
-            ("", ""),
+            ("partial stdout", ""),
         ]
+        # a SIGTERM-killed container exits 143
+        proc.returncode = 143
         proc.kill = MagicMock()
         proc.wait = MagicMock()
 
         with patch("phishkit.Popen", return_value=proc):
-            with pytest.raises(TimeoutExpired):
-                _run_scanner(
-                    target_args=["https://example.com"],
-                    output_dir=output_dir,
-                    job_id="test-job",
-                    timeout=10,
-                    proxy=None,
-                    proxy_fallback_to_direct=False,
-                    config_path=config_path,
-                )
-        # the fix: container must be docker-killed on timeout
+            stdout, stderr, rc = _run_scanner(
+                target_args=["https://example.com"],
+                output_dir=output_dir,
+                job_id="test-job",
+                timeout=10,
+                proxy=None,
+                proxy_fallback_to_direct=False,
+                config_path=config_path,
+            )
+
+        # does not raise; returns the (non-zero) exit code and persists outputs
+        assert rc == 143
+        assert os.path.isfile(os.path.join(output_dir, "std.out"))
+        assert os.path.isfile(os.path.join(output_dir, "exit.code"))
+        with open(os.path.join(output_dir, "exit.code")) as f:
+            assert f.read() == "143"
+        with open(os.path.join(output_dir, "proxy.json")) as f:
+            proxy_status = json.load(f)
+        assert proxy_status["fallback_triggered"] is False
+        assert proxy_status["final_route"] == "none"
+        # the container must still be docker-killed on timeout
         mock_force_stop.assert_any_call("phishkit-scan-test-job")
 
     @pytest.mark.unit
@@ -432,8 +450,73 @@ class TestRunScanner:
     @pytest.mark.unit
     @patch("phishkit._force_stop_container")
     @patch("phishkit._sync_config", return_value=None)
-    def test_run_scanner_timeout_retry_disabled_raises(self, mock_sync, mock_force_stop, tmpdir):
-        """Timeout with retry_on_timeout=False raises even with proxy."""
+    def test_run_scanner_timeout_both_attempts_returns_partial(self, mock_sync, mock_force_stop, tmpdir):
+        """Proxy attempt times out AND the direct retry times out — still returns partial.
+
+        The direct attempt's SIGTERM-flushed requests.json (written into
+        {output_dir}-direct) is copied back into output_dir, so the redirect
+        chain captured before the kill survives.
+        """
+        from phishkit import _run_scanner
+
+        config_path = self._write_config(tmpdir)
+        output_dir = str(tmpdir.join("output"))
+        os.makedirs(output_dir)
+
+        call_count = 0
+
+        def popen_side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            proc = MagicMock()
+            proc.communicate.side_effect = [
+                TimeoutExpired(cmd="docker", timeout=10),
+                ("partial direct stdout", ""),
+            ]
+            proc.returncode = 143
+            proc.kill = MagicMock()
+            proc.wait = MagicMock()
+            # the direct attempt (2nd Popen) writes to {output_dir}-direct; mimic
+            # the scanner's SIGTERM flush so the copy-back has something to move
+            if call_count == 2:
+                direct_dir = f"{output_dir}-direct"
+                os.makedirs(direct_dir, exist_ok=True)
+                with open(os.path.join(direct_dir, "requests.json"), "w") as f:
+                    json.dump(
+                        [{"type": "request", "url": "https://redirect.example.net/ns", "requestId": "1"}],
+                        f,
+                    )
+            return proc
+
+        with patch("phishkit.Popen", side_effect=popen_side_effect):
+            stdout, stderr, rc = _run_scanner(
+                target_args=["https://example.com"],
+                output_dir=output_dir,
+                job_id="test-job",
+                timeout=10,
+                proxy="http://proxy:8080",
+                proxy_fallback_to_direct=True,
+                config_path=config_path,
+            )
+
+        assert call_count == 2
+        assert rc == 143
+        # the direct attempt's partial requests.json was copied back into output_dir
+        copied = os.path.join(output_dir, "requests.json")
+        assert os.path.isfile(copied)
+        with open(copied) as f:
+            assert json.load(f)[0]["url"] == "https://redirect.example.net/ns"
+        with open(os.path.join(output_dir, "proxy.json")) as f:
+            proxy_status = json.load(f)
+        assert proxy_status["fallback_triggered"] is True
+        assert proxy_status["fallback_reason"] == "timeout"
+        assert proxy_status["final_route"] == "direct"
+
+    @pytest.mark.unit
+    @patch("phishkit._force_stop_container")
+    @patch("phishkit._sync_config", return_value=None)
+    def test_run_scanner_timeout_retry_disabled_returns_partial(self, mock_sync, mock_force_stop, tmpdir):
+        """Timeout with retry_on_timeout=False returns partial results (no retry, no raise)."""
         from phishkit import _run_scanner
 
         config_path = self._write_config(tmpdir, {"proxy_fallback": {
@@ -448,20 +531,28 @@ class TestRunScanner:
             TimeoutExpired(cmd="docker", timeout=10),
             ("", ""),
         ]
+        proc.returncode = 143
         proc.kill = MagicMock()
         proc.wait = MagicMock()
 
-        with patch("phishkit.Popen", return_value=proc):
-            with pytest.raises(TimeoutExpired):
-                _run_scanner(
-                    target_args=["https://example.com"],
-                    output_dir=output_dir,
-                    job_id="test-job",
-                    timeout=10,
-                    proxy="http://proxy:8080",
-                    proxy_fallback_to_direct=True,
-                    config_path=config_path,
-                )
+        with patch("phishkit.Popen", return_value=proc) as mock_popen:
+            stdout, stderr, rc = _run_scanner(
+                target_args=["https://example.com"],
+                output_dir=output_dir,
+                job_id="test-job",
+                timeout=10,
+                proxy="http://proxy:8080",
+                proxy_fallback_to_direct=True,
+                config_path=config_path,
+            )
+
+        # retry disabled — only one attempt, no raise, partial output persisted
+        assert mock_popen.call_count == 1
+        assert rc == 143
+        with open(os.path.join(output_dir, "proxy.json")) as f:
+            proxy_status = json.load(f)
+        assert proxy_status["fallback_triggered"] is False
+        assert proxy_status["final_route"] == "proxy"
 
     @pytest.mark.unit
     @patch("phishkit._force_stop_container")
@@ -641,8 +732,12 @@ class TestRunScanner:
 
     @pytest.mark.unit
     @patch("phishkit._force_stop_container")
-    def test_run_scanner_deletes_config_on_failure(self, mock_force_stop, tmpdir):
-        """The synced config is removed even when the scan raises."""
+    def test_run_scanner_deletes_config_on_timeout(self, mock_force_stop, tmpdir):
+        """The synced config is removed even when the scan times out.
+
+        A timeout now returns partial results instead of raising, but the outer
+        finally must still clean up the synced config file.
+        """
         from phishkit import _run_scanner
 
         config_path = self._write_config(tmpdir)
@@ -658,22 +753,23 @@ class TestRunScanner:
             TimeoutExpired(cmd="docker", timeout=10),
             ("", ""),
         ]
+        proc.returncode = 143
         proc.kill = MagicMock()
         proc.wait = MagicMock()
 
         with patch("phishkit._sync_config", return_value=synced), \
                 patch("phishkit.Popen", return_value=proc):
-            with pytest.raises(TimeoutExpired):
-                _run_scanner(
-                    target_args=["https://example.com"],
-                    output_dir=output_dir,
-                    job_id="test-job",
-                    timeout=10,
-                    proxy=None,
-                    proxy_fallback_to_direct=False,
-                    config_path=config_path,
-                )
+            _, _, rc = _run_scanner(
+                target_args=["https://example.com"],
+                output_dir=output_dir,
+                job_id="test-job",
+                timeout=10,
+                proxy=None,
+                proxy_fallback_to_direct=False,
+                config_path=config_path,
+            )
 
+        assert rc == 143
         assert not os.path.exists(synced)
 
     @pytest.mark.unit
@@ -1090,3 +1186,68 @@ class TestMaintainFiles:
         assert result[str(output_dir)] == []
         assert not old_job.exists()
         assert new_job.exists()
+
+
+# ---------------------------------------------------------------------------
+# _has_recoverable_output
+# ---------------------------------------------------------------------------
+
+class TestHasRecoverableOutput:
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("filename", ["requests.json", "dom.html"])
+    def test_recoverable_when_partial_artifact_present(self, tmp_path, filename):
+        from phishkit import _has_recoverable_output
+
+        (tmp_path / filename).write_text("partial")
+        assert _has_recoverable_output(str(tmp_path)) is True
+
+    @pytest.mark.unit
+    def test_not_recoverable_when_empty(self, tmp_path):
+        from phishkit import _has_recoverable_output
+
+        assert _has_recoverable_output(str(tmp_path)) is False
+
+    @pytest.mark.unit
+    def test_not_recoverable_when_only_metadata(self, tmp_path):
+        from phishkit import _has_recoverable_output
+
+        # std.out / exit.code alone are not captured traffic worth returning
+        (tmp_path / "std.out").write_text("")
+        (tmp_path / "exit.code").write_text("143")
+        assert _has_recoverable_output(str(tmp_path)) is False
+
+
+# ---------------------------------------------------------------------------
+# scan_url — return-vs-raise on non-zero exit
+# ---------------------------------------------------------------------------
+
+class TestScanUrlPartial:
+
+    @pytest.mark.unit
+    def test_returns_dir_when_partial_output_present(self):
+        """A non-zero exit with recoverable artifacts returns the dir, not raises."""
+        import phishkit as phishkit_mod
+
+        with patch.object(phishkit_mod.os, "makedirs"), \
+             patch.object(phishkit_mod, "_run_scanner", return_value=("", "killed", 143)), \
+             patch.object(phishkit_mod, "_has_recoverable_output", return_value=True), \
+             patch.object(phishkit_mod, "_process_output", side_effect=lambda job_id, out: out):
+            result = phishkit_mod.scan_url.run(
+                "https://example.com", timeout=10, config_path="etc/phishkit_config.yaml"
+            )
+
+        assert result.startswith("/phishkit/output/")
+
+    @pytest.mark.unit
+    def test_raises_when_nonzero_and_no_partial_output(self):
+        """A non-zero exit with an empty output dir is a hard failure — raise."""
+        import phishkit as phishkit_mod
+
+        with patch.object(phishkit_mod.os, "makedirs"), \
+             patch.object(phishkit_mod, "_run_scanner", return_value=("", "boom", 1)), \
+             patch.object(phishkit_mod, "_has_recoverable_output", return_value=False):
+            with pytest.raises(Exception, match="scan failed"):
+                phishkit_mod.scan_url.run(
+                    "https://example.com", timeout=10, config_path="etc/phishkit_config.yaml"
+                )

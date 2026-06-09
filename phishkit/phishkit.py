@@ -320,7 +320,13 @@ def _run_scanner(
                     fallback_reason = "timeout"
                     logger.warning("timeout for job %s, retrying without proxy", job_id)
                 else:
-                    raise
+                    # Don't discard the run. The scanner's SIGTERM handler flushes
+                    # partial requests.json/dom.html/metrics.json into output_dir
+                    # before the container dies, so fall through to persist
+                    # std.out/exit.code/proxy.json and return — ACE can then still
+                    # harvest observables (redirect URLs/domains) from the captured
+                    # traffic instead of getting an empty result.
+                    logger.warning("timeout for job %s, no proxy retry; returning partial results", job_id)
         finally:
             _force_stop_container(container_name)
 
@@ -372,7 +378,10 @@ def _run_scanner(
                     except TimeoutExpired:
                         process.kill()
                         _stdout, _stderr = process.communicate()
-                    raise
+                    # Same rationale as the proxy attempt above: fall through to
+                    # persist + copy back the direct attempt's SIGTERM-flushed
+                    # partial output instead of raising it away.
+                    logger.warning("direct retry for job %s timed out; returning partial results", job_id)
             finally:
                 _force_stop_container(retry_container_name)
 
@@ -502,6 +511,20 @@ def _process_output(job_id: str, output_dir: str) -> str:
     """Returns the output directory path for the completed scan job."""
     return output_dir
 
+def _has_recoverable_output(output_dir: str) -> bool:
+    """True if the scanner left partial artifacts worth returning to the caller.
+
+    On a timed-out / interrupted scan the scanner's SIGTERM handler flushes
+    requests.json (and dom.html/metrics.json) before the container is killed.
+    When those exist we want to hand the directory back even on a non-zero exit
+    so ACE can extract captured-traffic observables, rather than discarding the
+    whole run.
+    """
+    for name in ("requests.json", "dom.html"):
+        if os.path.exists(os.path.join(output_dir, name)):
+            return True
+    return False
+
 def _correct_file_extension(file_path: str) -> str:
     """Attempts to correct the file extension of the given file based on the mime type.
     If the file extension needs to change, the file is renamed and the new file path is returned.
@@ -592,7 +615,11 @@ def scan_url(url: str, timeout: int = 15, proxy: str = None, proxy_fallback_to_d
         config_path=config_path,
     )
 
-    if returncode != 0:
+    # A non-zero exit with no recoverable artifacts is a genuine hard failure —
+    # raise so ACE records an error. But if the scanner flushed partial output
+    # (e.g. a timeout-killed crawl that still captured the redirect chain in
+    # requests.json), return the directory so ACE can harvest those observables.
+    if returncode != 0 and not _has_recoverable_output(output_dir):
         raise Exception(f"scan failed: {_stderr}")
 
     return _process_output(job_id, output_dir)
