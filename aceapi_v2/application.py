@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from aceapi_v2.alerts.router import router as alerts_router
 from aceapi_v2.auth.router import router as auth_router
 from aceapi_v2.common.router import router as common_router
+from aceapi_v2.events.router import router as events_router
 from aceapi_v2.health.router import router as health_router
 from aceapi_v2.observable_types.router import router as observable_types_router
 from aceapi_v2.observables.router import router as observables_router
@@ -26,6 +27,7 @@ def create_app() -> FastAPI:
     app.include_router(alerts_router, prefix="/alerts", tags=["alerts"])
     app.include_router(auth_router, prefix="/auth", tags=["authentication"])
     app.include_router(common_router, prefix="/common", tags=["common"])
+    app.include_router(events_router, prefix="/events", tags=["events"])
     app.include_router(health_router, prefix="/health", tags=["health"])
     app.include_router(observable_comments_router, prefix="/observable-comments", tags=["observables"])
     app.include_router(observable_types_router, prefix="/observable-types", tags=["observables"])

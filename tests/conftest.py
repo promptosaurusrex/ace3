@@ -393,6 +393,7 @@ def mock_api_call(test_client, monkeypatch):
                         api_key=None,
                         stream=False,
                         data=None,
+                        json=None,
                         files=None,
                         params=None,
                         proxies=None,
@@ -404,7 +405,7 @@ def mock_api_call(test_client, monkeypatch):
                 api_key = os.environ.get("ICE_API_KEY", None)
 
         if command.startswith("v2/"):
-            return _dispatch_v2(command, method, api_key, data, params)
+            return _dispatch_v2(command, method, api_key, data, params, json)
 
         if method == ace_api.METHOD_GET:
             func = test_client.get
@@ -468,7 +469,7 @@ def mock_api_call(test_client, monkeypatch):
     monkeypatch.setattr(ace_api, "_execute_api_call", mock_execute_api_call)
 
 
-def _dispatch_v2(command, method, api_key, data, params):
+def _dispatch_v2(command, method, api_key, data, params, json=None):
     """Dispatch a `v2/*` ace_api command through the FastAPI ASGI app in-process.
 
     ace_api builds URLs as `/api/<command>`. For v2 commands (`v2/<group>/<name>`),
@@ -491,13 +492,18 @@ def _dispatch_v2(command, method, api_key, data, params):
     kwargs = {"headers": headers}
     if params is not None:
         kwargs["params"] = params
-    if data is not None:
+    # v2 endpoints take JSON bodies; ace_api passes the body either as `json=`
+    # (preferred) or, for older helpers, as `data=`.
+    if json is not None:
+        kwargs["json"] = json
+    elif data is not None:
         kwargs["json"] = data
 
     method_name = {
         ace_api.METHOD_GET: "GET",
         ace_api.METHOD_PUT: "PUT",
         ace_api.METHOD_POST: "POST",
+        ace_api.METHOD_PATCH: "PATCH",
     }[method]
 
     async def _send():
