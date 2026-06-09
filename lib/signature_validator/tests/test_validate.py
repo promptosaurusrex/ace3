@@ -8,7 +8,6 @@ from hunt_compiler.validate import (
     _parse_time_range_override,
     _read_hunt_durations,
     _synthesize_start_time,
-    extract_original_events,
 )
 
 
@@ -137,50 +136,3 @@ class TestSynthesizeStartTime:
         hunt.write_text("rule:\n  name: empty\n")
         with pytest.raises(ValueError, match="cannot synthesize"):
             _synthesize_start_time(str(hunt), "01/01/2024:01:00:00", {}, timezone.utc)
-
-
-class TestExtractOriginalEvents:
-    def test_correlate_uses_top_level_snapshot(self):
-        # correlate hunts expose a pre-correlation snapshot; it wins even if roots differ
-        result = {
-            "original_events": [{"a": 1}, {"a": 2}],
-            "roots": [{"details": {"events": [{"a": 99}]}}],
-        }
-        assert extract_original_events(result) == [{"a": 1}, {"a": 2}]
-
-    def test_non_correlate_ungrouped_reconstructs_from_roots(self):
-        # non-correlate, no group_by: each event is its own root
-        result = {
-            "original_events": None,
-            "roots": [
-                {"details": {"events": [{"id": 1}]}},
-                {"details": {"events": [{"id": 2}]}},
-            ],
-        }
-        assert extract_original_events(result) == [{"id": 1}, {"id": 2}]
-
-    def test_non_correlate_grouped_flattens_events(self):
-        # non-correlate group_by: roots hold multiple events each
-        result = {
-            "original_events": None,
-            "roots": [
-                {"details": {"events": [{"u": "a"}, {"u": "a"}]}},
-                {"details": {"events": [{"u": "b"}]}},
-            ],
-        }
-        assert extract_original_events(result) == [{"u": "a"}, {"u": "a"}, {"u": "b"}]
-
-    def test_no_events_returns_empty(self):
-        assert extract_original_events({"original_events": None, "roots": []}) == []
-        assert extract_original_events({}) == []
-
-    def test_roots_missing_details_or_events(self):
-        result = {
-            "original_events": None,
-            "roots": [
-                {},
-                {"details": {}},
-                {"details": {"events": [{"id": 1}]}},
-            ],
-        }
-        assert extract_original_events(result) == [{"id": 1}]

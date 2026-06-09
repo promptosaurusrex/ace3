@@ -46,23 +46,6 @@ def _parse_duration(timespec: str) -> timedelta:
     return timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
 
 
-def extract_original_events(result: dict) -> list[dict]:
-    """Return the hunt's raw query results from a validate response.
-
-    Correlate hunts expose them at the top-level "original_events" (a pre-correlation
-    snapshot). Non-correlate hunts have no such snapshot, so reconstruct from each alert's
-    details["events"] — for non-correlate hunts every returned event lands in exactly one
-    root, so the union across roots is the full result set.
-    """
-    original = result.get("original_events")
-    if original is not None:
-        return original
-    events = []
-    for root in result.get("roots", []) or []:
-        events.extend((root.get("details") or {}).get("events", []) or [])
-    return events
-
-
 def _parse_time_range_override(value: str) -> tuple[str, str]:
     """Parse a `--time-range NAME=DURATION` argument into (name, duration_str)."""
     if '=' not in value:
@@ -783,11 +766,11 @@ def main():
                 print("\033[92mOK: hunt is valid\033[0m")
             continue
 
-        # Original query results: for correlate hunts these are the pre-correlation
-        # snapshot at the top level (present even when correlation filters out every event);
-        # for non-correlate hunts they are reconstructed from each alert's events.
+        # Original query results: the server snapshots the raw query results before any
+        # processing and exposes them at the top level for every hunt (correlate or not),
+        # present even when correlation filters out every event.
         if args.save_original_results:
-            original = extract_original_events(result)
+            original = result.get("original_events") or []
             if not original:
                 print("\033[93mNo events in response to save\033[0m")
             else:
@@ -811,7 +794,7 @@ def main():
                 )
 
         if args.print_original_results:
-            original = extract_original_events(result)
+            original = result.get("original_events") or []
             if not original:
                 print("\033[93mNo events in response to print\033[0m")
             else:
