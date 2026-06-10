@@ -43,3 +43,15 @@ class AnalysisModuleConfig(BaseModel):
                 f"analysis module {self.name!r}: cache_ttl cannot be set when wide_diff is True"
             )
         return self
+
+    @model_validator(mode='after')
+    def _cache_ttl_incompatible_with_grouping(self) -> 'AnalysisModuleConfig':
+        # A cache hit bypasses analyze() entirely, including the
+        # analysis_covered() time-grouping check — so a grouped module
+        # would replay an analysis the live path would have skipped (and
+        # vice versa). The semantics are incoherent together.
+        if self.cache_ttl is not None and self.is_grouped_by_time:
+            raise ValueError(
+                f"analysis module {self.name!r}: cache_ttl cannot be set when is_grouped_by_time is True"
+            )
+        return self

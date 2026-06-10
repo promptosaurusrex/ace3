@@ -48,3 +48,18 @@ class TestCacheTtlValidation:
         cfg = AnalysisModuleConfig(**_base_config(wide_diff=True))
         assert cfg.wide_diff is True
         assert cfg.cache_ttl is None
+
+    @pytest.mark.unit
+    def test_grouped_by_time_plus_cache_ttl_rejected(self):
+        # A cache hit bypasses analyze() and therefore analysis_covered();
+        # time-grouping and caching are semantically incompatible.
+        with pytest.raises(ValidationError, match="cache_ttl cannot be set when is_grouped_by_time is True"):
+            AnalysisModuleConfig(
+                **_base_config(is_grouped_by_time=True, cache_ttl=timedelta(hours=1))
+            )
+
+    @pytest.mark.unit
+    def test_grouped_by_time_without_cache_ttl_ok(self):
+        cfg = AnalysisModuleConfig(**_base_config(is_grouped_by_time=True))
+        assert cfg.is_grouped_by_time is True
+        assert cfg.cache_ttl is None
