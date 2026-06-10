@@ -105,7 +105,9 @@ class TestApplyDeltaPrimitives:
         )
 
     @pytest.mark.unit
-    def test_relationship_with_missing_target_skipped(self, tmp_path):
+    def test_relationship_with_missing_target_skipped(self, tmp_path, caplog):
+        """Legacy uuid-only relationship dict (no target spec) whose uuid
+        isn't in the tree: skipped with a WARNING, never raises."""
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
         delta = _empty_delta(
@@ -114,9 +116,69 @@ class TestApplyDeltaPrimitives:
                 added_relationships=[{"type": R_IS_HASH_OF, "target": "missing-uuid"}],
             ),
         )
-        # Should not raise; just skip the relationship.
-        apply_delta(root, obs, delta)
+        with caplog.at_level(logging.WARNING):
+            apply_delta(root, obs, delta)
         assert not obs.relationships
+        assert any("target unresolved" in rec.message for rec in caplog.records)
+
+    @pytest.mark.unit
+    def test_relationship_resolved_by_spec_on_fresh_root(self, tmp_path):
+        """Cross-root replay: the cached target uuid means nothing on the
+        new root, but the (type, value) spec resolves to the observable
+        the same delta just created."""
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        delta = _empty_delta(
+            obs,
+            observable_uuid="source-obs-uuid",  # captured on a different alert
+            new_observables=[
+                ObservableSpec(uuid="source-child-uuid", type=F_IPV4, value="1.2.3.4"),
+            ],
+            target_observable_diff=ObservableDiff(
+                added_relationships=[{
+                    "type": R_IS_HASH_OF,
+                    "target": "source-child-uuid",
+                    "target_type": F_IPV4,
+                    "target_value": "1.2.3.4",
+                }],
+            ),
+        )
+        apply_delta(root, obs, delta)
+
+        assert len(obs.relationships) == 1
+        resolved = obs.relationships[0].target
+        assert resolved.type == F_IPV4
+        assert resolved.value == "1.2.3.4"
+        # The replayed child got a fresh uuid — spec resolution, not uuid.
+        assert resolved.uuid != "source-child-uuid"
+
+    @pytest.mark.unit
+    def test_self_relationship_resolves_despite_time_mismatch(self, tmp_path):
+        """A relationship whose target is the analyzed observable itself
+        must resolve via the self-target shortcut. The current
+        observable carries an event time the source didn't, so a
+        (type, value, time) spec lookup would miss — the shortcut on
+        delta.observable_uuid is what makes this work."""
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(
+            F_FQDN, "example.com", o_time=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        )
+        delta = _empty_delta(
+            obs,
+            observable_uuid="source-obs-uuid",
+            target_observable_diff=ObservableDiff(
+                added_relationships=[{
+                    "type": R_IS_HASH_OF,
+                    "target": "source-obs-uuid",
+                    "target_type": F_FQDN,
+                    "target_value": "example.com",
+                }],
+            ),
+        )
+        apply_delta(root, obs, delta)
+
+        assert len(obs.relationships) == 1
+        assert obs.relationships[0].target is obs
 
     @pytest.mark.unit
     def test_excluded_and_limited_dedupe(self, tmp_path):

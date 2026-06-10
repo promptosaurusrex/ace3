@@ -361,6 +361,24 @@ class ModuleExecutionDelta:
         """
         return any(spec.type == F_FILE for spec in self.new_observables)
 
+    def out_of_scope_relationship_targets(self) -> list[dict]:
+        """Relationships added by this delta whose target lies outside the
+        delta's own scope.
+
+        The cacheability contract requires a module's relationships to
+        stay within its own output: the analyzed observable itself, or an
+        observable this same delta created. A relationship to any *other*
+        tree node depends on surrounding tree context, which a cached
+        replay onto a different root cannot guarantee to reproduce —
+        ``put_cached_delta`` refuses such deltas. Returns the offending
+        relationship dicts (empty list = in scope / no relationships).
+        """
+        allowed = {self.observable_uuid} | {spec.uuid for spec in self.new_observables}
+        return [
+            rel for rel in self.target_observable_diff.added_relationships
+            if rel.get("target") not in allowed
+        ]
+
     def with_cache_hit_metadata(
         self, executed_at: datetime, execution_time_ms: int,
         root_uuid: str, observable_uuid: str,

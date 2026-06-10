@@ -42,7 +42,28 @@ def _serialize_detection(detection) -> dict:
 
 
 def _serialize_relationship(rel) -> dict:
-    return rel.json
+    """Serialize a Relationship for a delta, enriched with the target's
+    (type, value, time) spec.
+
+    ``rel.json`` carries only the target's uuid, which is per-alert — a
+    cache replay onto a *different* root can never resolve it. The spec
+    fields let replay re-resolve the target via
+    ``root.get_observable_by_spec`` (see ``cache._apply_observable_diff``).
+    The base ``{"type", "target"}`` shape is unchanged so root.json
+    attribution stays backward compatible.
+    """
+    result = dict(rel.json)
+    target = rel.target
+    if isinstance(target, Observable):
+        result["target_type"] = target.type
+        result["target_value"] = target.value
+        if target.time is not None:
+            result["target_time"] = (
+                target.time.isoformat()
+                if isinstance(target.time, datetime)
+                else str(target.time)
+            )
+    return result
 
 
 @dataclass

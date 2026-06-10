@@ -279,3 +279,10 @@ def test_module_contract(module_key, test_context, monkeypatch):
         f"replay does not yet materialize file bytes (Phase 4). Either "
         f"remove cache_ttl from this module's YAML or wait for Phase 4."
     )
+    assert not delta.out_of_scope_relationship_targets(), (
+        f"{module_key}: delta adds relationships targeting observables "
+        f"outside the module's own output (not the analyzed observable "
+        f"and not created by this delta). Such relationships depend on "
+        f"surrounding tree context and cannot be replayed onto a "
+        f"different root — remove cache_ttl from this module's YAML."
+    )

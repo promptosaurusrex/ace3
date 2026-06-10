@@ -1,5 +1,6 @@
 """Tests for ModuleExecutionSnapshot capture and diff computation."""
 
+from datetime import datetime, UTC
 from unittest.mock import MagicMock
 import pytest
 
@@ -483,6 +484,28 @@ class TestObservableDiffRemovals:
         assert len(added) == 1
         assert added[0]["type"] == R_IS_HASH_OF
         assert added[0]["target"] == other.uuid
+        # Target spec lets cache replay re-resolve the target on a
+        # different root, where the uuid is meaningless.
+        assert added[0]["target_type"] == F_FQDN
+        assert added[0]["target_value"] == "example.com"
+        assert "target_time" not in added[0]
+
+    @pytest.mark.unit
+    def test_diff_add_relationship_with_timed_target(self, tmp_path):
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        event_time = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
+        other = root.add_observable_by_spec(F_FQDN, "timed.example.com", o_time=event_time)
+        module = _make_mock_module()
+
+        before = ModuleExecutionSnapshot.narrow(root, obs, module)
+        obs.add_relationship(R_IS_HASH_OF, other)
+        after = ModuleExecutionSnapshot.narrow(root, obs, module)
+        delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
+
+        added = delta.target_observable_diff.added_relationships
+        assert added[0]["target_value"] == "timed.example.com"
+        assert added[0]["target_time"] == event_time.isoformat()
 
     @pytest.mark.unit
     def test_diff_remove_relationship(self, tmp_path):
