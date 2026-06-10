@@ -321,7 +321,10 @@ class TestGetCachedDelta:
     @pytest.mark.integration
     def test_returns_freshest_row_when_duplicates(self, blob_store):
         """Append-only: several non-expired rows can share a cache_key; the
-        lookup returns the one with the latest expires_at."""
+        lookup returns the most recently CREATED one — even when an older
+        row has a later expires_at. (Ordering by expires_at would let rows
+        written under a longer, since-reduced cache_ttl shadow fresher
+        data until they expire.)"""
         module = _make_module()
         obs = _make_observable()
         cache_key = generate_cache_key(obs, module)
@@ -334,10 +337,12 @@ class TestGetCachedDelta:
             analysis={"module_path": "x", "details": {"v": "fresh"}, "completed": True},
         )
         try:
+            # Older row carries the LONGER TTL — written first, so its
+            # created_at is earlier but its expires_at is later.
             _write_raw_row(cache_key, module, stale.to_dict(),
-                           expires_sql="DATE_ADD(NOW(), INTERVAL 1 HOUR)")
-            _write_raw_row(cache_key, module, fresh.to_dict(),
                            expires_sql="DATE_ADD(NOW(), INTERVAL 10 HOUR)")
+            _write_raw_row(cache_key, module, fresh.to_dict(),
+                           expires_sql="DATE_ADD(NOW(), INTERVAL 1 HOUR)")
             result = get_cached_delta(obs, module, blob_store)
             assert result.delta is not None
             assert result.delta.analysis["details"]["v"] == "fresh"

@@ -266,7 +266,9 @@ class AnalysisExecutionContext:
                     payload["cache_hit_count"] = hits
                     payload["cache_miss_count"] = misses
                     payload["cache_write_count_insert"] = inserts
-                    if hits:
+                    # lookup latency covers ALL lookups (hits + misses) —
+                    # misses' lookup time is the cache's pure overhead.
+                    if hits or misses:
                         payload["cache_lookup_ms_sum"] = self.cache_lookup_ms_sum.get(key, 0)
                         payload["cache_lookup_ms_max"] = self.cache_lookup_ms_max.get(key, 0)
                     if inserts:
@@ -1297,8 +1299,22 @@ class AnalysisExecutor:
                         # Real cache miss (DB lookup happened, no usable row).
                         # Falls through to live execution below; bump the
                         # per-(root, module) miss counter for end-of-root metrics.
-                        context.cache_miss_count[analysis_module.name] = (
-                            context.cache_miss_count.get(analysis_module.name, 0) + 1
+                        # Lookup latency is accumulated on misses too — a miss's
+                        # lookup time is pure overhead on top of the live run,
+                        # and it's exactly what the lookup-cost-vs-live-cost
+                        # payoff comparison needs. cache_lookup_ms_* therefore
+                        # covers ALL lookups (hits + misses), not hits only.
+                        module_name = analysis_module.name
+                        context.cache_miss_count[module_name] = (
+                            context.cache_miss_count.get(module_name, 0) + 1
+                        )
+                        context.cache_lookup_ms_sum[module_name] = (
+                            context.cache_lookup_ms_sum.get(module_name, 0)
+                            + lookup_result.lookup_ms
+                        )
+                        context.cache_lookup_ms_max[module_name] = max(
+                            context.cache_lookup_ms_max.get(module_name, 0),
+                            lookup_result.lookup_ms,
                         )
                 except Exception:
                     logging.warning(
