@@ -8,6 +8,7 @@ from saq.analysis.module_execution_delta import (
     ObservableDiff,
     ObservableSpec,
     RootDiff,
+    merge_module_execution_deltas,
 )
 
 
@@ -363,6 +364,188 @@ class TestWithoutAnalysisDetails:
     def test_returns_self_when_no_details_key(self):
         delta = self._make_delta(analysis={"module_path": "m", "completed": True})
         assert delta.without_analysis_details() is delta
+
+
+class TestMergeDeltas:
+    """merge_module_execution_deltas: folding a delayed-analysis module's
+    earlier per-cycle deltas into the final cycle's delta for caching."""
+
+    def _make_delta(self, **overrides):
+        defaults = dict(
+            module_path="saq.modules.test:TestAnalysis",
+            module_instance=None,
+            module_version=1,
+            observable_uuid="obs-uuid-1",
+            observable_type="fqdn",
+            observable_value="example.com",
+            created_at="2026-06-10T12:00:00+00:00",
+            execution_time_ms=10,
+        )
+        defaults.update(overrides)
+        return ModuleExecutionDelta(**defaults)
+
+    @pytest.mark.unit
+    def test_no_priors_returns_final(self):
+        final = self._make_delta()
+        assert merge_module_execution_deltas([], final) is final
+
+    @pytest.mark.unit
+    def test_added_fields_unioned_and_deduped(self):
+        prior = self._make_delta(
+            target_observable_diff=ObservableDiff(
+                added_tags=["cycle1", "both"],
+                added_directives=["sandbox"],
+                added_detections=[{"description": "d1", "details": None}],
+            ),
+        )
+        final = self._make_delta(
+            target_observable_diff=ObservableDiff(
+                added_tags=["both", "cycle2"],
+                added_detections=[
+                    {"description": "d1", "details": None},  # dup of cycle 1
+                    {"description": "d2", "details": None},
+                ],
+            ),
+        )
+        merged = merge_module_execution_deltas([prior], final)
+        assert merged.target_observable_diff.added_tags == ["cycle1", "both", "cycle2"]
+        assert merged.target_observable_diff.added_directives == ["sandbox"]
+        assert [d["description"] for d in merged.target_observable_diff.added_detections] == ["d1", "d2"]
+
+    @pytest.mark.unit
+    def test_prior_removal_makes_merged_has_removals(self):
+        """A cycle-1 removal must surface on the merged delta so the
+        cache write is refused — replay can't reproduce removals."""
+        prior = self._make_delta(
+            target_observable_diff=ObservableDiff(removed_tags=["was-here"]),
+        )
+        final = self._make_delta(
+            target_observable_diff=ObservableDiff(added_tags=["new"]),
+        )
+        merged = merge_module_execution_deltas([prior], final)
+        assert merged.has_removals
+        assert merged.target_observable_diff.removed_tags == ["was-here"]
+
+    @pytest.mark.unit
+    def test_scalar_transitions_composed(self):
+        prior = self._make_delta(
+            target_observable_diff=ObservableDiff(grouping_target=(False, True)),
+        )
+        # Final cycle flips it back: composed transition is earliest
+        # 'before' to latest 'after'.
+        final = self._make_delta(
+            target_observable_diff=ObservableDiff(grouping_target=(True, False)),
+        )
+        merged = merge_module_execution_deltas([prior], final)
+        assert merged.target_observable_diff.grouping_target == (False, False)
+
+    @pytest.mark.unit
+    def test_scalar_from_prior_only(self):
+        prior = self._make_delta(
+            target_observable_diff=ObservableDiff(ignored=(False, True)),
+        )
+        final = self._make_delta(
+            target_observable_diff=ObservableDiff(added_tags=["x"]),
+        )
+        merged = merge_module_execution_deltas([prior], final)
+        assert merged.target_observable_diff.ignored == (False, True)
+
+    @pytest.mark.unit
+    def test_new_observables_deduped_first_wins(self):
+        """Same (type, value, time) across cycles keeps the FIRST spec —
+        preserving the uuid that cycle-1 relationships reference."""
+        prior = self._make_delta(
+            new_observables=[ObservableSpec(uuid="cycle1-uuid", type="ipv4", value="1.2.3.4")],
+        )
+        final = self._make_delta(
+            new_observables=[
+                ObservableSpec(uuid="cycle2-uuid", type="ipv4", value="1.2.3.4"),
+                ObservableSpec(uuid="cycle2-other", type="fqdn", value="other.com"),
+            ],
+        )
+        merged = merge_module_execution_deltas([prior], final)
+        assert [(s.uuid, s.type, s.value) for s in merged.new_observables] == [
+            ("cycle1-uuid", "ipv4", "1.2.3.4"),
+            ("cycle2-other", "fqdn", "other.com"),
+        ]
+
+    @pytest.mark.unit
+    def test_final_analysis_and_identity_kept(self):
+        prior = self._make_delta(
+            analysis={"module_path": "m", "delayed": True},
+            created_at="2026-06-10T10:00:00+00:00",
+        )
+        final = self._make_delta(
+            analysis={"module_path": "m", "delayed": False, "details": {"done": True}},
+        )
+        merged = merge_module_execution_deltas([prior], final)
+        assert merged.analysis == final.analysis
+        assert merged.created_at == final.created_at
+        # execution_time_ms sums across cycles.
+        assert merged.execution_time_ms == 20
+
+    @pytest.mark.unit
+    def test_root_diff_merged(self):
+        prior = self._make_delta(root_diff=RootDiff(added_tags=["from-cycle1"]))
+        final = self._make_delta(root_diff=RootDiff(added_tags=["from-cycle2"]))
+        merged = merge_module_execution_deltas([prior], final)
+        assert merged.root_diff.added_tags == ["from-cycle1", "from-cycle2"]
+
+    @pytest.mark.unit
+    def test_three_cycle_merge_with_analysis_none_middle(self):
+        """Multi-delay shape: cycle 1 has the delayed analysis dict,
+        cycle 2 (mid-delay) has analysis=None, final has the completed
+        analysis. All tree mutations survive."""
+        c1 = self._make_delta(
+            analysis={"module_path": "m", "delayed": True},
+            target_observable_diff=ObservableDiff(added_tags=["t1"]),
+        )
+        c2 = self._make_delta(
+            analysis=None,
+            target_observable_diff=ObservableDiff(added_tags=["t2"]),
+        )
+        final = self._make_delta(
+            analysis={"module_path": "m", "delayed": False},
+            target_observable_diff=ObservableDiff(added_tags=["t3"]),
+        )
+        merged = merge_module_execution_deltas([c1, c2], final)
+        assert merged.target_observable_diff.added_tags == ["t1", "t2", "t3"]
+        assert merged.analysis["delayed"] is False
+
+    @pytest.mark.unit
+    def test_inputs_not_mutated(self):
+        prior = self._make_delta(
+            target_observable_diff=ObservableDiff(added_tags=["t1"]),
+        )
+        final = self._make_delta(
+            target_observable_diff=ObservableDiff(added_tags=["t2"]),
+        )
+        merge_module_execution_deltas([prior], final)
+        assert prior.target_observable_diff.added_tags == ["t1"]
+        assert final.target_observable_diff.added_tags == ["t2"]
+
+    @pytest.mark.unit
+    def test_wide_diff_input_raises(self):
+        prior = self._make_delta(wide_diff=True)
+        final = self._make_delta()
+        with pytest.raises(ValueError):
+            merge_module_execution_deltas([prior], final)
+
+
+class TestHasRemovalsRootDiff:
+    @pytest.mark.unit
+    def test_root_diff_removals_counted(self):
+        delta = ModuleExecutionDelta(
+            module_path="saq.modules.test:TestAnalysis",
+            module_instance=None,
+            module_version=1,
+            observable_uuid="obs-uuid-1",
+            observable_type="fqdn",
+            observable_value="example.com",
+            created_at="2026-06-10T12:00:00+00:00",
+            root_diff=RootDiff(removed_tags=["gone"]),
+        )
+        assert delta.has_removals
 
 
 class TestAnalysisChildrenDiff:
