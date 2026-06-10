@@ -330,7 +330,7 @@ def revert_drained_if_work_appeared(node_id: int) -> bool:
 
     if rowcount == 1:
         clear_node_status_cache()
-        logging.warning("node %s acquired new work after draining -- reverted to draining", node_id)
+        logging.error("node %s acquired new work after draining -- reverted to draining", node_id)
         return True
 
     return False
