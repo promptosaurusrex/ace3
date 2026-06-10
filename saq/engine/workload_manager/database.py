@@ -4,8 +4,10 @@ import shutil
 from typing import Optional
 
 from saq.analysis.root import RootAnalysis
+from saq.constants import NODE_STATUS_RUNNING
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
+from saq.database.util.node import get_node_status_cached
 from saq.database.util.workload import add_workload
 from saq.database.util.delayed_analysis import add_delayed_analysis_request as db_add_delayed_analysis_request, clear_delayed_analysis_requests as db_clear_delayed_analysis_requests
 from saq.engine.configuration_manager import ConfigurationManager
@@ -283,6 +285,11 @@ ORDER BY
         Returns:
             A valid work item, or None if none are available.
         """
+        # a node that is not running normally (e.g. draining) must not pull work from other nodes
+        # local work is unaffected -- a draining node finishes the work it already has
+        if not local and get_node_status_cached() not in [None, NODE_STATUS_RUNNING]:
+            return None
+
         with get_db_connection() as db:
             cursor = db.cursor()
 

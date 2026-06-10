@@ -113,6 +113,8 @@ def seed() -> None:
             ("observable", "write", "Modify observables."),
             ("user", "read", "Read user data via API/GUI."),
             ("user", "write", "Modify user data via API/GUI."),
+            ("node", "read", "Read node status and outstanding work counts via API."),
+            ("node", "manage", "Drain and resume nodes via API."),
         ]
         for major, minor, desc in permissions:
             if (major, minor) not in existing_perms:

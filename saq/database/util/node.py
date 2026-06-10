@@ -1,8 +1,10 @@
 import logging
 import os
 import sys
+import threading
+import time
 from typing import Optional
-from saq.constants import ENV_ACE_IS_PRIMARY_NODE
+from saq.constants import ENV_ACE_IS_PRIMARY_NODE, VALID_NODE_STATUSES
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
 from saq.environment import get_global_runtime_settings
@@ -99,6 +101,7 @@ FROM
     LEFT JOIN workload ON nodes.id = workload.node_id
 WHERE
     nodes.company_id = %s
+    AND nodes.status = 'running'
     AND ( nodes.any_mode OR node_modes.analysis_mode in ( {} ) )
 GROUP BY
     nodes.id,
@@ -183,3 +186,206 @@ def assign_node_analysis_modes(node_id: Optional[int]=None, analysis_modes: Opti
                 execute_with_retry(db, cursor, "INSERT INTO node_modes_excluded ( node_id, analysis_mode ) VALUES ( %s, %s )", (node_id, excluded_mode))
 
         db.commit()
+
+#
+# node status management (see the node drain feature)
+#
+# a node moves through the following statuses:
+# starting: node is starting up
+# running: node is running normally
+# draining: no new work may be assigned to the node, outstanding work is being completed
+# drained: nothing outstanding, safe to shut down
+# stopped: node is not running (set on graceful shutdown, or reconciled by the primary node)
+#
+
+def get_node_status(node_id: Optional[int]=None) -> Optional[str]:
+    """Returns the status of the node referenced by ID, or None if the node does not exist.
+    If no node is specified then the current node is assumed."""
+    if node_id is None:
+        node_id = get_global_runtime_settings().saq_node_id
+
+    if node_id is None:
+        return None
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT status FROM nodes WHERE id = %s", (node_id,))
+        row = cursor.fetchone()
+        return row[0] if row else None
+
+# cache of node_id -> (expiration timestamp, status) used by get_node_status_cached
+_node_status_cache = {}
+_node_status_cache_lock = threading.Lock()
+
+def get_node_status_cached(node_id: Optional[int]=None, ttl_seconds: float=10.0) -> Optional[str]:
+    """Returns the status of the node referenced by ID, cached for ttl_seconds.
+    Used by code paths that poll frequently (workers, collectors)."""
+    if node_id is None:
+        node_id = get_global_runtime_settings().saq_node_id
+
+    if node_id is None:
+        return None
+
+    now = time.monotonic()
+    with _node_status_cache_lock:
+        cached = _node_status_cache.get(node_id)
+        if cached is not None and now < cached[0]:
+            return cached[1]
+
+    status = get_node_status(node_id)
+    with _node_status_cache_lock:
+        _node_status_cache[node_id] = (now + ttl_seconds, status)
+
+    return status
+
+def clear_node_status_cache():
+    """Clears the node status cache. Used by tests and after status transitions."""
+    with _node_status_cache_lock:
+        _node_status_cache.clear()
+
+def set_node_status(node_id: int, status: str):
+    """Unconditionally sets the status of the node. Used by the engine lifecycle
+    (starting, running, stopped) where startup is always authoritative."""
+    assert status in VALID_NODE_STATUSES
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        execute_with_retry(db, cursor, "UPDATE nodes SET status = %s WHERE id = %s", (status, node_id), commit=True)
+
+    clear_node_status_cache()
+    logging.info("node %s status set to %s", node_id, status)
+
+def transition_node_status(node_id: int, to_status: str, from_statuses: list[str]) -> bool:
+    """Atomically transitions the status of the node from one of from_statuses to to_status.
+    Returns True if the transition occurred, False otherwise."""
+    assert to_status in VALID_NODE_STATUSES
+    assert from_statuses and all(_ in VALID_NODE_STATUSES for _ in from_statuses)
+
+    sql = "UPDATE nodes SET status = %s WHERE id = %s AND status IN ( {} )".format(
+        ",".join(["%s" for _ in from_statuses]))
+    params = [to_status, node_id]
+    params.extend(from_statuses)
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        rowcount = execute_with_retry(db, cursor, sql, tuple(params), commit=True)
+
+    if rowcount == 1:
+        clear_node_status_cache()
+        logging.info("node %s status transitioned to %s", node_id, to_status)
+        return True
+
+    return False
+
+def check_and_mark_drained(node_id: int, expected_delayed_count: int=0, collector_stale_seconds: int=120) -> bool:
+    """Atomically transitions the node from draining to drained if there is no
+    outstanding work: no workload entries, exactly expected_delayed_count
+    delayed analysis entries (the count of entries that could not be transferred
+    because no compatible node exists -- these do not block drain), and no live
+    collector that has not finished draining. Returns True if the node was
+    marked as drained."""
+
+    # warn about any collectors we are ignoring because their status is stale
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("""SELECT name, status FROM collector_status
+                          WHERE node_id = %s
+                          AND status NOT IN ( 'drained', 'stopped' )
+                          AND TIMESTAMPDIFF(SECOND, last_update, NOW()) > %s""",
+                       (node_id, collector_stale_seconds))
+        for name, status in cursor.fetchall():
+            logging.warning("ignoring stale collector status for %s (status %s) on node %s -- "
+                            "the collector may have crashed with an unflushed backlog", name, status, node_id)
+
+        rowcount = execute_with_retry(db, cursor, """UPDATE nodes SET status = 'drained'
+            WHERE id = %s AND status = 'draining'
+            AND NOT EXISTS ( SELECT 1 FROM workload WHERE node_id = %s )
+            AND ( SELECT COUNT(*) FROM delayed_analysis WHERE node_id = %s ) = %s
+            AND NOT EXISTS ( SELECT 1 FROM collector_status
+                WHERE node_id = %s
+                AND status NOT IN ( 'drained', 'stopped' )
+                AND TIMESTAMPDIFF(SECOND, last_update, NOW()) <= %s )""",
+            (node_id, node_id, node_id, expected_delayed_count, node_id, collector_stale_seconds),
+            commit=True)
+
+    if rowcount == 1:
+        clear_node_status_cache()
+        logging.info("node %s has finished draining and is now drained", node_id)
+        return True
+
+    return False
+
+def revert_drained_if_work_appeared(node_id: int) -> bool:
+    """Atomically transitions the node from drained back to draining if new work
+    has appeared on the node (e.g. a submission raced the drained check).
+    Returns True if the node was reverted."""
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        rowcount = execute_with_retry(db, cursor, """UPDATE nodes SET status = 'draining'
+            WHERE id = %s AND status = 'drained'
+            AND EXISTS ( SELECT 1 FROM workload WHERE node_id = %s )""",
+            (node_id, node_id),
+            commit=True)
+
+    if rowcount == 1:
+        clear_node_status_cache()
+        logging.warning("node %s acquired new work after draining -- reverted to draining", node_id)
+        return True
+
+    return False
+
+def reconcile_stale_node_statuses(stale_seconds: int) -> int:
+    """Sets the status of any node with a stale heartbeat to stopped. Status is
+    self-reported, so a crashed node would otherwise show its last status
+    forever. Executed by the primary node. Returns the number of nodes
+    reconciled."""
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        rowcount = execute_with_retry(db, cursor, """UPDATE nodes SET status = 'stopped'
+            WHERE TIMESTAMPDIFF(SECOND, last_update, NOW()) > %s
+            AND status IN ( 'starting', 'running', 'draining', 'drained' )""",
+            (stale_seconds,),
+            commit=True)
+
+    if rowcount:
+        clear_node_status_cache()
+        logging.warning("reconciled %s nodes with stale heartbeats to stopped", rowcount)
+
+    return rowcount
+
+def update_collector_status(node_id: int, name: str, status: str, backlog_count: int):
+    """Updates the status of a collector service running on a node. The status
+    is reported to the central database so the engine's drained check and the
+    API can see it (the collection database is local to the host in production)."""
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        execute_with_retry(db, cursor, """INSERT INTO collector_status ( node_id, name, status, backlog_count, last_update )
+            VALUES ( %s, %s, %s, %s, NOW() ) AS new
+            ON DUPLICATE KEY UPDATE
+                status = new.status,
+                backlog_count = new.backlog_count,
+                last_update = NOW()""",
+            (node_id, name, status, backlog_count),
+            commit=True)
+
+def get_collector_statuses(node_id: int) -> list[tuple[str, str, int, object]]:
+    """Returns the list of (name, status, backlog_count, last_update) for the
+    collector services that have reported status on the node referenced by ID."""
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("""SELECT name, status, backlog_count, last_update
+                          FROM collector_status WHERE node_id = %s ORDER BY name""", (node_id,))
+        return list(cursor.fetchall())
+
+def get_node_workload_counts(node_id: int) -> tuple[int, int]:
+    """Returns the (workload count, delayed analysis count) for the node referenced by ID."""
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM workload WHERE node_id = %s", (node_id,))
+        workload_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM delayed_analysis WHERE node_id = %s", (node_id,))
+        delayed_count = cursor.fetchone()[0]
+        return workload_count, delayed_count

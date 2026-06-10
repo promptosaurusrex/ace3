@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from enum import Enum
 import logging
 import os
@@ -14,12 +15,22 @@ from saq.collectors.submission_file_manager import SubmissionFileManager
 from saq.collectors.workload_repository import WorkloadRepository
 from saq.collectors.duplicate_filter import DuplicateSubmissionFilter
 from saq.configuration.config import get_config
+from saq.constants import (
+    NODE_STATUS_DRAINED,
+    NODE_STATUS_DRAINING,
+    NODE_STATUS_RUNNING,
+    NODE_STATUS_STOPPED,
+)
 from saq.database import remove_all_sessions
-from saq.environment import get_data_dir
+from saq.database.util.node import get_node_status_cached, update_collector_status
+from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.error import report_exception
 from saq.persistence import Persistable
 from saq.service import ACEServiceInterface
 from saq.submission_filter import SubmissionFilter
+
+# how often (in seconds) a collector service reports its status to the collector_status table
+COLLECTOR_STATUS_REPORT_FREQUENCY = 30
 
 def get_collection_error_dir() -> str:
     return os.path.join(get_data_dir(), get_config().collection.error_dir)
@@ -148,6 +159,12 @@ class CollectorService(ACEServiceInterface):
         # defaults to normal operations (continuous)
         self.execution_mode: CollectorExecutionMode = CollectorExecutionMode.CONTINUOUS
 
+        # when we next report our status to the collector_status table
+        self.next_collector_status_report = None
+
+        # set once we have logged that collection is paused so we don't log it every cycle
+        self.collection_paused_logged = False
+
     def start(self, single_threaded: bool = False, execution_mode: CollectorExecutionMode = CollectorExecutionMode.CONTINUOUS):
         self.load_groups()
 
@@ -207,7 +224,15 @@ class CollectorService(ACEServiceInterface):
     def stop(self):
         self.shutdown_event.set()
         self.wait()
-    
+
+        # report that this collector has stopped
+        # a stopped collector does not block a node drain
+        try:
+            self.report_collector_status(status=NODE_STATUS_STOPPED)
+        except Exception as e:
+            logging.error("unable to report collector status: %s", e)
+
+
     def wait(self):
         if self.collection_thread:
             logging.info("waiting for collection thread to terminate...")
@@ -300,6 +325,23 @@ class CollectorService(ACEServiceInterface):
 
         while not self.is_shutdown():
             try:
+                # when the node is draining we stop collecting new work but keep the loop alive
+                # the distribution and cleanup threads keep running to flush the backlog to other nodes
+                # collection automatically resumes when the node returns to running
+                if self.execution_mode == CollectorExecutionMode.CONTINUOUS and self.is_collection_paused():
+                    if not self.collection_paused_logged:
+                        logging.info("node is draining - pausing collection for %s", str(self))
+                        self.collection_paused_logged = True
+
+                    self.maybe_report_collector_status()
+                    self.sleep(self.config.collection_frequency)
+                    continue
+
+                if self.collection_paused_logged:
+                    logging.info("node is no longer draining - resuming collection for %s", str(self))
+                    self.collection_paused_logged = False
+
+                self.maybe_report_collector_status()
                 submission_count = self.execute_collection_loop()
 
                 if self.execution_mode == CollectorExecutionMode.SINGLE_SHOT:
@@ -383,9 +425,50 @@ class CollectorService(ACEServiceInterface):
         
         logging.info("exited update loop")
 
+    # node drain routines
+    # ------------------------------------------------------------------------
+
+    def is_collection_paused(self) -> bool:
+        """Returns True if collection is paused because the node is draining.
+        Note that only draining and drained pause collection -- a collector can
+        legitimately run on a node with no engine (status stopped)."""
+        return get_node_status_cached() in [NODE_STATUS_DRAINING, NODE_STATUS_DRAINED]
+
+    def get_backlog_count(self) -> int:
+        """Returns the number of work distribution entries this collector still needs to deliver."""
+        return self.workload_repository.get_workload_backlog_count(self.workload_type_id)
+
+    def report_collector_status(self, status: Optional[str]=None):
+        """Reports the status of this collector service to the collector_status
+        table in the central database. If status is not specified it is derived
+        from the node status and the distribution backlog. The engine uses this
+        to determine when a draining node has fully drained."""
+        node_id = get_global_runtime_settings().saq_node_id
+        if node_id is None:
+            return
+
+        backlog_count = self.get_backlog_count()
+        if status is None:
+            if self.is_collection_paused():
+                status = NODE_STATUS_DRAINING if backlog_count else NODE_STATUS_DRAINED
+            else:
+                status = NODE_STATUS_RUNNING
+
+        update_collector_status(node_id, self.config.workload_type, status, backlog_count)
+
+    def maybe_report_collector_status(self):
+        """Reports collector status if enough time has passed since the last report."""
+        try:
+            now = datetime.now()
+            if self.next_collector_status_report is None or now >= self.next_collector_status_report:
+                self.report_collector_status()
+                self.next_collector_status_report = now + timedelta(seconds=COLLECTOR_STATUS_REPORT_FREQUENCY)
+        except Exception as e:
+            logging.error("unable to report collector status: %s", e)
+
     # utility routines
     # ------------------------------------------------------------------------
-    
+
     def clear_expired_persistent_data(self):
         if self.duplicate_filter:
             self.duplicate_filter.clear_expired_data()

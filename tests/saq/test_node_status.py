@@ -1,0 +1,251 @@
+import uuid as uuidlib
+
+import pytest
+
+from saq.constants import (
+    NODE_STATUS_DRAINED,
+    NODE_STATUS_DRAINING,
+    NODE_STATUS_RUNNING,
+    NODE_STATUS_STARTING,
+    NODE_STATUS_STOPPED,
+)
+from saq.database.pool import get_db_connection
+from saq.database.util.node import (
+    check_and_mark_drained,
+    clear_node_status_cache,
+    get_collector_statuses,
+    get_node_status,
+    get_node_status_cached,
+    get_node_workload_counts,
+    reconcile_stale_node_statuses,
+    revert_drained_if_work_appeared,
+    set_node_status,
+    transition_node_status,
+    update_collector_status,
+)
+from saq.environment import get_global_runtime_settings
+
+pytestmark = pytest.mark.integration
+
+
+def local_node_id() -> int:
+    return get_global_runtime_settings().saq_node_id
+
+
+def insert_node(name: str, status: str = NODE_STATUS_RUNNING, last_update_age_seconds: int = 0) -> int:
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("""INSERT INTO nodes ( name, location, company_id, last_update, status )
+                          VALUES ( %s, %s, %s, NOW() - INTERVAL %s SECOND, %s )""",
+                       (name, "test:443", get_global_runtime_settings().company_id, last_update_age_seconds, status))
+        db.commit()
+        return cursor.lastrowid
+
+
+def insert_workload(node_id: int) -> str:
+    _uuid = str(uuidlib.uuid4())
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("""INSERT INTO workload ( uuid, node_id, analysis_mode, company_id, storage_dir, insert_date )
+                          VALUES ( %s, %s, 'analysis', %s, %s, NOW() )""",
+                       (_uuid, node_id, get_global_runtime_settings().company_id, f"data/test/{_uuid}"))
+        db.commit()
+
+    return _uuid
+
+
+def insert_delayed_analysis(node_id: int, _uuid: str = None) -> str:
+    if _uuid is None:
+        _uuid = str(uuidlib.uuid4())
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("""INSERT INTO delayed_analysis ( uuid, observable_uuid, analysis_module, insert_date, delayed_until, node_id, storage_dir )
+                          VALUES ( %s, %s, 'test_module', NOW(), NOW() + INTERVAL 1 HOUR, %s, %s )""",
+                       (_uuid, str(uuidlib.uuid4()), node_id, f"data/test/{_uuid}"))
+        db.commit()
+
+    return _uuid
+
+
+@pytest.fixture(autouse=True)
+def _clear_cache():
+    clear_node_status_cache()
+    yield
+    clear_node_status_cache()
+
+
+def test_set_and_get_node_status():
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_STARTING)
+    assert get_node_status(node_id) == NODE_STATUS_STARTING
+    set_node_status(node_id, NODE_STATUS_RUNNING)
+    assert get_node_status(node_id) == NODE_STATUS_RUNNING
+
+
+def test_get_node_status_unknown_node():
+    assert get_node_status(999999999) is None
+
+
+def test_get_node_status_cached():
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_RUNNING)
+    assert get_node_status_cached(node_id) == NODE_STATUS_RUNNING
+
+    # change the status behind the cache's back
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("UPDATE nodes SET status = 'draining' WHERE id = %s", (node_id,))
+        db.commit()
+
+    # the cached value is returned until the cache is cleared
+    assert get_node_status_cached(node_id) == NODE_STATUS_RUNNING
+    clear_node_status_cache()
+    assert get_node_status_cached(node_id) == NODE_STATUS_DRAINING
+
+
+def test_transition_node_status():
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_RUNNING)
+
+    # valid transition
+    assert transition_node_status(node_id, NODE_STATUS_DRAINING, [NODE_STATUS_RUNNING])
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING
+
+    # invalid transition (already draining)
+    assert not transition_node_status(node_id, NODE_STATUS_DRAINING, [NODE_STATUS_RUNNING])
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING
+
+    # resume from either draining or drained
+    assert transition_node_status(node_id, NODE_STATUS_RUNNING, [NODE_STATUS_DRAINING, NODE_STATUS_DRAINED])
+    assert get_node_status(node_id) == NODE_STATUS_RUNNING
+
+
+def test_check_and_mark_drained_no_outstanding_work():
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_DRAINING)
+    assert check_and_mark_drained(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINED
+
+
+def test_check_and_mark_drained_requires_draining_status():
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_RUNNING)
+    assert not check_and_mark_drained(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_RUNNING
+
+
+def test_check_and_mark_drained_blocked_by_workload():
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_DRAINING)
+    insert_workload(node_id)
+    assert not check_and_mark_drained(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING
+
+
+def test_check_and_mark_drained_delayed_analysis_expected_count():
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_DRAINING)
+    insert_delayed_analysis(node_id)
+
+    # a delayed analysis row blocks the drain by default
+    assert not check_and_mark_drained(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING
+
+    # unless it is expected (untransferable -- no compatible node exists for it)
+    assert check_and_mark_drained(node_id, expected_delayed_count=1)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINED
+
+
+def test_check_and_mark_drained_blocked_by_live_collector():
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_DRAINING)
+
+    # a live collector that is still draining blocks the drain
+    update_collector_status(node_id, "test", NODE_STATUS_DRAINING, 3)
+    assert not check_and_mark_drained(node_id)
+
+    # a drained collector does not
+    update_collector_status(node_id, "test", NODE_STATUS_DRAINED, 0)
+    assert check_and_mark_drained(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINED
+
+
+def test_check_and_mark_drained_ignores_stale_collector(caplog):
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_DRAINING)
+    update_collector_status(node_id, "test", NODE_STATUS_DRAINING, 3)
+
+    # backdate the collector heartbeat past the stale threshold
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("UPDATE collector_status SET last_update = NOW() - INTERVAL 1 HOUR WHERE node_id = %s", (node_id,))
+        db.commit()
+
+    assert check_and_mark_drained(node_id, collector_stale_seconds=120)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINED
+    assert "ignoring stale collector status" in caplog.text
+
+
+def test_check_and_mark_drained_ignores_stopped_collector():
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_DRAINING)
+    update_collector_status(node_id, "test", NODE_STATUS_STOPPED, 0)
+    assert check_and_mark_drained(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINED
+
+
+def test_revert_drained_if_work_appeared():
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_DRAINED)
+
+    # no work -- stays drained
+    assert not revert_drained_if_work_appeared(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINED
+
+    # work appeared -- back to draining
+    insert_workload(node_id)
+    assert revert_drained_if_work_appeared(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING
+
+
+def test_reconcile_stale_node_statuses():
+    fresh_id = insert_node("test_fresh_node", NODE_STATUS_RUNNING, last_update_age_seconds=0)
+    stale_id = insert_node("test_stale_node", NODE_STATUS_RUNNING, last_update_age_seconds=3600)
+    stale_stopped_id = insert_node("test_stale_stopped_node", NODE_STATUS_STOPPED, last_update_age_seconds=3600)
+
+    assert reconcile_stale_node_statuses(120) == 1
+    assert get_node_status(fresh_id) == NODE_STATUS_RUNNING
+    assert get_node_status(stale_id) == NODE_STATUS_STOPPED
+    assert get_node_status(stale_stopped_id) == NODE_STATUS_STOPPED
+
+
+def test_get_node_workload_counts():
+    node_id = local_node_id()
+    assert get_node_workload_counts(node_id) == (0, 0)
+
+    insert_workload(node_id)
+    insert_workload(node_id)
+    insert_delayed_analysis(node_id)
+
+    assert get_node_workload_counts(node_id) == (2, 1)
+
+
+def test_update_collector_status_upsert():
+    node_id = local_node_id()
+
+    update_collector_status(node_id, "test", NODE_STATUS_RUNNING, 0)
+    statuses = get_collector_statuses(node_id)
+    assert len(statuses) == 1
+    name, status, backlog_count, last_update = statuses[0]
+    assert name == "test"
+    assert status == NODE_STATUS_RUNNING
+    assert backlog_count == 0
+
+    # updating the same collector replaces the row
+    update_collector_status(node_id, "test", NODE_STATUS_DRAINING, 5)
+    statuses = get_collector_statuses(node_id)
+    assert len(statuses) == 1
+    name, status, backlog_count, last_update = statuses[0]
+    assert status == NODE_STATUS_DRAINING
+    assert backlog_count == 5

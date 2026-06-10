@@ -615,3 +615,38 @@ rule test_files {
 
     result = test_client.get(url_for('analysis.get_analysis', uuid=result['uuid']), headers = { 'x-ace-auth': get_config().api.api_key })
     assert result.status_code == 400
+@pytest.mark.integration
+def test_api_analysis_submit_rejected_while_draining(test_client):
+    from saq.constants import NODE_STATUS_DRAINING, NODE_STATUS_RUNNING
+    from saq.database.util.node import set_node_status
+
+    node_id = get_global_runtime_settings().saq_node_id
+    submission_data = {
+        'analysis': json.dumps({
+            'analysis_mode': 'analysis',
+            'tool': 'unittest',
+            'tool_instance': 'unittest_instance',
+            'type': 'unittest',
+            'description': 'testing',
+            'details': {},
+            'observables': [],
+            'tags': [],
+        }, cls=_JSONEncoder),
+    }
+
+    # a draining node rejects new submissions
+    set_node_status(node_id, NODE_STATUS_DRAINING)
+    result = test_client.post(url_for('analysis.submit'), data=dict(submission_data),
+                              content_type='multipart/form-data', headers={'x-ace-auth': get_config().api.api_key})
+    assert result.status_code == 503
+
+    # resubmit is also rejected
+    result = test_client.get(url_for('analysis.resubmit', uuid=str(uuid.uuid4())),
+                             headers={'x-ace-auth': get_config().api.api_key})
+    assert result.status_code == 503
+
+    # once the node is running again submissions are accepted
+    set_node_status(node_id, NODE_STATUS_RUNNING)
+    result = test_client.post(url_for('analysis.submit'), data=dict(submission_data),
+                              content_type='multipart/form-data', headers={'x-ace-auth': get_config().api.api_key})
+    assert result.status_code == 200
