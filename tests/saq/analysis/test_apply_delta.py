@@ -301,6 +301,50 @@ class TestApplyDeltaRehydration:
         assert "replay-tag" in target.tags
 
     @pytest.mark.unit
+    def test_analysis_tags_rehydrated(self, tmp_path):
+        """Tags captured off the Analysis object must be restored on the
+        rehydrated analysis (they flow through the analysis.json setter →
+        AnalysisSerializer.deserialize → BaseNode.set_json_data)."""
+
+        root = _make_root(tmp_path)
+        target = root.add_observable_by_spec(F_FQDN, "example.com")
+        analysis_dict = {
+            "module_path": "saq.modules.rdap:RdapAnalysis",
+            "details": {"registrar": "Test Registrar"},
+            "tags": ["registrar:test", "cached"],
+            "completed": True,
+            "delayed": False,
+        }
+        delta = _empty_delta(target, analysis=analysis_dict)
+        apply_delta(root, target, delta)
+
+        rehydrated = target.get_analysis(RdapAnalysis)
+        assert rehydrated.tags == ["registrar:test", "cached"]
+
+    @pytest.mark.unit
+    def test_slot_collision_leaves_existing_analysis_tags_alone(self, tmp_path):
+
+        root = _make_root(tmp_path)
+        target = root.add_observable_by_spec(F_FQDN, "example.com")
+        existing = RdapAnalysis()
+        existing.add_tag("preexisting")
+        target.analysis_tree_manager.add_analysis(target, existing)
+
+        analysis_dict = {
+            "module_path": "saq.modules.rdap:RdapAnalysis",
+            "details": {},
+            "tags": ["from-cache"],
+            "completed": True,
+            "delayed": False,
+        }
+        delta = _empty_delta(target, analysis=analysis_dict)
+        apply_delta(root, target, delta)
+
+        kept = target.get_analysis(RdapAnalysis)
+        assert kept is existing
+        assert kept.tags == ["preexisting"]
+
+    @pytest.mark.unit
     def test_idempotent_double_apply(self, tmp_path):
         """Calling apply_delta twice must produce the same tree state as
         one call — no double tags, no slot replacement, no duplicate

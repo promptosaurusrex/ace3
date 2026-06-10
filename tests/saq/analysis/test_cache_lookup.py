@@ -164,6 +164,29 @@ class TestGetCachedDelta:
             _delete_cache_row(delta.cache_key)
 
     @pytest.mark.integration
+    def test_analysis_tags_round_trip(self, blob_store):
+        """Tags on the captured analysis dict must survive put → get."""
+        module = _make_module()
+        obs = _make_observable()
+        delta = _make_delta(
+            module,
+            analysis={
+                "module_path": "saq.modules.test:Dummy",
+                "details": {"foo": "bar"},
+                "tags": ["analysis-tag"],
+                "completed": True,
+                "delayed": False,
+            },
+        )
+        try:
+            assert put_cached_delta(delta, module, blob_store) is not None
+            result = get_cached_delta(obs, module, blob_store)
+            assert result.delta is not None
+            assert result.delta.analysis["tags"] == ["analysis-tag"]
+        finally:
+            _delete_cache_row(delta.cache_key)
+
+    @pytest.mark.integration
     def test_expired_row_excluded(self, blob_store):
         module = _make_module()
         obs = _make_observable()

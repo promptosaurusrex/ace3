@@ -461,6 +461,16 @@ def _serialize_analysis(analysis) -> dict:
         result["delayed"] = analysis.delayed
     if hasattr(analysis, "external_details_path") and analysis.external_details_path is not None:
         result["external_details_path"] = analysis.external_details_path
+    # Capture tags set on the Analysis object itself (analysis.add_tag).
+    # Replay restores them through the ``analysis.json`` setter →
+    # AnalysisSerializer.deserialize → BaseNode.set_json_data path. Copy
+    # the list so the captured dict is isolated from later in-process
+    # mutation of the live analysis. NOTE analysis-object detection
+    # points, pivot_links, and llm_context_documents are deliberately NOT
+    # captured yet — detections need DetectionPoint object handling in
+    # set_json_data; revisit if a cacheable module starts using them.
+    if getattr(analysis, "tags", None):
+        result["tags"] = list(analysis.tags)
     # Capture the live in-memory details dict so cache replay can
     # rehydrate it on a different alert's storage_dir. Step 3.1 — without
     # this, Phase 2's ``_maybe_spill_details`` codepath was dead and cache

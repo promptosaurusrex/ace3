@@ -605,6 +605,44 @@ class TestAnalysisDetailsCapture:
             "to default=str on SummaryDetail objects"
         )
 
+    @pytest.mark.unit
+    def test_analysis_dict_includes_tags(self, tmp_path):
+        """Tags set on the Analysis object itself (analysis.add_tag) must
+        be captured so cache replay can restore them — they're invisible
+        to the observable-level tag diff."""
+
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
+
+        before = ModuleExecutionSnapshot.narrow(root, obs, module)
+        analysis = RdapAnalysis()
+        analysis.add_tag("registrar:test")
+        obs.analysis_tree_manager.add_analysis(obs, analysis)
+        after = ModuleExecutionSnapshot.narrow(root, obs, module)
+        delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
+
+        assert delta.analysis["tags"] == ["registrar:test"]
+        # Captured list is a copy — mutating the live analysis afterwards
+        # must not leak into the already-captured delta.
+        analysis.add_tag("late-tag")
+        assert delta.analysis["tags"] == ["registrar:test"]
+
+    @pytest.mark.unit
+    def test_no_tags_key_when_analysis_untagged(self, tmp_path):
+
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
+
+        before = ModuleExecutionSnapshot.narrow(root, obs, module)
+        analysis = RdapAnalysis()
+        obs.analysis_tree_manager.add_analysis(obs, analysis)
+        after = ModuleExecutionSnapshot.narrow(root, obs, module)
+        delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
+
+        assert "tags" not in delta.analysis
+
 
 # ---------------------------------------------------------------------------
 # Phase 3 Step 3.0: delayed→completed transition capture
@@ -654,9 +692,10 @@ class TestDelayedAnalysisTransitions:
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
         module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
 
-        # First call: delayed analysis already in slot.
+        # First call: delayed analysis already in slot, tagged pre-delay.
         analysis = RdapAnalysis()
         analysis.delayed = True
+        analysis.add_tag("pre-delay-tag")
         obs.analysis_tree_manager.add_analysis(obs, analysis)
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
@@ -672,6 +711,9 @@ class TestDelayedAnalysisTransitions:
         )
         assert delta.analysis["delayed"] is False
         assert delta.analysis["details"]["registrar"] == "Test"
+        # Whole-capture semantics: a tag added in the pre-delay cycle is
+        # still on the analysis object, so the final capture carries it.
+        assert delta.analysis["tags"] == ["pre-delay-tag"]
 
     @pytest.mark.unit
     def test_intermediate_delayed_cycle_no_capture(self, tmp_path):
