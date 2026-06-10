@@ -30,7 +30,7 @@ from saq.service import ACEServiceInterface
 from saq.submission_filter import SubmissionFilter
 
 # how often (in seconds) a collector service reports its status to the collector_status table
-COLLECTOR_STATUS_REPORT_FREQUENCY = 30
+COLLECTOR_STATUS_REPORT_FREQUENCY = 5
 
 def get_collection_error_dir() -> str:
     return os.path.join(get_data_dir(), get_config().collection.error_dir)
