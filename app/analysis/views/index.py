@@ -34,6 +34,123 @@ from aceapi_v2.observable_comments.service import get_comments_for_observables, 
 from aceapi_v2.observable_types.service import get_observable_types
 
 
+# Key under root_analysis.details where correlated hunts record step provenance.
+# Kept as a literal (mirroring how the template reads 'correlation_trace') to avoid
+# importing the hunter collector into the web layer.
+HUNT_PROVENANCE_DETAILS_KEY = "hunt_provenance"
+
+# Accent palette for provenance group sections, mirroring the indent-rainbow colors
+# in saq.css so the grouping reads as part of the same visual system. Indexed by step.
+PROVENANCE_PALETTE = [
+    "rgba(255, 99, 71, 0.55)",    # tomato
+    "rgba(255, 165, 0, 0.55)",    # orange
+    "rgba(230, 200, 0, 0.55)",    # gold
+    "rgba(60, 179, 113, 0.55)",   # mediumseagreen
+    "rgba(30, 144, 255, 0.55)",   # dodgerblue
+    "rgba(138, 43, 226, 0.55)",   # blueviolet
+    "rgba(199, 21, 133, 0.55)",   # violetred
+]
+
+
+def build_provenance_groups(root_analysis):
+    """Build ordered Analysis-Overview groups from a correlated hunt's step provenance.
+
+    Returns a list of group dicts (one per distinct set of contributing hunt steps),
+    or None for alerts that carry no provenance (i.e. every non-correlated alert).
+    Each group dict:
+        key, anchor_id  -- stable identifiers derived from the step set
+        label           -- heading ("Initial Query", "Correlated: <step>", or
+                           "Found by Both Steps" for overlap groups)
+        full_label      -- verbose join of all contributing step names (tooltip)
+        sublabel        -- explanatory subtitle for overlap groups, else None
+        colors          -- one accent color per contributing step (overlap groups
+                           render these as a two-tone gradient)
+        steps           -- sorted list of contributing step indices
+        trace_steps     -- the correlate steps in this group (index>0 with a
+                           property_name) for "View in Correlation Trace" links
+        observable_uuids-- set of top-level observable uuids in this group
+
+    Observables shared by multiple steps form their own truthful combined group rather
+    than being assigned to one arbitrarily. Top-level observables with no provenance
+    (e.g. the injected signature-id observable) are left out here and rendered by the
+    template in a trailing "Other" section.
+    """
+    details = getattr(root_analysis, "details", None) or {}
+    provenance = details.get(HUNT_PROVENANCE_DETAILS_KEY)
+    if not provenance:
+        return None
+
+    steps = provenance.get("steps") or []
+    obs_steps = provenance.get("observables") or {}
+    if not steps:
+        return None
+
+    step_by_index = {s["index"]: s for s in steps}
+
+    # bucket observable uuids by their full (sorted) step set
+    buckets: dict[tuple, set] = {}
+    for obs_uuid, step_list in obs_steps.items():
+        key = tuple(sorted(step_list))
+        buckets.setdefault(key, set()).add(obs_uuid)
+
+    groups = []
+    for key in sorted(buckets.keys()):
+        step_objs = [step_by_index[i] for i in key if i in step_by_index]
+        if not step_objs:
+            continue
+
+        label_parts = []
+        for s in step_objs:
+            if s["index"] == 0:
+                label_parts.append(s["label"])
+            else:
+                label_parts.append(f"Correlated: {s['label']}")
+        full_label = "  +  ".join(label_parts)
+
+        # Overlap groups (observables returned by more than one step — typically the
+        # pivot value the hunt correlated on) get a succinct heading + explanatory
+        # subtitle; single-step groups keep the step name as the heading.
+        if len(key) == 1:
+            label = full_label
+            sublabel = None
+        else:
+            label = "Found by Both Steps" if len(key) == 2 else "Found by Multiple Steps"
+            if len(key) == 2 and key[0] == 0:
+                sublabel = (
+                    "returned by both the initial query and this correlated step — "
+                    "typically the pivot value the hunt correlated on"
+                )
+            else:
+                sublabel = "returned by multiple hunt steps: " + " + ".join(label_parts)
+
+        # One color per contributing step. Single-step sections keep the exact color of
+        # their Correlation Trace legend badge; overlap sections blend their members'
+        # colors as a two-tone gradient in the template (so they never collide with a
+        # single-step section's solid color).
+        colors = [PROVENANCE_PALETTE[i % len(PROVENANCE_PALETTE)] for i in key]
+
+        trace_steps = [
+            {"index": s["index"], "label": s["label"], "property_name": s.get("property_name")}
+            for s in step_objs
+            if s["index"] != 0 and s.get("property_name")
+        ]
+
+        key_str = "-".join(str(i) for i in key)
+        groups.append({
+            "key": key_str,
+            "anchor_id": f"provenance-group-{key_str}",
+            "label": label,
+            "full_label": full_label,
+            "sublabel": sublabel,
+            "colors": colors,
+            "steps": list(key),
+            "trace_steps": trace_steps,
+            "observable_uuids": buckets[key],
+        })
+
+    return groups or None
+
+
 class TreeNode:
     def __init__(self, obj, parent=None, prune_volatile=False):
         # unique ID that can be used in the GUI to track nodes
@@ -366,6 +483,16 @@ def index():
 
             _resolve_references(display_tree)
 
+    # For correlated-hunt alerts, group the Analysis Overview's top-level observables by
+    # the hunt step that produced them. None for every other alert (renders flat as today).
+    provenance_groups = None
+    provenance_attributed_uuids = set()
+    if alert.root_analysis is analysis:
+        provenance_groups = build_provenance_groups(alert.root_analysis)
+        if provenance_groups:
+            for group in provenance_groups:
+                provenance_attributed_uuids |= group["observable_uuids"]
+
     try:
         # go ahead and get the list of all the users, we'll end up using it
         all_users = get_db().query(User).order_by('username').all()
@@ -452,6 +579,8 @@ def index():
         current_time=datetime.now(),
         directives={directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in GUI_DIRECTIVES},
         display_tree=display_tree,
+        provenance_groups=provenance_groups,
+        provenance_attributed_uuids=provenance_attributed_uuids,
         prune_display_tree=session['prune'],
         prune_volatile=session['prune_volatile'],
         open_events=open_events,

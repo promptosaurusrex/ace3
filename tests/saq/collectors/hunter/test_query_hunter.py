@@ -857,6 +857,125 @@ def test_process_query_results_captures_original_events(monkeypatch):
     input_events[2]["tag"] = "mutated_again"
     assert hunt.original_query_results[2]["tag"] == "keep"
 
+
+class _StubCorrelationResult:
+    """Minimal stand-in for CorrelationEngine.execute()'s result so a unit test can
+    exercise the post-correlation submission path without running real queries. The
+    events are returned untouched (already carrying the correlated property)."""
+    def __init__(self, events):
+        self.trace = None
+        self.captured_queries = []
+        self.discarded = False
+        self.events = events
+        self.event_actions = {}
+        self.alert_event_origin_indices = list(range(len(events)))
+
+
+class _StubCorrelationEngine:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def execute(self, query_results):
+        return _StubCorrelationResult(query_results)
+
+
+@pytest.mark.unit
+def test_process_query_results_records_hunt_provenance(monkeypatch):
+    """Correlated hunts attach per-observable step provenance to root.details so the GUI
+    can group the Analysis Overview by the hunt step that produced each observable.
+
+    Observables from initial-query fields map to step 0; observables from a correlation
+    transform's named property map to that transform's step; an observable produced by
+    both (here, an IP appearing in the initial query and the correlated results) carries
+    both step indices."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    # don't run real correlation queries — events already carry the correlated property
+    monkeypatch.setattr(
+        "saq.collectors.hunter.correlation.engine.CorrelationEngine",
+        _StubCorrelationEngine,
+    )
+
+    correlate = CorrelateConfig.model_validate({
+        "logic": [
+            {
+                "description": "Check other activity from this IP",
+                "transform": {
+                    "type": "event",
+                    "method": "property",
+                    "property_type": "list",
+                    "property_name": "correlate_logs",
+                    "command": {"type": "query", "source": "splunk", "query": "index=x"},
+                },
+            },
+        ],
+    })
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="prov_hunt",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        observable_mapping=[
+            ObservableMapping(fields=["src"], type=F_IPV4),  # initial query -> step 0
+            ObservableMapping(fields=["correlate_logs.*.ip"], type=F_IPV4, field_lookup_type="dot"),      # -> step 1
+            ObservableMapping(fields=["correlate_logs.*.host"], type=F_HOSTNAME, field_lookup_type="dot"),  # -> step 1
+        ],
+        correlate=correlate,
+    )
+
+    event = {
+        "src": "1.2.3.4",
+        "correlate_logs": [
+            {"ip": "1.2.3.4", "host": "host-a"},  # ip shared with initial query
+            {"ip": "9.9.9.9", "host": "host-b"},
+        ],
+    }
+    submissions = hunt.process_query_results([event])
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    provenance = submission.root.details["hunt_provenance"]
+
+    # ordered steps: step 0 is the initial query, step 1 is the correlation transform
+    assert provenance["steps"] == [
+        {"index": 0, "label": "Initial Query", "property_name": None},
+        {"index": 1, "label": "Check other activity from this IP", "property_name": "correlate_logs"},
+    ]
+
+    # resolve observable uuids by (type, value) so we can assert their step attribution
+    uuid_by_spec = {(o.type, o.value): o.uuid for o in submission.root.observables}
+    obs_map = provenance["observables"]
+
+    assert obs_map[uuid_by_spec[(F_IPV4, "1.2.3.4")]] == [0, 1]   # initial + correlated
+    assert obs_map[uuid_by_spec[(F_IPV4, "9.9.9.9")]] == [1]      # correlated only
+    assert obs_map[uuid_by_spec[(F_HOSTNAME, "host-a")]] == [1]
+    assert obs_map[uuid_by_spec[(F_HOSTNAME, "host-b")]] == [1]
+
+    # the injected signature-id observable has no provenance and is left unattributed
+    signature_id = next(o for o in submission.root.observables if o.type == F_SIGNATURE_ID)
+    assert signature_id.uuid not in obs_map
+
+
+@pytest.mark.unit
+def test_process_query_results_no_provenance_without_correlate(monkeypatch):
+    """Non-correlated hunts attach no hunt_provenance, so the GUI renders a flat tree."""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="no_prov_hunt",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type=F_IPV4)],
+    )
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert len(submissions) == 1
+    assert "hunt_provenance" not in submissions[0].root.details
+
     # the no-correlate hunt produced submissions earlier; verify their details do
     # NOT contain original_events (the key is only attached when correlate ran)
     no_correlate_hunt = default_hunt(
