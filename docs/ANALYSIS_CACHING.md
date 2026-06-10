@@ -1,6 +1,7 @@
 # Per-Module Analysis Diff Tracking & Caching
 
-Status: Phases 1–3 and the Phase 2.5 write-only bake have shipped; Phase 3.5
+Status: Phases 1–3 and the Phase 2.5 write-only bake have shipped, plus a
+capture/replay hardening pass (2026-06-10 — see Part II); Phase 3.5
 (single-flight dedup) and Phase 4 (file-observable caching) are designed but not
 yet implemented.
 Origin: design sessions starting 2026-04-09. This document merges the original
@@ -161,7 +162,7 @@ the following fields:
 | `root_uuid` | `str` | root provenance; rewritten to the current alert on cache-hit replay (`with_cache_hit_metadata`). |
 | `created_at` | `str` (ISO) | when the delta was recorded; rewritten to the replay time on a cache hit. |
 | `execution_time_ms` | `int` | metric (lookup + replay time on a cache hit). |
-| `analysis` | `dict \| None` | serialized Analysis object produced, or `None` if the module returned INCOMPLETE / added no analysis. Includes summary, `details` (inlined since Phase 3 Step 3.1), completed/delayed flags. |
+| `analysis` | `dict \| None` | serialized Analysis object produced, or `None` if the module returned INCOMPLETE / added no analysis. Includes summary, `details` (inlined since Phase 3 Step 3.1), analysis-object tags, completed/delayed flags. **The copy recorded into root.json is details-stripped** (`without_analysis_details()`, 2026-06-10) — only the cache row carries `details`; see the capture/replay hardening notes in Part II. Analysis-object detection points / pivot_links / llm_context_documents are NOT captured (deferred — a cacheable module must not rely on them). |
 | `target_observable_diff` | `ObservableDiff` | what changed on the analyzed observable (see below). |
 | `new_observables` | `list[ObservableSpec]` | observables this module added to the root (type, value, time, initial tags, detections, directives). |
 | `root_diff` | `RootDiff` | root-level tag/detection additions (rare but possible). |
@@ -315,7 +316,11 @@ module) cache-hit / lookup-latency counters (§Phase 3 metrics).
    then apply the spec's initial tags/detections/directives.
 3. Add the target observable's tags/detections/directives/relationships and
    scalar transitions from `delta.target_observable_diff` — all additive, all
-   idempotent.
+   idempotent. Relationship targets resolve by uuid (same-root), then a
+   self-target shortcut, then `(target_type, target_value, target_time)` spec
+   lookup — uuids are per-alert, so cross-alert replay relies on the spec
+   fields the snapshot captures alongside each relationship (2026-06-10).
+   Unresolvable targets (legacy uuid-only rows) log a WARNING and skip.
 4. Apply `delta.root_diff` to root-level tags/detections.
 
 `apply_delta` refuses (read-time) any delta with file observables — that is
@@ -485,8 +490,8 @@ confidence criteria.
   accumulators aggregated onto the existing per-root summary event, **not**
   per-event log lines (reworked in PR #242 — see Part II).
 - CI lint: `tests/saq/modules/test_cacheable_modules_contract.py` asserts every
-  YAML-shipped `cache_ttl` module is registered and produces no removals / no
-  file observables.
+  YAML-shipped `cache_ttl` module is registered and produces no removals, no
+  file observables, and no out-of-scope relationships (2026-06-10).
 - Modules opted in (current shipped state, `etc/saq.default.yaml`):
   `rdap_analyzer` (7d), `nrd_analyzer` (24h), `site_tagger` (30d) — all small,
   deterministic, additive, and each driving cache invalidation through
@@ -537,6 +542,18 @@ confidence criteria.
    variant — snapshot Step 3.0 captures the analysis dict on the
    `delayed: True→False` transition, and `put_cached_delta` refuses any delta
    still flagged `delayed`, so only the final post-delay result is cached.
+
+   *Hardened 2026-06-10 (capture/replay hardening, Part II):* two gaps in
+   that resolution were fixed. (a) The still-delayed refusal inspects the
+   analysis dict, but a module that delays **2+ times** produces intermediate
+   deltas with `analysis=None` (slot already present, no transition) which
+   slipped past it — partial mid-delay results were cached. The executor
+   cache write is now gated on the module returning COMPLETED. (b) The final
+   cycle's diff only covers the final cycle, so pre-delay tree mutations
+   (tags, child observables) were missing from the cached delta. On a delayed
+   resume the executor now merges the prior cycles' recorded deltas (from
+   `root.module_executions`, persisted across restarts) into the cached delta
+   via `merge_module_execution_deltas()`.
 
 4. **Modules that mutate other observables:** Rare but possible — a module
    analyzing observable A might `root.add_tag` or tag observable B. The
@@ -602,6 +619,14 @@ Modules whose output depends on *other observables*, *other analyses*,
 *global mutable state* are not cacheable, full stop. (`observable.time` is
 not part of the key — see §8. A module whose result depends on it is, by
 this contract, uncacheable.)
+
+Two further consequences of this contract are enforced mechanically:
+relationships must stay within the module's own output (§A4's
+`relationship_out_of_scope` refusal), and `is_grouped_by_time` cannot be
+combined with `cache_ttl` (config-load validator, 2026-06-10 — a cache
+hit bypasses `analyze()` and therefore `analysis_covered()`, so
+time-grouping and caching are incoherent together, same argument as the
+`wide_diff` exclusion in §A6).
 
 Crucially, the Phase 1 attribution machinery still records deltas for
 these modules — we just don't cache them. Seeing "ObservableModifier:my_rule
@@ -771,6 +796,24 @@ the target root X may not exist at all, may exist for a different reason
 for a module that hadn't run yet when the cache was populated. Removing
 it is a correctness hazard that we cannot verify from the delta alone.
 The safer default is: cacheable modules must be monotonic.
+
+Since 2026-06-10 `has_removals` also counts **root-level** removals
+(`root_diff.removed_tags/removed_detections`) — replay only ever applies
+root *additions*, so a root-level removal was previously cacheable but
+silently unreplayable.
+
+**Relationships have their own write-time scope refusal**
+(`refusal_reason=relationship_out_of_scope`, 2026-06-10): a cacheable
+module's relationships must target either the analyzed observable itself
+or an observable the same delta created. Anything else points at
+surrounding tree context a replay onto a different root cannot guarantee
+to reproduce. In-scope relationships ARE replayable — the snapshot
+captures each relationship target's `(type, value, time)` spec alongside
+the uuid, and replay re-resolves through it (§5). Known limitation: a
+relationship hung on a *new* observable (`child.add_relationship(...)`)
+is invisible to the narrow diff (`ObservableSpec` carries no
+`initial_relationships`) — a module doing that must stay uncached until
+the spec grows that field.
 
 Scalar-change handling is similar but laxer: a scalar change is
 effectively "set to new value", and replay sets it. If two modules both
@@ -2998,3 +3041,68 @@ gating, the cacheability contract, and `observable.time` exclusion from the key.
 volumes for dev, or create the `analysis-result-cache` database in place, grant
 `ace-user`, and add the `database_analysis_result_cache` password). They are not
 reproduced here — see the PR description.
+
+## Capture/replay hardening (2026-06-10)
+
+A fresh-eyes design review of this document against the shipped code found
+three latent correctness gaps, one live bug, and a size regression in the
+delta capture/replay layer. All five were fixed in one pass (branch
+`mw/analysis-cache-replay-fixes`); none changed the cache schema.
+
+**1. root.json no longer duplicates `analysis.details` (size).** Step 3.1's
+details inlining flowed into *both* serializations of a delta — the cache row
+(intended) and the `module_executions` attribution log in root.json
+(unintended duplication: the analysis tree already persists details once).
+Measured before the fix on real dev alerts, `module_executions` had grown to
+**43–62% of data.json** (vs the 29% recorded after Phase 1), with the
+duplicated details accounting for 14–39% of the whole file. The executor now
+records a details-stripped copy (`ModuleExecutionDelta.without_analysis_details()`)
+for both live runs and cache-hit attribution; the cache write keeps the full
+delta. Post-strip, the same alerts measure 22–30% — back to the Phase 1
+envelope. The cache key is computed *before* recording so the stripped copy
+still carries it. No reader breaks: the GUI badge map only consumes
+identity/timing fields.
+
+**2. Analysis-object tags are captured and replayed.** `analysis.add_tag(...)`
+was invisible to the capture (the observable-level tag diff doesn't see it;
+`_serialize_analysis` omitted it), so replays silently dropped analysis tags.
+Now captured as a copied list in the analysis dict; replay restores them with
+no code change through the existing `analysis.json` setter path. Analysis
+detection points / pivot_links / llm_context_documents remain uncaptured —
+deferred until a cacheable module needs them (detections require
+DetectionPoint handling in `set_json_data`).
+
+**3. Relationships replay across alerts.** Relationships were cached as
+`{type, target-uuid}`, but uuids are per-alert — cross-alert replay could
+never resolve the target and silently dropped every relationship (debug log).
+The snapshot now records each target's `(type, value, time)` spec; replay
+resolves uuid → self-target shortcut → spec (the shortcut exists because
+`Observable.__eq__` compares `time` while the cache key ignores it).
+`put_cached_delta` refuses out-of-scope relationship targets (§A4) and the
+Step 3.8 contract lint asserts the same per opt-in.
+
+**4. Delayed-analysis caching: live bug + completeness (open question 3).**
+(a) *Bug:* a module delaying 2+ times produces intermediate deltas with
+`analysis=None`, which slipped past the still-delayed write refusal (it
+inspects the analysis dict) — partial mid-delay results were being cached.
+The executor cache write (now `_maybe_write_cache_delta`) is gated on the
+module returning COMPLETED. (b) *Completeness:* the final cycle's diff only
+covers the final cycle, so pre-delay tags/observables were missing from the
+cached delta. On a delayed resume the prior cycles' recorded deltas are
+merged in (`merge_module_execution_deltas`), with removals merged too so a
+cycle-1 removal refuses the whole write. Prior deltas come from
+`root.module_executions`, which persists through root.json — so the merge
+works even when the resume happens in a different process.
+
+**5. `is_grouped_by_time` + `cache_ttl` rejected at config load** — a cache
+hit bypasses `analysis_covered()`, making the combination incoherent (§A1).
+
+**Verification.** 60+ new/extended unit+integration tests across
+`test_module_execution_delta.py` (merge semantics, strip), `test_snapshot.py`
+(tag/relationship-spec capture), `test_apply_delta.py` (spec resolution,
+tag rehydration), `test_cache.py` (scope refusal), `test_executor_cache_hit.py`
+(COMPLETED gate, merge wiring, stripped attribution). End-to-end in dev:
+`ace correlate` of a site_tagger-matching FQDN twice — first run recorded a
+details-stripped delta in root.json while the cache row carried details;
+second run replayed from cache (`from_cache_hit=True`) with the tag and
+analysis slot intact.
