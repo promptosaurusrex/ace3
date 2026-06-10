@@ -1117,7 +1117,7 @@ class AnalysisExecutor:
             execution_time_ms=lookup_ms + replay_ms,
             root_uuid=root.uuid,
             observable_uuid=observable.uuid,
-        )
+        ).without_analysis_details()
         root.record_module_execution(attribution_delta)
 
         module_name = module.config.name
@@ -1311,8 +1311,37 @@ class AnalysisExecutor:
                             snapshot_after = ModuleExecutionSnapshot.narrow(root, work_item.observable, analysis_module)
                         delta = ModuleExecutionSnapshot.diff(snapshot_before, snapshot_after, analysis_module, work_item.observable)
                         delta.execution_time_ms = (time.monotonic_ns() - delta_start_ns) // 1_000_000
+
+                        # Compute the cache key before recording: the recorded
+                        # entry is a details-stripped *copy* of this delta, so
+                        # anything assigned to the original afterwards would be
+                        # missing from root.json. Key-generation failure
+                        # (extended_version probing can stat files) must not
+                        # block recording.
+                        if (
+                            analysis_module.cache_ttl is not None
+                            and get_config().analysis_cache.enabled
+                        ):
+                            try:
+                                delta.cache_key = generate_cache_key(work_item.observable, analysis_module)
+                            except Exception:
+                                logging.warning(
+                                    "failed to generate cache key module_name=%s "
+                                    "observable_uuid=%s",
+                                    analysis_module.config.name, work_item.observable.uuid,
+                                    exc_info=True,
+                                    extra={
+                                        "module_name": analysis_module.config.name,
+                                        "observable_uuid": work_item.observable.uuid,
+                                    },
+                                )
+
                         if not delta.is_empty:
-                            root.record_module_execution(delta)
+                            # The attribution log doesn't need the bulk
+                            # analysis.details payload — the analysis tree
+                            # persists details once already. The cache write
+                            # below uses the original delta, which keeps them.
+                            root.record_module_execution(delta.without_analysis_details())
 
                         if delta.has_removals:
                             logging.info(
@@ -1337,7 +1366,6 @@ class AnalysisExecutor:
                             and get_config().analysis_cache.enabled
                         ):
                             try:
-                                delta.cache_key = generate_cache_key(work_item.observable, analysis_module)
                                 write_result = put_cached_delta(delta, analysis_module, get_blob_store())
                                 if write_result is not None:
                                     module_name = analysis_module.name

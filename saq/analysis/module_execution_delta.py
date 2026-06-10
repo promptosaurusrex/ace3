@@ -391,6 +391,26 @@ class ModuleExecutionDelta:
             from_cache_hit=True,
         )
 
+    def without_analysis_details(self) -> "ModuleExecutionDelta":
+        """Return a copy of this delta whose analysis dict omits ``details``.
+
+        Used when recording a delta into ``root._module_executions``: the
+        analysis tree already persists each analysis's ``details`` once, so
+        keeping a second copy inside the attribution log would double the
+        details bytes in root.json (measured at 14-39% of data.json on
+        real alerts). The cache-write path keeps using the original delta,
+        which retains ``details`` for replay.
+
+        Returns ``self`` when there is nothing to strip. Never mutates the
+        original — the copy is shallow except for the analysis dict itself.
+        """
+        if self.analysis is None or "details" not in self.analysis:
+            return self
+        return replace(
+            self,
+            analysis={k: v for k, v in self.analysis.items() if k != "details"},
+        )
+
     def to_dict(self) -> dict:
         result = {
             "module_path": self.module_path,

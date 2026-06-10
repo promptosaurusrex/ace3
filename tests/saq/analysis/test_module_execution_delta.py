@@ -309,6 +309,62 @@ class TestModuleExecutionDelta:
         assert not delta.is_empty
 
 
+class TestWithoutAnalysisDetails:
+    def _make_delta(self, **overrides):
+        defaults = dict(
+            module_path="saq.modules.test:TestAnalysis",
+            module_instance=None,
+            module_version=1,
+            observable_uuid="obs-uuid-1",
+            observable_type="ipv4",
+            observable_value="10.0.0.1",
+            created_at="2026-04-10T12:00:00+00:00",
+        )
+        defaults.update(overrides)
+        return ModuleExecutionDelta(**defaults)
+
+    @pytest.mark.unit
+    def test_strips_details_preserves_other_keys(self):
+        delta = self._make_delta(
+            analysis={
+                "module_path": "saq.modules.test:TestAnalysis",
+                "summary": "found a thing",
+                "completed": True,
+                "delayed": False,
+                "details": {"big": "payload"},
+            },
+            target_observable_diff=ObservableDiff(added_tags=["suspicious"]),
+            cache_key="ab" * 32,
+        )
+        stripped = delta.without_analysis_details()
+        assert "details" not in stripped.analysis
+        assert stripped.analysis["summary"] == "found a thing"
+        assert stripped.analysis["completed"] is True
+        assert stripped.analysis["delayed"] is False
+        # Non-analysis fields are preserved on the copy.
+        assert stripped.target_observable_diff.added_tags == ["suspicious"]
+        assert stripped.cache_key == delta.cache_key
+
+    @pytest.mark.unit
+    def test_original_delta_not_mutated(self):
+        delta = self._make_delta(
+            analysis={"module_path": "m", "details": {"k": "v"}},
+        )
+        stripped = delta.without_analysis_details()
+        assert stripped is not delta
+        assert delta.analysis["details"] == {"k": "v"}
+
+    @pytest.mark.unit
+    def test_returns_self_when_no_analysis(self):
+        delta = self._make_delta(analysis=None)
+        assert delta.without_analysis_details() is delta
+
+    @pytest.mark.unit
+    def test_returns_self_when_no_details_key(self):
+        delta = self._make_delta(analysis={"module_path": "m", "completed": True})
+        assert delta.without_analysis_details() is delta
+
+
 class TestAnalysisChildrenDiff:
     @pytest.mark.unit
     def test_empty(self):

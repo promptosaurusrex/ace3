@@ -130,6 +130,30 @@ class TestApplyCachedDelta:
         assert recorded.execution_time_ms >= 4
 
     @pytest.mark.unit
+    def test_attribution_delta_details_stripped(self, tmp_path):
+        """The recorded attribution delta must not duplicate the bulk
+        analysis.details payload into root.json — the rehydrated analysis
+        on the tree already carries it. The input (cached) delta keeps its
+        details intact for the actual replay."""
+        executor = _make_executor()
+        root = _make_root(tmp_path)
+        context = _make_context(root)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        module = _make_module()
+        delta = _make_delta_for(obs)
+        assert delta.analysis["details"]  # precondition
+
+        executor._apply_cached_delta(context, root, obs, module, delta, lookup_ms=4)
+
+        recorded = root.module_executions[0]
+        assert "details" not in recorded.analysis
+        # Identity/metadata survives the strip.
+        assert recorded.from_cache_hit is True
+        assert recorded.analysis["module_path"] == delta.analysis["module_path"]
+        # The cached delta itself is untouched — replay used the details.
+        assert delta.analysis["details"] == {"registrar": "Test Registrar"}
+
+    @pytest.mark.unit
     def test_bumps_cache_hit_counters_on_context(self, tmp_path):
         """The plain ``analysis cache hit`` log line was replaced by
         per-(root, module) aggregation on the AnalysisExecutionContext.
