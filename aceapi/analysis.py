@@ -198,6 +198,10 @@ def submit():
                                 file_observable.add_directive(directive)
                             for limited_analysis in file_observable_dict.get('limited_analysis', []):
                                 file_observable.limit_analysis(limited_analysis)
+                            if file_observable_dict.get('added_by'):
+                                file_observable.added_by = file_observable_dict['added_by']
+                            if file_observable_dict.get('added_time'):
+                                file_observable.added_time = file_observable_dict['added_time']
 
                 except Exception as e:
                     logging.error("unable to copy file from to {} for root {}: {}".format(full_path, root, e))

@@ -21,6 +21,8 @@ KEY_IGNORED = 'ignored'
 KEY_LLM_CONTEXT_DOCUMENTS = 'llm_context_documents'
 KEY_DISPLAY_VALUE = 'display_value'
 KEY_DISPLAY_TYPE = 'display_type'
+KEY_ADDED_BY = 'added_by'
+KEY_ADDED_TIME = 'added_time'
 
 class ObservableSerializer:
     """Handles JSON serialization and deserialization for Observable objects."""
@@ -49,6 +51,8 @@ class ObservableSerializer:
             KEY_LLM_CONTEXT_DOCUMENTS: observable.llm_context_documents,
             KEY_DISPLAY_VALUE: observable._display_value,
             KEY_DISPLAY_TYPE: observable._display_type,
+            KEY_ADDED_BY: observable._added_by,
+            KEY_ADDED_TIME: observable._added_time,
         })
         
         return result
@@ -109,3 +113,8 @@ class ObservableSerializer:
             observable._display_value = data[KEY_DISPLAY_VALUE]
         if KEY_DISPLAY_TYPE in data:
             observable._display_type = data[KEY_DISPLAY_TYPE]
+        if KEY_ADDED_BY in data:
+            observable._added_by = data[KEY_ADDED_BY]
+        if KEY_ADDED_TIME in data:
+            # use the property setter so a JSON string parses back to datetime
+            observable.added_time = data[KEY_ADDED_TIME]

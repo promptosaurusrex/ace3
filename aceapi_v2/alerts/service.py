@@ -15,6 +15,7 @@ from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import add_workload
 from saq.environment import get_base_dir, get_temp_dir
 from saq.gui.alert import GUIAlert
+from saq.util import local_time
 from saq.util.uuid import is_uuid
 
 from aceapi_v2.alerts.schemas import BulkAddObservableResult
@@ -117,6 +118,7 @@ def _add_observable_to_alert(
     o_value: str,
     o_time: datetime | None,
     directives: list[str],
+    username: str,
 ) -> str | None:
     """Add an observable to a single alert. Returns None on success, or a failure reason string.
 
@@ -143,7 +145,16 @@ def _add_observable_to_alert(
         alert.lock_uuid = lock_uuid
         alert.load()
 
+        # remember whether this observable already existed (e.g. added by the engine)
+        # so we don't mislabel it as analyst-added
+        already_existed = alert.root_analysis.get_observable_by_spec(o_type, o_value, o_time) is not None
+
         observable = alert.root_analysis.add_observable_by_spec(o_type, o_value, o_time)
+
+        # track who manually added this observable and when
+        if observable and not already_existed:
+            observable.added_by = username
+            observable.added_time = local_time()
 
         if observable and directives:
             for directive in directives:
@@ -193,7 +204,7 @@ async def bulk_add_observable(
 
     for alert_uuid in alert_uuids:
         failure_reason = await asyncio.to_thread(
-            _add_observable_to_alert, alert_uuid, o_type, o_value, o_time, valid_directives
+            _add_observable_to_alert, alert_uuid, o_type, o_value, o_time, valid_directives, username
         )
         if failure_reason is None:
             success_count += 1

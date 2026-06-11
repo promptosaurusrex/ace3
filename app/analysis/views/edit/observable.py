@@ -10,6 +10,7 @@ from saq.database.pool import get_db
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import add_workload
 from saq.gui.alert import GUIAlert
+from saq.util import local_time
 
 @analysis.route('/add_observable', methods=['POST'])
 @require_permission('alert', 'write')
@@ -86,7 +87,16 @@ def add_observable():
             flash("internal error")
             return redirection
 
+        # remember whether this observable already existed (e.g. added by the engine)
+        # so we don't mislabel it as analyst-added
+        already_existed = alert.root_analysis.get_observable_by_spec(o_type, o_value, None if o_time == '' else o_time) is not None
+
         observable = alert.root_analysis.add_observable_by_spec(o_type, o_value, None if o_time == '' else o_time)
+
+        # track who manually added this observable and when
+        if observable and not already_existed:
+            observable.added_by = current_user.username
+            observable.added_time = local_time()
 
         # apply directives to the observable
         if observable and directives:

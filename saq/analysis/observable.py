@@ -75,6 +75,10 @@ class Observable(BaseNode):
         self._display_type: Optional[str] = None
         self._display_value: Optional[str] = None
 
+        # set when an analyst manually adds this observable to an alert
+        self._added_by: Optional[str] = None
+        self._added_time: Optional[datetime] = None
+
     # temporary backwards compatibility
     # TODO this gets moved to some display layer we build when we refactor the gui
     @property
@@ -219,6 +223,42 @@ class Observable(BaseNode):
         else:
             raise ValueError("time must be a datetime object or a string in the format "
                              "%Y-%m-%d %H:%M:%S %z but you passed {}".format(type(value).__name__))
+
+    @property
+    def added_by(self):
+        """The username of the analyst that manually added this observable, or None."""
+        return self._added_by
+
+    @added_by.setter
+    def added_by(self, value):
+        assert value is None or isinstance(value, str)
+        self._added_by = value
+
+    @property
+    def added_time(self):
+        """When an analyst manually added this observable, or None."""
+        return self._added_time
+
+    @added_time.setter
+    def added_time(self, value):
+        if value is None:
+            self._added_time = None
+        elif isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = get_local_timezone().localize(value)
+            self._added_time = value
+        elif isinstance(value, str):
+            self._added_time = parse_event_time(value)
+        else:
+            raise ValueError("added_time must be a datetime object or a string in the format "
+                             "%Y-%m-%d %H:%M:%S %z but you passed {}".format(type(value).__name__))
+
+    @property
+    def display_added_time(self) -> Optional[str]:
+        """Returns added_time formatted for display in UTC, or None."""
+        if self._added_time is None:
+            return None
+        return self._added_time.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')
 
     @property
     def directives(self):

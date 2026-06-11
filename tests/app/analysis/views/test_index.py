@@ -536,6 +536,56 @@ def test_index_no_cache_hit_badge_for_live_analysis(
 
 
 @pytest.mark.integration
+def test_index_renders_added_by_subtext(web_client, root_analysis, test_context):
+    """An observable stamped with added_by/added_time shows the
+    'added by <user>' subtext line in the rendered analysis tree.
+    """
+    test_observable, _ = _run_basic_analyzer(root_analysis, test_context)
+
+    # username intentionally not in the users table so the template
+    # exercises the raw-username fallback deterministically
+    test_observable.added_by = "manual_analyst"
+    test_observable.added_time = datetime(2026, 6, 11, 9, 30, 0, tzinfo=timezone.utc)
+
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    result = web_client.get(
+        url_for("analysis.index"),
+        query_string={"direct": root_analysis.uuid},
+    )
+    assert result.status_code == 200
+
+    body = result.data.decode("utf-8")
+    assert 'class="observable-added-by"' in body
+    assert "added by <strong>manual_analyst</strong>" in body
+    assert "2026-06-11 09:30 UTC" in body
+
+
+@pytest.mark.integration
+def test_index_no_added_by_subtext_for_engine_observables(
+    web_client, root_analysis, test_context,
+):
+    """Mirror of the positive test: observables without added_by must not
+    render the subtext line.
+    """
+    _run_basic_analyzer(root_analysis, test_context)
+
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    result = web_client.get(
+        url_for("analysis.index"),
+        query_string={"direct": root_analysis.uuid},
+    )
+    assert result.status_code == 200
+
+    body = result.data.decode("utf-8")
+    assert 'class="observable-added-by"' not in body
+    assert "added by <strong>" not in body
+
+
+@pytest.mark.integration
 def test_index_tree_display_logic(web_client, root_analysis, test_context):
     """Test the tree display logic in index view."""
     from saq.modules.test import BasicTestAnalyzer

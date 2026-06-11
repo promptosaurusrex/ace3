@@ -240,6 +240,20 @@ def test_invalid_mac_observable():
     assert observable is None
 
 @pytest.mark.unit
+def test_display_added_time():
+    """test that display_added_time renders in UTC with an explicit UTC suffix"""
+    root = create_root_analysis()
+    observable = root.add_observable_by_spec(F_IPV4, '1.2.3.4')
+    assert observable.display_added_time is None
+
+    observable.added_time = datetime.datetime(2026, 6, 11, 9, 30, 0, tzinfo=datetime.UTC)
+    assert observable.display_added_time == '2026-06-11 09:30 UTC'
+
+    # a non-UTC offset is normalized to UTC for display
+    observable.added_time = datetime.datetime(2026, 6, 11, 5, 30, 0, tzinfo=datetime.timezone(datetime.timedelta(hours=-4)))
+    assert observable.display_added_time == '2026-06-11 09:30 UTC'
+
+@pytest.mark.unit
 def test_display_type_with_no_custom_display():
     """test that display_type returns the type when no custom display_type is set"""
     root = create_root_analysis()
