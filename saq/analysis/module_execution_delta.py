@@ -332,6 +332,11 @@ class ModuleExecutionDelta:
     def has_removals(self) -> bool:
         if self.target_observable_diff.has_removals:
             return True
+        # Root-level removals count too: cache replay only applies root
+        # additions (_apply_root_diff), so a delta that removed a root tag
+        # or detection cannot be faithfully replayed.
+        if self.root_diff.removed_tags or self.root_diff.removed_detections:
+            return True
         for diff in self.other_observable_diffs.values():
             if diff.has_removals:
                 return True
@@ -361,6 +366,24 @@ class ModuleExecutionDelta:
         """
         return any(spec.type == F_FILE for spec in self.new_observables)
 
+    def out_of_scope_relationship_targets(self) -> list[dict]:
+        """Relationships added by this delta whose target lies outside the
+        delta's own scope.
+
+        The cacheability contract requires a module's relationships to
+        stay within its own output: the analyzed observable itself, or an
+        observable this same delta created. A relationship to any *other*
+        tree node depends on surrounding tree context, which a cached
+        replay onto a different root cannot guarantee to reproduce —
+        ``put_cached_delta`` refuses such deltas. Returns the offending
+        relationship dicts (empty list = in scope / no relationships).
+        """
+        allowed = {self.observable_uuid} | {spec.uuid for spec in self.new_observables}
+        return [
+            rel for rel in self.target_observable_diff.added_relationships
+            if rel.get("target") not in allowed
+        ]
+
     def with_cache_hit_metadata(
         self, executed_at: datetime, execution_time_ms: int,
         root_uuid: str, observable_uuid: str,
@@ -389,6 +412,26 @@ class ModuleExecutionDelta:
             root_uuid=root_uuid,
             observable_uuid=observable_uuid,
             from_cache_hit=True,
+        )
+
+    def without_analysis_details(self) -> "ModuleExecutionDelta":
+        """Return a copy of this delta whose analysis dict omits ``details``.
+
+        Used when recording a delta into ``root._module_executions``: the
+        analysis tree already persists each analysis's ``details`` once, so
+        keeping a second copy inside the attribution log would double the
+        details bytes in root.json (measured at 14-39% of data.json on
+        real alerts). The cache-write path keeps using the original delta,
+        which retains ``details`` for replay.
+
+        Returns ``self`` when there is nothing to strip. Never mutates the
+        original — the copy is shallow except for the analysis dict itself.
+        """
+        if self.analysis is None or "details" not in self.analysis:
+            return self
+        return replace(
+            self,
+            analysis={k: v for k, v in self.analysis.items() if k != "details"},
         )
 
     def to_dict(self) -> dict:
@@ -469,3 +512,136 @@ class ModuleExecutionDelta:
             from_cache_hit=data.get("from_cache_hit", False),
             cached_at=data.get("cached_at"),
         )
+
+
+def _dedupe(items: list, key=None) -> list:
+    """Order-preserving dedupe; ``key`` extracts the identity when items
+    aren't hashable (detection/relationship dicts)."""
+    seen = set()
+    result = []
+    for item in items:
+        k = key(item) if key else item
+        if k not in seen:
+            seen.add(k)
+            result.append(item)
+    return result
+
+
+def _detection_dict_identity(det: dict) -> tuple:
+    # Mirrors snapshot._detection_identity, but over the serialized form.
+    return (det.get("description"), str(det.get("details")))
+
+
+def _relationship_dict_identity(rel: dict) -> tuple:
+    return (rel.get("type"), rel.get("target"))
+
+
+def _merge_scalar(diffs: list[ObservableDiff], field_name: str) -> Optional[tuple]:
+    """Compose (before, after) transitions across cycles: earliest
+    'before', latest 'after'."""
+    transitions = [
+        getattr(d, field_name) for d in diffs
+        if getattr(d, field_name) is not None
+    ]
+    if not transitions:
+        return None
+    return (transitions[0][0], transitions[-1][1])
+
+
+def _merge_observable_diffs(diffs: list[ObservableDiff]) -> ObservableDiff:
+    def added_and_removed(added_field: str, removed_field: str, key=None):
+        return (
+            _dedupe([x for d in diffs for x in getattr(d, added_field)], key=key),
+            _dedupe([x for d in diffs for x in getattr(d, removed_field)], key=key),
+        )
+
+    added_tags, removed_tags = added_and_removed("added_tags", "removed_tags")
+    added_detections, removed_detections = added_and_removed(
+        "added_detections", "removed_detections", key=_detection_dict_identity)
+    added_directives, removed_directives = added_and_removed(
+        "added_directives", "removed_directives")
+    added_relationships, removed_relationships = added_and_removed(
+        "added_relationships", "removed_relationships", key=_relationship_dict_identity)
+    added_excluded, removed_excluded = added_and_removed(
+        "added_excluded_analysis", "removed_excluded_analysis")
+    added_limited, removed_limited = added_and_removed(
+        "added_limited_analysis", "removed_limited_analysis")
+
+    return ObservableDiff(
+        added_tags=added_tags,
+        removed_tags=removed_tags,
+        added_detections=added_detections,
+        removed_detections=removed_detections,
+        added_directives=added_directives,
+        removed_directives=removed_directives,
+        added_relationships=added_relationships,
+        removed_relationships=removed_relationships,
+        added_excluded_analysis=added_excluded,
+        removed_excluded_analysis=removed_excluded,
+        added_limited_analysis=added_limited,
+        removed_limited_analysis=removed_limited,
+        grouping_target=_merge_scalar(diffs, "grouping_target"),
+        redirection=_merge_scalar(diffs, "redirection"),
+        ignored=_merge_scalar(diffs, "ignored"),
+    )
+
+
+def merge_module_execution_deltas(
+    priors: list[ModuleExecutionDelta],
+    final: ModuleExecutionDelta,
+) -> ModuleExecutionDelta:
+    """Merge prior delayed-cycle deltas into the final cycle's delta.
+
+    A delayed-analysis module records one delta per ``analyze()`` cycle.
+    Mid-delay deltas are refused at cache-write time, so the cached
+    (final) delta must absorb the earlier cycles' tree mutations — tags,
+    new observables, detections added *before* the module delayed would
+    otherwise be missing from the replay.
+
+    Returns a NEW delta; inputs are not mutated. Keeps the final delta's
+    identity fields and analysis dict (the analysis object accumulates
+    across cycles in memory and round-trips through root.json, so the
+    final whole-capture is complete). Removals are merged too so
+    ``has_removals`` on the result reflects every cycle — a cycle-1
+    removal correctly refuses the whole cache write.
+
+    Only narrow-diff deltas are mergeable; wide-diff modules are
+    uncacheable by config so this should never see one.
+    """
+    if not priors:
+        return final
+
+    ordered = list(priors) + [final]
+    for d in ordered:
+        if d.wide_diff or d.other_observable_diffs or d.analysis_children_diffs:
+            raise ValueError(
+                "cannot merge wide-diff deltas (module_path=%s)" % d.module_path
+            )
+
+    new_observables = _dedupe(
+        [spec for d in ordered for spec in d.new_observables],
+        # First occurrence wins, preserving the uuid the earliest cycle's
+        # relationships reference (the same-delta scope check relies on it).
+        key=lambda spec: (spec.type, spec.value, spec.time),
+    )
+
+    return replace(
+        final,
+        target_observable_diff=_merge_observable_diffs(
+            [d.target_observable_diff for d in ordered]
+        ),
+        new_observables=new_observables,
+        root_diff=RootDiff(
+            added_tags=_dedupe([t for d in ordered for t in d.root_diff.added_tags]),
+            removed_tags=_dedupe([t for d in ordered for t in d.root_diff.removed_tags]),
+            added_detections=_dedupe(
+                [x for d in ordered for x in d.root_diff.added_detections],
+                key=_detection_dict_identity,
+            ),
+            removed_detections=_dedupe(
+                [x for d in ordered for x in d.root_diff.removed_detections],
+                key=_detection_dict_identity,
+            ),
+        ),
+        execution_time_ms=sum(d.execution_time_ms for d in ordered),
+    )

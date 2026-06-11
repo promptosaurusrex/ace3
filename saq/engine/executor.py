@@ -18,6 +18,10 @@ from saq.analysis.cache import (
     put_cached_delta,
 )
 from saq.analysis.errors import ExcessiveFileDataSizeError
+from saq.analysis.module_execution_delta import (
+    ModuleExecutionDelta,
+    merge_module_execution_deltas,
+)
 from saq.analysis.module_path import MODULE_PATH
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis
@@ -1117,7 +1121,7 @@ class AnalysisExecutor:
             execution_time_ms=lookup_ms + replay_ms,
             root_uuid=root.uuid,
             observable_uuid=observable.uuid,
-        )
+        ).without_analysis_details()
         root.record_module_execution(attribution_delta)
 
         module_name = module.config.name
@@ -1130,6 +1134,80 @@ class AnalysisExecutor:
         context.cache_lookup_ms_max[module_name] = max(
             context.cache_lookup_ms_max.get(module_name, 0), lookup_ms
         )
+
+    def _maybe_write_cache_delta(
+        self,
+        context: "AnalysisExecutionContext",
+        observable: Observable,
+        analysis_module: AnalysisModuleInterface,
+        delta: ModuleExecutionDelta,
+        analysis_result: AnalysisExecutionResult,
+        prior_deltas: list[ModuleExecutionDelta],
+    ) -> None:
+        """Phase 2 cache write, best-effort — a failure here must never
+        prevent ``root.save()``.
+
+        Gates:
+
+        - module opted in (``cache_ttl``) and the cache globally enabled;
+        - ``analysis_result`` is COMPLETED. A delayed-analysis module
+          returns INCOMPLETE for every mid-delay cycle; without this gate
+          a non-empty intermediate delta whose ``analysis`` dict is None
+          (the slot already existed, no delayed→completed transition)
+          slips past ``put_cached_delta``'s still-delayed check — which
+          inspects the analysis dict — and a partial result gets cached.
+
+        ``prior_deltas`` are the earlier delayed-cycle deltas recorded for
+        this (module_path, observable); their tree mutations are merged
+        into the cached delta so a replay reproduces the pre-delay
+        contribution too. Removal refusal is evaluated by
+        ``put_cached_delta`` on the *merged* delta — a cycle-1 removal
+        refuses the whole write.
+        """
+        if analysis_module.cache_ttl is None:
+            return
+        if analysis_result != AnalysisExecutionResult.COMPLETED:
+            return
+        if not get_config().analysis_cache.enabled:
+            return
+
+        try:
+            cache_delta = delta
+            if prior_deltas:
+                cache_delta = merge_module_execution_deltas(prior_deltas, delta)
+            write_result = put_cached_delta(cache_delta, analysis_module, get_blob_store())
+            if write_result is not None:
+                module_name = analysis_module.name
+                context.cache_write_count_insert[module_name] = (
+                    context.cache_write_count_insert.get(module_name, 0) + 1
+                )
+                context.cache_write_ms_sum[module_name] = (
+                    context.cache_write_ms_sum.get(module_name, 0)
+                    + write_result.write_ms
+                )
+                context.cache_write_ms_max[module_name] = max(
+                    context.cache_write_ms_max.get(module_name, 0),
+                    write_result.write_ms,
+                )
+                context.cache_write_bytes_uncompressed_sum[module_name] = (
+                    context.cache_write_bytes_uncompressed_sum.get(module_name, 0)
+                    + write_result.uncompressed_bytes
+                )
+                context.cache_write_bytes_compressed_sum[module_name] = (
+                    context.cache_write_bytes_compressed_sum.get(module_name, 0)
+                    + write_result.compressed_bytes
+                )
+        except Exception:
+            logging.warning(
+                "failed to write analysis cache module_name=%s "
+                "observable_uuid=%s",
+                analysis_module.config.name, observable.uuid,
+                exc_info=True,
+                extra={
+                    "module_name": analysis_module.config.name,
+                    "observable_uuid": observable.uuid,
+                },
+            )
 
     def _execute_module_analysis(
         self,
@@ -1311,8 +1389,56 @@ class AnalysisExecutor:
                             snapshot_after = ModuleExecutionSnapshot.narrow(root, work_item.observable, analysis_module)
                         delta = ModuleExecutionSnapshot.diff(snapshot_before, snapshot_after, analysis_module, work_item.observable)
                         delta.execution_time_ms = (time.monotonic_ns() - delta_start_ns) // 1_000_000
+
+                        # Compute the cache key before recording: the recorded
+                        # entry is a details-stripped *copy* of this delta, so
+                        # anything assigned to the original afterwards would be
+                        # missing from root.json. Key-generation failure
+                        # (extended_version probing can stat files) must not
+                        # block recording.
+                        if (
+                            analysis_module.cache_ttl is not None
+                            and get_config().analysis_cache.enabled
+                        ):
+                            try:
+                                delta.cache_key = generate_cache_key(work_item.observable, analysis_module)
+                            except Exception:
+                                logging.warning(
+                                    "failed to generate cache key module_name=%s "
+                                    "observable_uuid=%s",
+                                    analysis_module.config.name, work_item.observable.uuid,
+                                    exc_info=True,
+                                    extra={
+                                        "module_name": analysis_module.config.name,
+                                        "observable_uuid": work_item.observable.uuid,
+                                    },
+                                )
+
+                        # Prior delayed-cycle deltas for this (module_path,
+                        # observable): their tree mutations are missing from
+                        # this final cycle's diff but must be part of the
+                        # cached delta (merged in _maybe_write_cache_delta).
+                        # Collected BEFORE recording so the just-recorded
+                        # copy of this delta can't match the filter. The
+                        # analysis-is-None-or-delayed condition excludes a
+                        # previous *completed* run's delta surviving analyst
+                        # re-analysis (root._reset() keeps _module_executions).
+                        prior_deltas = []
+                        if is_resuming_delayed_module:
+                            prior_deltas = [
+                                d for d in root.module_executions
+                                if d.module_path == delta.module_path
+                                and d.observable_uuid == delta.observable_uuid
+                                and not d.from_cache_hit
+                                and (d.analysis is None or d.analysis.get("delayed"))
+                            ]
+
                         if not delta.is_empty:
-                            root.record_module_execution(delta)
+                            # The attribution log doesn't need the bulk
+                            # analysis.details payload — the analysis tree
+                            # persists details once already. The cache write
+                            # below uses the original delta, which keeps them.
+                            root.record_module_execution(delta.without_analysis_details())
 
                         if delta.has_removals:
                             logging.info(
@@ -1326,51 +1452,10 @@ class AnalysisExecutor:
                                 },
                             )
 
-                        # Phase 2: persist the delta to the analysis result
-                        # cache when the module has opted in. Best-effort —
-                        # put_cached_delta swallows its own exceptions, but we
-                        # guard an extra layer so key-generation or blob-store
-                        # init failures can't break root.save() either.
-                        if (
-                            analysis_module.cache_ttl is not None
-                            and not delta.has_removals
-                            and get_config().analysis_cache.enabled
-                        ):
-                            try:
-                                delta.cache_key = generate_cache_key(work_item.observable, analysis_module)
-                                write_result = put_cached_delta(delta, analysis_module, get_blob_store())
-                                if write_result is not None:
-                                    module_name = analysis_module.name
-                                    context.cache_write_count_insert[module_name] = (
-                                        context.cache_write_count_insert.get(module_name, 0) + 1
-                                    )
-                                    context.cache_write_ms_sum[module_name] = (
-                                        context.cache_write_ms_sum.get(module_name, 0)
-                                        + write_result.write_ms
-                                    )
-                                    context.cache_write_ms_max[module_name] = max(
-                                        context.cache_write_ms_max.get(module_name, 0),
-                                        write_result.write_ms,
-                                    )
-                                    context.cache_write_bytes_uncompressed_sum[module_name] = (
-                                        context.cache_write_bytes_uncompressed_sum.get(module_name, 0)
-                                        + write_result.uncompressed_bytes
-                                    )
-                                    context.cache_write_bytes_compressed_sum[module_name] = (
-                                        context.cache_write_bytes_compressed_sum.get(module_name, 0)
-                                        + write_result.compressed_bytes
-                                    )
-                            except Exception:
-                                logging.warning(
-                                    "failed to write analysis cache module_name=%s "
-                                    "observable_uuid=%s",
-                                    analysis_module.config.name, work_item.observable.uuid,
-                                    exc_info=True,
-                                    extra={
-                                        "module_name": analysis_module.config.name,
-                                        "observable_uuid": work_item.observable.uuid,
-                                    },
-                                )
+                        self._maybe_write_cache_delta(
+                            context, work_item.observable, analysis_module,
+                            delta, analysis_result, prior_deltas,
+                        )
                     except Exception:
                         logging.warning(
                             "failed to record module execution delta module_name=%s "

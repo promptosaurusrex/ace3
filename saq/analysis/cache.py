@@ -153,6 +153,30 @@ def put_cached_delta(
             )
             return None
 
+        # Refuse relationships that point outside the delta's own scope
+        # (anything other than the analyzed observable or an observable
+        # this delta created). Such a relationship depends on surrounding
+        # tree context that a replay onto a different root cannot
+        # guarantee — replaying it would silently drop the relationship
+        # or attach it to the wrong node.
+        out_of_scope = delta.out_of_scope_relationship_targets()
+        if out_of_scope:
+            logging.warning(
+                "refusing to cache delta module_name=%s observable_type=%s "
+                "observable_value=%s refusal_reason=relationship_out_of_scope "
+                "relationship_count=%d",
+                module.config.name, delta.observable_type, delta.observable_value,
+                len(out_of_scope),
+                extra={
+                    "module_name": module.config.name,
+                    "observable_type": delta.observable_type,
+                    "observable_value": delta.observable_value,
+                    "refusal_reason": "relationship_out_of_scope",
+                    "relationship_count": len(out_of_scope),
+                },
+            )
+            return None
+
         # Step 3.2: refuse to cache deltas captured mid-delay. Replay path
         # unconditionally marks the analysis completed — caching a delayed
         # analysis would lie. Combined with snapshot Step 3.0, the only
@@ -594,7 +618,10 @@ def apply_delta(
         _apply_observable_spec(parent_for_new, spec)
 
     # 3. Apply mutations to the target observable.
-    _apply_observable_diff(target_observable, delta.target_observable_diff, root)
+    _apply_observable_diff(
+        target_observable, delta.target_observable_diff, root,
+        source_observable_uuid=delta.observable_uuid,
+    )
 
     # 4. Apply root-level mutations.
     _apply_root_diff(root, delta.root_diff)
@@ -707,9 +734,13 @@ def _apply_observable_spec(parent_analysis, spec) -> None:
             new_obs._limited_analysis.append(name)
 
 
-def _apply_observable_diff(observable, diff, root) -> None:
+def _apply_observable_diff(observable, diff, root, source_observable_uuid=None) -> None:
     """Apply an ObservableDiff's additions and scalar transitions to a
     live observable. All primitives are idempotent; safe to re-apply.
+
+    ``source_observable_uuid`` is the analyzed observable's uuid as
+    captured in the *source* alert — used to resolve self-referencing
+    relationships when replaying onto a different root.
     """
     for tag in diff.added_tags:
         observable.add_tag(tag)
@@ -724,11 +755,38 @@ def _apply_observable_diff(observable, diff, root) -> None:
         r_type = rel_dict.get("type")
         if not target_uuid or not r_type:
             continue
+        # Resolution order: uuid (same-root replay) → self-target
+        # shortcut → (type, value, time) spec. UUIDs are per-alert, so on
+        # a cross-alert replay only the latter two can succeed. The
+        # self-target shortcut exists because Observable.__eq__ compares
+        # ``time`` whenever either side carries one — the cache key
+        # ignores observable.time, so the current observable's time can
+        # differ from the source's and a spec lookup would miss.
         target_obs = root.get_observable(target_uuid)
+        if target_obs is None and target_uuid == source_observable_uuid:
+            target_obs = observable
+        if target_obs is None and rel_dict.get("target_type"):
+            t_time = None
+            if rel_dict.get("target_time"):
+                try:
+                    t_time = parse_event_time(rel_dict["target_time"])
+                except Exception:
+                    t_time = None
+            target_obs = root.get_observable_by_spec(
+                rel_dict["target_type"], rel_dict.get("target_value"), t_time,
+            )
         if target_obs is None:
-            logging.debug(
-                "skipping relationship %s -> %s on cache replay — target not in tree",
-                r_type, target_uuid,
+            # Legacy uuid-only delta (pre target-spec capture) or an
+            # out-of-scope target from before the write-time refusal.
+            logging.warning(
+                "skipping relationship on cache replay — target unresolved "
+                "r_type=%s target_uuid=%s target_type=%s",
+                r_type, target_uuid, rel_dict.get("target_type"),
+                extra={
+                    "r_type": r_type,
+                    "target_uuid": target_uuid,
+                    "target_type": rel_dict.get("target_type"),
+                },
             )
             continue
         observable.add_relationship(r_type, target_obs)
