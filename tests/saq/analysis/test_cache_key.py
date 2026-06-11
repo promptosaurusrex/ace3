@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from saq.analysis.cache import generate_cache_key
+from saq.modules.config import AnalysisModuleConfig
 
 
 def _make_observable(type_: str = "url", value: str = "https://example.com/", time=None):
@@ -111,4 +112,103 @@ class TestCacheKeySensitivity:
         obs = _make_observable()
         k1 = generate_cache_key(obs, _make_module(extended_version={}))
         k2 = generate_cache_key(obs, _make_module())
+        assert k1 == k2
+
+    @pytest.mark.unit
+    def test_extended_version_keys_participate(self):
+        """v2 fix: the v1 format hashed only extended_version VALUES, so
+        {"tool_a": "1.0"} and {"tool_b": "1.0"} collided — a module
+        changing WHICH tool it probes wouldn't shift its key."""
+        obs = _make_observable()
+        k1 = generate_cache_key(obs, _make_module(extended_version={"tool_a": "1.0"}))
+        k2 = generate_cache_key(obs, _make_module(extended_version={"tool_b": "1.0"}))
+        assert k1 != k2
+
+
+class _SubclassConfig(AnalysisModuleConfig):
+    """Stand-in for a module-specific config (get_config_class pattern)."""
+    api_endpoint: str = "https://api.example.com/"
+
+
+def _make_configured_module(config, version=1, cache_ttl=timedelta(hours=1)):
+    return SimpleNamespace(
+        config=config,
+        version=version,
+        cache_ttl=cache_ttl,
+        extended_version={},
+    )
+
+
+def _subclass_config(**overrides):
+    defaults = dict(
+        name="test_module",
+        python_module="saq.modules.test",
+        python_class="Dummy",
+        enabled=True,
+    )
+    defaults.update(overrides)
+    return _SubclassConfig(**defaults)
+
+
+class TestCacheKeyConfigHash:
+    """v2: the module's resolved config participates in the key, so a
+    YAML config edit invalidates the cache without a version bump.
+    Operational and eligibility fields are excluded."""
+
+    @pytest.mark.unit
+    def test_module_specific_config_field_changes_key(self):
+        obs = _make_observable()
+        k1 = generate_cache_key(
+            obs, _make_configured_module(_subclass_config(api_endpoint="https://a.example/")))
+        k2 = generate_cache_key(
+            obs, _make_configured_module(_subclass_config(api_endpoint="https://b.example/")))
+        assert k1 != k2
+
+    @pytest.mark.unit
+    def test_python_class_change_changes_key(self):
+        obs = _make_observable()
+        k1 = generate_cache_key(obs, _make_configured_module(_subclass_config(python_class="A")))
+        k2 = generate_cache_key(obs, _make_configured_module(_subclass_config(python_class="B")))
+        assert k1 != k2
+
+    @pytest.mark.unit
+    def test_operational_fields_do_not_change_key(self):
+        obs = _make_observable()
+        base = generate_cache_key(obs, _make_configured_module(_subclass_config()))
+        for overrides in (
+            dict(priority=99),
+            dict(maximum_analysis_time=10),
+            dict(semaphore_name="sem"),
+            dict(cooldown_period=5),
+            dict(description="a different description"),
+            dict(enabled=False),
+        ):
+            assert generate_cache_key(
+                obs, _make_configured_module(_subclass_config(**overrides))
+            ) == base, f"key changed for operational override {overrides}"
+
+    @pytest.mark.unit
+    def test_eligibility_fields_do_not_change_key(self):
+        obs = _make_observable()
+        base = generate_cache_key(obs, _make_configured_module(_subclass_config()))
+        for overrides in (
+            dict(valid_observable_types=["url"]),
+            dict(required_directives=["crawl"]),
+            dict(valid_queues=["internal"]),
+            dict(requires_detection_path=True),
+            dict(file_size_limit=1024),
+        ):
+            assert generate_cache_key(
+                obs, _make_configured_module(_subclass_config(**overrides))
+            ) == base, f"key changed for eligibility override {overrides}"
+
+    @pytest.mark.unit
+    def test_cache_ttl_value_does_not_change_key(self):
+        """Changing only the TTL must not orphan existing entries — TTL
+        semantics are owned by expires_at, not the key."""
+        obs = _make_observable()
+        k1 = generate_cache_key(
+            obs, _make_configured_module(_subclass_config(cache_ttl=3600), cache_ttl=timedelta(hours=1)))
+        k2 = generate_cache_key(
+            obs, _make_configured_module(_subclass_config(cache_ttl=60), cache_ttl=timedelta(minutes=1)))
         assert k1 == k2
