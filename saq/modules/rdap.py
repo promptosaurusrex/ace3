@@ -12,7 +12,10 @@ The module runs on both FQDN and IP observables:
     - For IPs, ``whoisit.ip()`` returns the owning network (CIDR), the
       responsible RIR (ARIN, RIPE, APNIC, LACNIC, AFRINIC), country,
       allocation dates, and abuse/registrant contacts. All five RIRs
-      serve RDAP for IP queries, so this path is reliable.
+      serve RDAP for IP queries, so this path is reliable. IPs that are
+      not globally routable (RFC1918, loopback, link-local, CGNAT,
+      multicast, reserved) are skipped entirely — they have no public
+      registration data.
 
 RDAP and WHOIS are *registry* protocols: for domains they only answer
 for registered domains, never for subdomains. The FQDN observable is
@@ -38,6 +41,7 @@ observables), so this module is opted into the 7-day analysis cache
 the same way the legacy WhoisAnalyzer was.
 """
 
+import ipaddress
 import json
 import logging
 from datetime import datetime, timezone
@@ -435,6 +439,19 @@ class RdapAnalyzer(AnalysisModule):
     @property
     def valid_observable_types(self):
         return [F_FQDN, F_IP]
+
+    def custom_requirement(self, observable) -> bool:
+        """Skip IP observables that are not globally routable (RFC1918,
+        loopback, link-local, CGNAT, multicast, reserved) — they have no
+        public RDAP registration data."""
+        if observable.type != F_IP:
+            return True
+        try:
+            return ipaddress.ip_address(observable.value).is_global
+        except ValueError:
+            # not parseable as an IP — let the module run and surface
+            # the lookup error as before
+            return True
 
     def _ensure_rdap_bootstrap(self) -> Optional[str]:
         """Best-effort lazy bootstrap of the IANA RDAP registry. Returns

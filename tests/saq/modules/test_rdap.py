@@ -284,6 +284,82 @@ def test_rdap_analyzer_properties():
 
 
 # ---------------------------------------------------------------------------
+# custom_requirement (non-routable IP skip)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "value",
+    [
+        "10.1.2.3",        # RFC1918
+        "172.16.5.5",      # RFC1918
+        "192.168.1.1",     # RFC1918
+        "127.0.0.1",       # loopback
+        "169.254.10.10",   # link-local
+        "100.64.0.1",      # CGNAT shared address space
+        "::1",             # IPv6 loopback
+        "fe80::1",         # IPv6 link-local
+    ],
+)
+def test_rdap_analyzer_skips_non_routable_ip(value):
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_IP, value)
+
+    analyzer = RdapAnalyzer(
+        config=get_analysis_module_config(ANALYSIS_MODULE_RDAP_ANALYZER)
+    )
+    assert analyzer.custom_requirement(observable) is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "value",
+    [
+        "8.8.8.8",
+        "1.1.1.1",
+        "2606:4700:4700::1111",
+    ],
+)
+def test_rdap_analyzer_accepts_routable_ip(value):
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_IP, value)
+
+    analyzer = RdapAnalyzer(
+        config=get_analysis_module_config(ANALYSIS_MODULE_RDAP_ANALYZER)
+    )
+    assert analyzer.custom_requirement(observable) is True
+
+
+@pytest.mark.unit
+def test_rdap_analyzer_custom_requirement_ignores_fqdn():
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_FQDN, "intranet.example.com")
+
+    analyzer = RdapAnalyzer(
+        config=get_analysis_module_config(ANALYSIS_MODULE_RDAP_ANALYZER)
+    )
+    assert analyzer.custom_requirement(observable) is True
+
+
+@pytest.mark.unit
+def test_rdap_analyzer_custom_requirement_unparseable_ip():
+    # IPObservable validates its value, so this can't happen through the
+    # normal observable path — defensive branch only.
+    class _FakeObservable:
+        type = F_IP
+        value = "not-an-ip"
+
+    analyzer = RdapAnalyzer(
+        config=get_analysis_module_config(ANALYSIS_MODULE_RDAP_ANALYZER)
+    )
+    assert analyzer.custom_requirement(_FakeObservable()) is True
+
+
+# ---------------------------------------------------------------------------
 # Happy-path RDAP
 # ---------------------------------------------------------------------------
 
