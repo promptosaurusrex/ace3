@@ -4,15 +4,22 @@ import socket
 from typing import Optional
 
 from saq.configuration.config import get_config, get_engine_config
+from saq.constants import NODE_STATUS_DRAINED, NODE_STATUS_DRAINING, NODE_STATUS_STARTING
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
 from saq.database.util.locking import clear_expired_locks
 from saq.database.util.node import (
     assign_node_analysis_modes,
+    check_and_mark_drained,
+    get_node_status,
     initialize_node,
     is_primary_node,
+    reconcile_stale_node_statuses,
+    revert_drained_if_work_appeared,
+    set_node_status,
     warn_if_blob_store_not_multi_node_safe,
 )
+from saq.engine.node_manager.drain import transfer_delayed_analysis
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.environment import get_global_runtime_settings
@@ -163,8 +170,21 @@ class DistributedNodeManager(NodeManagerInterface):
         else:
             logging.info("node %s is configured as a non-primary node", get_global_runtime_settings().saq_node)
 
+        # a node always starts up in the starting status, regardless of any previous status
+        # in particular this means restarting a draining node cancels the drain
+        self.set_status(NODE_STATUS_STARTING)
+
         # warn if a multi-node cluster is running a node-local blob store
         warn_if_blob_store_not_multi_node_safe()
+
+    def set_status(self, status: str):
+        """Sets the status of this node in the database."""
+        node_id = get_global_runtime_settings().saq_node_id
+        if node_id is None:
+            logging.warning("set_status(%s) called before node initialization", status)
+            return
+
+        set_node_status(node_id, status)
 
     def execute_primary_node_routines(self):
         """Executes primary node routines if this node is configured as the primary node via the ACE_IS_PRIMARY_NODE environment variable."""
@@ -177,17 +197,49 @@ class DistributedNodeManager(NodeManagerInterface):
             # clear any outstanding locks
             clear_expired_locks()
 
+            # set the status of any node with a stale heartbeat to stopped
+            # the threshold must be strictly larger than the collector's 2x freshness window
+            reconcile_stale_node_statuses(self.node_status_update_frequency * 4)
+
         except Exception as e:
             logging.error("error executing primary node routines: %s", e)
+            report_exception()
+
+    def execute_drain_routines(self):
+        """Executes drain routines if this node is draining or drained."""
+        try:
+            node_id = get_global_runtime_settings().saq_node_id
+            status = get_node_status(node_id)
+
+            if status == NODE_STATUS_DRAINING:
+                # push any outstanding delayed analysis to a compatible node
+                transferred, untransferable, skipped = transfer_delayed_analysis()
+
+                # if anything was skipped (locked or raced) we try again next cycle
+                # otherwise check to see if we have finished draining
+                # delayed analysis that could not be transferred anywhere does not block the drain
+                if skipped == 0:
+                    check_and_mark_drained(
+                        node_id,
+                        expected_delayed_count=untransferable,
+                        collector_stale_seconds=self.node_status_update_frequency * 4)
+
+            elif status == NODE_STATUS_DRAINED:
+                # if new work raced past the drained check then go back to draining
+                revert_drained_if_work_appeared(node_id)
+
+        except Exception as e:
+            logging.error("error executing drain routines: %s", e)
             report_exception()
 
     def update_node_status_and_execute_primary_routines(self):
         """Updates node status and executes primary node routines if needed."""
         if self.should_update_node_status():
             self.update_node_status()
+            self.execute_drain_routines()
             self.execute_primary_node_routines()
 
             # when will we do this again?
             self.next_status_update_time = datetime.now() + timedelta(
                 seconds=self.node_status_update_frequency
-            ) 
+            )

@@ -23,6 +23,23 @@ DB_EMAIL_ARCHIVE = "email_archive"
 DB_COLLECTION = "collection"
 DB_ANALYSIS_RESULT_CACHE = "analysis_result_cache"
 
+#
+# node status values (nodes.status column)
+#
+
+NODE_STATUS_STARTING = "starting"
+NODE_STATUS_RUNNING = "running"
+NODE_STATUS_DRAINING = "draining"
+NODE_STATUS_DRAINED = "drained"
+NODE_STATUS_STOPPED = "stopped"
+VALID_NODE_STATUSES = [
+    NODE_STATUS_STARTING,
+    NODE_STATUS_RUNNING,
+    NODE_STATUS_DRAINING,
+    NODE_STATUS_DRAINED,
+    NODE_STATUS_STOPPED,
+]
+
 # 
 # instance types
 #

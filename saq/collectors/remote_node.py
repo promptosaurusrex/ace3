@@ -349,6 +349,10 @@ ORDER BY
             where_clause.append("TIMESTAMPDIFF(SECOND, nodes.last_update, NOW()) <= %s")
             where_clause_params.append(self.node_status_update_frequency * 2)
 
+            # only nodes that are running normally can receive new work
+            # draining, drained and stopped nodes are excluded
+            where_clause.append("nodes.status = 'running'")
+
             param_str = ','.join(['%s' for _ in available_modes])
             where_clause.append(f""" 
             (

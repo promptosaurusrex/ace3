@@ -40,7 +40,12 @@ class LocalNodeManager(NodeManagerInterface):
     def initialize_node(self) -> None:
         """Initialize this node in the database and configure analysis modes. No-op in local mode."""
         pass
-    
+
+    def set_status(self, status: str) -> None:
+        """Sets the status of this node in the database. No-op in local mode."""
+        pass
+
+
     def execute_primary_node_routines(self) -> None:
         """Executes primary node routines and may become the primary node. No-op in local mode."""
         pass

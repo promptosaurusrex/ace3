@@ -62,9 +62,27 @@ KEY_O_LIMITED_ANALYSIS = 'limited_analysis'
 KEY_O_DISPLAY_VALUE = 'display_value'
 KEY_O_DISPLAY_TYPE = 'display_type'
 
+def reject_if_node_draining():
+    """Aborts the request with a 503 if the local node is draining or drained.
+    Work submitted through this API is always assigned to the local node, so a
+    draining node must reject it for the drain to converge."""
+    from saq.constants import NODE_STATUS_DRAINED, NODE_STATUS_DRAINING
+    from saq.database.util.node import get_node_status
+    from saq.environment import get_global_runtime_settings
+
+    node_id = get_global_runtime_settings().saq_node_id
+    if node_id is None:
+        return
+
+    if get_node_status(node_id) in [NODE_STATUS_DRAINING, NODE_STATUS_DRAINED]:
+        abort(Response("node {} is draining; submit to another node".format(
+            get_global_runtime_settings().saq_node), 503))
+
 @analysis_bp.route('/submit', methods=['POST'])
 @api_auth_check("alert", "create")
 def submit():
+
+    reject_if_node_draining()
 
     if KEY_ANALYSIS not in request.values:
         abort(Response("missing {} field (see documentation)".format(KEY_ANALYSIS), 400))
@@ -254,6 +272,8 @@ def submit():
 @analysis_bp.route('/resubmit/<uuid>', methods=['GET'])
 @api_auth_check("alert", "write")
 def resubmit(uuid):
+    reject_if_node_draining()
+
     try:
         root = RootAnalysis(storage_dir=get_storage_dir(uuid))
         root.load()
