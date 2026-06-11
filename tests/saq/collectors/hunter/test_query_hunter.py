@@ -637,6 +637,53 @@ def test_process_query_results(monkeypatch):
 
 
 @pytest.mark.unit
+def test_process_query_results_templated_observable_type(monkeypatch):
+    """A Jinja-templated observable type resolves per event, with fallback_type
+       used (and an error logged) when the rendered type is not defined."""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_templated_type",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(fields=["src"], type="{{ kind }}", fallback_type="ipv4")
+        ],
+    )
+
+    # rendered type is lowercased and resolved per event
+    submissions = hunt.process_query_results([{"src": "1.2.3.4", "kind": "IPV4"}])
+    assert len(submissions) == 1
+    ipv4_observable = next((o for o in submissions[0].root.observables if o.type == F_IPV4), None)
+    assert ipv4_observable is not None
+    assert ipv4_observable.value == "1.2.3.4"
+
+    # missing template field skips the observable silently (no fallback)
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert len(submissions) == 1
+    assert [o.type for o in submissions[0].root.observables] == [F_SIGNATURE_ID]
+
+    # unknown rendered type falls back to fallback_type
+    submissions = hunt.process_query_results([{"src": "1.2.3.4", "kind": "not_a_type"}])
+    assert len(submissions) == 1
+    ipv4_observable = next((o for o in submissions[0].root.observables if o.type == F_IPV4), None)
+    assert ipv4_observable is not None
+    assert ipv4_observable.value == "1.2.3.4"
+
+    # per-event resolution: one batch can emit different observable types
+    hunt.config.group_by = "ALL"
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4", "kind": "ipv4"},
+        {"src": "host.example.com", "kind": "hostname"},
+    ])
+    assert len(submissions) == 1
+    types = {o.type for o in submissions[0].root.observables}
+    assert F_IPV4 in types
+    assert F_HOSTNAME in types
+
+
+@pytest.mark.unit
 def test_group_value_attached_to_submission(monkeypatch):
     """Each submission produced by a grouped hunt should carry its group_value
        so the manager can record per-group last_alert_time without re-deriving the grouping."""

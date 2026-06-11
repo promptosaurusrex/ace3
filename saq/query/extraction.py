@@ -17,6 +17,7 @@ from saq.observables.mapping import (
     RelationshipMapping,
     apply_mapping_properties,
 )
+from saq.observables.type_hierarchy import get_all_valid_types
 from saq.query.config import SummaryDetailConfig
 from saq.query.decoder import decode_value
 from saq.query.field_lookup import FIELD_LOOKUP_TYPE_KEY, extract_event_value
@@ -51,6 +52,47 @@ def _interpolate_strict(template: str, event: dict) -> list[str]:
         return render_event_template_multi(template, event, strict=True)
     except UndefinedError:
         return []
+
+
+def _resolve_mapping_type(mapping: ObservableMapping, event: dict) -> Optional[str]:
+    """Render a Jinja-templated observable type against the event.
+
+    Returns the lowercased resolved type, or None to skip this mapping for
+    this event. Missing fields skip silently (matching value-template
+    semantics). A resolution that is unusable (unknown type, or resolved to
+    F_FILE, which requires static file_name handling) logs at error level and
+    falls back to mapping.fallback_type if configured and itself valid;
+    otherwise the mapping is skipped.
+    """
+    try:
+        rendered = render_event_template(mapping.type, event, strict=True)
+    except UndefinedError:
+        return None  # missing field — silent, like _interpolate_strict
+    if rendered is None:
+        return None  # syntax error — already error-logged by render_jinja_template
+
+    resolved = rendered.strip().lower()
+    valid_types = get_all_valid_types()
+    if resolved != F_FILE and resolved in valid_types:
+        return resolved
+
+    if mapping.fallback_type is not None:
+        if mapping.fallback_type in valid_types:
+            logging.error(
+                "observable mapping type template %r resolved to unusable observable type %r "
+                "— using fallback_type %r",
+                mapping.type, resolved, mapping.fallback_type)
+            return mapping.fallback_type
+        logging.error(
+            "observable mapping type template %r resolved to unusable observable type %r "
+            "and fallback_type %r is not a defined observable type — skipping",
+            mapping.type, resolved, mapping.fallback_type)
+        return None
+
+    logging.error(
+        "observable mapping type template %r resolved to unknown observable type %r — skipping",
+        mapping.type, resolved)
+    return None
 
 
 class FileContent(BaseModel):
@@ -183,6 +225,12 @@ def _process_mapping_values(
     field_override: str = None,
 ):
     """Process a single observable mapping for an event, creating observables or file contents."""
+    resolved_type = mapping.type
+    if mapping.type_is_templated:
+        resolved_type = _resolve_mapping_type(mapping, event)
+        if resolved_type is None:
+            return
+
     decoded_observed_value: Optional[bytes] = None
 
     for observed_value in interpret_event_value(mapping, event, field_override=field_override):
@@ -197,7 +245,7 @@ def _process_mapping_values(
         if mapping.ignored_values and mapping.is_ignored_value(observed_value):
             continue
 
-        if mapping.type == F_FILE:
+        if resolved_type == F_FILE:
             if mapping.file_decoder is not None:
                 decoded_observed_value = decode_value(observed_value, mapping.file_decoder)
 
@@ -238,13 +286,13 @@ def _process_mapping_values(
         # Apply value_filter if provided (for API analysis filter_observable_value hook)
         final_value = observed_value
         if value_filter is not None:
-            final_value = value_filter(matched_field, mapping.type, observed_value)
+            final_value = value_filter(matched_field, resolved_type, observed_value)
 
-        observable = create_observable(mapping.type, final_value, volatile=mapping.volatile)
+        observable = create_observable(resolved_type, final_value, volatile=mapping.volatile)
 
         if observable is None:
             logging.warning(
-                f"unable to create observable {mapping.type} with value {final_value}"
+                f"unable to create observable {resolved_type} with value {final_value}"
             )
             continue
 

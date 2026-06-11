@@ -40,7 +40,12 @@ class BaseObservableMapping(BaseModel):
 
     field: Optional[str] = Field(default=None, description="Single field to map to an observable")
     fields: list[str] = Field(default_factory=list, description="One or more fields to map to an observable")
-    type: str = Field(..., description="The type of observable to map to")
+    type: str = Field(
+        ...,
+        description="The type of observable to map to. May be a Jinja2 template "
+                    "({{ field }} syntax) rendered against each event; the rendered "
+                    "type is lowercased and must be a defined observable type."
+    )
     tags: list[str] = Field(default_factory=list, description="Tags to add to the observable")
     directives: list[str] = Field(default_factory=list, description="Directives to add to the observable")
     time: bool = Field(default=False, description="Whether to use the time of the event as the time of the observable")
@@ -81,6 +86,11 @@ class BaseObservableMapping(BaseModel):
         if self.field:
             return [self.field]
         return self.fields
+
+    @property
+    def type_is_templated(self) -> bool:
+        """True if the type is a Jinja2 template to be rendered per-event."""
+        return "{{" in self.type
 
     def resolve_fields(self, is_field_present: Callable[[str], bool]) -> list[list[str]]:
         """Determine which field groups to process based on fields_mode.
@@ -158,6 +168,12 @@ class ObservableMapping(BaseObservableMapping):
         description="Cap the number of observables this mapping emits from a list-valued field, "
                     "a '*' wildcard path, or a Jinja value template. None means no cap."
     )
+    fallback_type: Optional[str] = Field(
+        default=None,
+        description="OPTIONAL static observable type to use when a Jinja-templated 'type' "
+                    "resolves to a type not defined in observable_types.yaml. Must itself "
+                    "be a defined observable type."
+    )
 
     @model_validator(mode='after')
     def validate_fields_mode_any_with_value(self):
@@ -172,6 +188,25 @@ class ObservableMapping(BaseObservableMapping):
         from saq.constants import F_FILE
         if self.type == F_FILE and self.display_value is not None:
             raise ValueError(f"display_value is not supported for file type observables (type={self.type})")
+        return self
+
+    @model_validator(mode='after')
+    def validate_templated_type_constraints(self):
+        """Validate constraints around a Jinja-templated 'type' and its fallback_type."""
+        from saq.constants import F_FILE
+        if self.type_is_templated:
+            if self.file_name is not None or self.file_decoder is not None:
+                raise ValueError(
+                    "file_name/file_decoder cannot be used with a Jinja-templated 'type' "
+                    "(file observables require a static 'file' type)"
+                )
+        elif self.fallback_type is not None:
+            raise ValueError("fallback_type is only valid when 'type' is a Jinja template")
+        if self.fallback_type is not None:
+            if "{{" in self.fallback_type:
+                raise ValueError("fallback_type must be a static observable type, not a template")
+            if self.fallback_type == F_FILE:
+                raise ValueError("fallback_type cannot be 'file' (file observables require file_name handling)")
         return self
 
 
