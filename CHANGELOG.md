@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.64] - 2026-06-11
+
+- [Analysis cache replay fixes](https://github.com/ACE-Collective/ace3/pull/309)
+- [Analysis cache key updates](https://github.com/ACE-Collective/ace3/pull/310)
+- [Prevent duplicate concurrent file collections](https://github.com/ACE-Collective/ace3/pull/313)
+- [Track the user and time an observable was manually added to alert](https://github.com/ACE-Collective/ace3/pull/314)
+- [Skip RDAP on non-routable IPs](https://github.com/ACE-Collective/ace3/pull/315)
+- [Allow interpolated observable types in hunts](https://github.com/ACE-Collective/ace3/pull/316)
+
 ## [3.0.63] - 2026-06-11
 
 - [Migrates event API endpoints to FastAPI](https://github.com/ACE-Collective/ace3/pull/306)
