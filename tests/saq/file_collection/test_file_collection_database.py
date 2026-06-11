@@ -13,6 +13,7 @@ from saq.file_collection.database import (
     get_file_collection_history,
     get_pending_file_collection_by_observable,
     queue_file_collection,
+    resolve_duplicate_pending_file_collection,
     retry_file_collection,
 )
 from saq.file_collection.types import FileCollectionStatus, FileCollectorStatus
@@ -249,6 +250,169 @@ def test_get_pending_file_collection_by_observable_finds_in_progress():
 
     assert result is not None
     assert result.id == collection_id
+
+
+@pytest.mark.integration
+def test_get_pending_file_collection_by_observable_cross_alert():
+    """Verify omitting alert_uuid finds pending requests queued by other alerts."""
+    collection_id = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/cross_alert",
+        alert_uuid="alert-uuid-cross-1",
+    )
+
+    result = get_pending_file_collection_by_observable(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/cross_alert",
+    )
+
+    assert result is not None
+    assert result.id == collection_id
+
+
+@pytest.mark.integration
+def test_get_pending_file_collection_by_observable_cross_alert_returns_oldest():
+    """Verify the cross-alert lookup returns the oldest pending request so all callers converge."""
+    collection_id1 = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/cross_alert_oldest",
+        alert_uuid="alert-uuid-oldest-1",
+    )
+
+    queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/cross_alert_oldest",
+        alert_uuid="alert-uuid-oldest-2",
+    )
+
+    result = get_pending_file_collection_by_observable(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/cross_alert_oldest",
+    )
+
+    assert result is not None
+    assert result.id == collection_id1
+
+
+@pytest.mark.integration
+def test_get_pending_file_collection_by_observable_cross_alert_excludes_completed():
+    """Verify the cross-alert lookup does not return completed requests."""
+    collection_id = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/cross_alert_completed",
+        alert_uuid="alert-uuid-cross-completed",
+    )
+
+    file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id).first()
+    file_collection.status = FileCollectionStatus.COMPLETED.value
+    file_collection.result = FileCollectorStatus.SUCCESS.value
+    get_db().add(file_collection)
+    get_db().commit()
+
+    result = get_pending_file_collection_by_observable(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/cross_alert_completed",
+    )
+
+    assert result is None
+
+
+@pytest.mark.integration
+def test_resolve_duplicate_pending_file_collection_no_duplicate():
+    """Verify the request is kept when no older pending request exists."""
+    collection_id = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/resolve_no_dup",
+        alert_uuid="alert-uuid-resolve-1",
+    )
+
+    assert resolve_duplicate_pending_file_collection(collection_id) == collection_id
+    assert get_file_collection(collection_id) is not None
+
+
+@pytest.mark.integration
+def test_resolve_duplicate_pending_file_collection_attaches_to_older():
+    """Verify the newer duplicate request is deleted in favor of the older one."""
+    collection_id1 = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/resolve_dup",
+        alert_uuid="alert-uuid-resolve-2",
+    )
+
+    collection_id2 = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/resolve_dup",
+        alert_uuid="alert-uuid-resolve-3",
+    )
+
+    assert resolve_duplicate_pending_file_collection(collection_id2) == collection_id1
+    assert get_file_collection(collection_id2) is None
+    assert get_file_collection(collection_id1) is not None
+
+
+@pytest.mark.integration
+def test_resolve_duplicate_pending_file_collection_keeps_locked_row():
+    """Verify a duplicate already picked up by the collector loop is kept."""
+    collection_id1 = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/resolve_locked",
+        alert_uuid="alert-uuid-resolve-4",
+    )
+
+    collection_id2 = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/resolve_locked",
+        alert_uuid="alert-uuid-resolve-5",
+    )
+
+    file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id2).first()
+    file_collection.status = FileCollectionStatus.IN_PROGRESS.value
+    file_collection.lock = "test-lock-uuid"
+    get_db().add(file_collection)
+    get_db().commit()
+
+    assert resolve_duplicate_pending_file_collection(collection_id2) == collection_id2
+    assert get_file_collection(collection_id2) is not None
+    assert get_file_collection(collection_id1) is not None
+
+
+@pytest.mark.integration
+def test_resolve_duplicate_pending_file_collection_ignores_completed_older():
+    """Verify an older completed request does not count as a duplicate."""
+    collection_id1 = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/resolve_completed",
+        alert_uuid="alert-uuid-resolve-6",
+    )
+
+    file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id1).first()
+    file_collection.status = FileCollectionStatus.COMPLETED.value
+    file_collection.result = FileCollectorStatus.FILE_NOT_FOUND.value
+    get_db().add(file_collection)
+    get_db().commit()
+
+    collection_id2 = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/resolve_completed",
+        alert_uuid="alert-uuid-resolve-7",
+    )
+
+    assert resolve_duplicate_pending_file_collection(collection_id2) == collection_id2
+    assert get_file_collection(collection_id2) is not None
 
 
 @pytest.mark.integration
