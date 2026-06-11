@@ -438,6 +438,13 @@ def index():
     observable_comments = run_async_with_session(get_comments_for_observables, all_observables)
     observable_db_ids = run_async_with_session(get_observable_db_ids, all_observables)
 
+    # map the usernames that manually added observables to their display names
+    added_by_usernames = {obs.added_by for obs in all_observables if obs.added_by}
+    observable_added_by_display = {}
+    if added_by_usernames:
+        for user in get_db().query(User).filter(User.username.in_(added_by_usernames)):
+            observable_added_by_display[user.username] = user.gui_display
+
     # get all interesting observables for this alert
     sha256_list = [obs.sha256_bytes for obs in all_observables]
     db_interesting = run_async_with_session(get_interesting_observables_by_hashes, sha256_list)
@@ -600,6 +607,7 @@ def index():
         num_observables_in_alert=len([o for o in alert.root_analysis.observable_store.values() if o.type != F_FILE]),
         observable_detections=observable_detections,
         observable_comments=observable_comments,
+        observable_added_by_display=observable_added_by_display,
         observable_db_ids=observable_db_ids,
         interesting_observables=interesting_observables,
         interesting_observable_list=interesting_observable_list,
