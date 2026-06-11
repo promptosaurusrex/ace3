@@ -559,6 +559,28 @@
                         </div>
                     {% endif %}
 
+                    {#-- Hunt-step provenance legend: the bidirectional hub between this
+                         trace and the grouped Analysis Overview above. Each entry is the
+                         anchor target of that step-group's "View in Correlation Trace"
+                         link (id=trace-step-<property_name>), and itself links back up to
+                         the group (#provenance-step-<index>). --#}
+                    {% set _prov = analysis.details.get('hunt_provenance') %}
+                    {% if _prov and _prov.get('steps') %}
+                        {% set _prov_palette = ['rgba(255,99,71,0.55)','rgba(255,165,0,0.55)','rgba(230,200,0,0.55)','rgba(60,179,113,0.55)','rgba(30,144,255,0.55)','rgba(138,43,226,0.55)','rgba(199,21,133,0.55)'] %}
+                        <div class="ct-provenance-legend d-flex flex-wrap align-items-center gap-2 mb-3">
+                            <span class="text-body-secondary small"><i class="bi bi-signpost-split"></i> Hunt steps:</span>
+                            {% for s in _prov.get('steps') %}
+                                <a {% if s.property_name %}id="trace-step-{{ s.property_name }}"{% endif %}
+                                   href="#provenance-step-{{ s.index }}"
+                                   class="badge ct-provenance-step"
+                                   style="--provenance-color: {{ _prov_palette[s.index % 7] }};"
+                                   title="Jump to this step's observables in the Analysis Overview above">
+                                   {{ s.label }} <i class="bi bi-arrow-up-short"></i>
+                                </a>
+                            {% endfor %}
+                        </div>
+                    {% endif %}
+
                     {#-- Grouping banner: appears when the hunt uses group_by and this alert was grouped. --#}
                     {% if hm.group_by and hm.group_value is not none and hm.group_by != "ALL" %}
                         <div class="alert alert-info py-2 mb-3 ct-grouping-banner">

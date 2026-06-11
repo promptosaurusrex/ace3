@@ -44,7 +44,12 @@ from saq.query.extraction import (
     render_sd_header,
 )
 from saq.query.summary_detail_rendering import render_jinja_template
-from saq.collectors.hunter.correlation.schema import CorrelateConfig
+from saq.collectors.hunter.correlation.schema import (
+    CorrelateConfig,
+    ConditionConfig,
+    StepConfig,
+    TransformConfig,
+)
 from saq.collectors.hunter.correlation.trace import CorrelationTrace
 from saq.util import abs_path, create_timedelta, local_time
 
@@ -55,9 +60,39 @@ QUERY_DETAILS_EVENTS = "events"
 QUERY_DETAILS_CORRELATION_TRACE = "correlation_trace"
 QUERY_DETAILS_ORIGINAL_EVENTS = "original_events"
 QUERY_DETAILS_HUNT_METADATA = "hunt_metadata"
+QUERY_DETAILS_HUNT_PROVENANCE = "hunt_provenance"
 
 # Cap for the auto-derived event summary string (header chip text)
 _EVENT_SUMMARY_MAX_LEN = 160
+
+# Label used for observables produced by the hunt's initial (pre-correlation) query.
+HUNT_PROVENANCE_INITIAL_LABEL = "Initial Query"
+
+
+def collect_correlate_steps(logic_steps: list[StepConfig]) -> list[tuple[Optional[str], str]]:
+    """Walk a correlation logic tree and return, in document order, one
+    (description, property_name) pair per transform step that writes a named
+    property onto the event.
+
+    Transforms can be nested inside conditional steps, so this recurses through
+    ConditionConfig.execute / else_ branches. The returned order is what the
+    provenance step indices (1..N; 0 is the initial query) are assigned from.
+    """
+    collected: list[tuple[Optional[str], str]] = []
+
+    def _walk(steps: list[StepConfig]) -> None:
+        for step_config in steps:
+            inner = step_config.step
+            if isinstance(inner, TransformConfig):
+                if inner.method == "property" and inner.property_name:
+                    collected.append((step_config.description, inner.property_name))
+            elif isinstance(inner, ConditionConfig):
+                _walk(inner.execute)
+                if inner.else_:
+                    _walk(inner.else_)
+
+    _walk(logic_steps)
+    return collected
 
 T = TypeVar("T")
 
@@ -825,6 +860,31 @@ class QueryHunt(Hunt):
         # the correlation-trace UI can render a per-event summary line without re-extracting.
         per_event_observables: dict[int, list] = {}
 
+        # Step-provenance scaffolding for correlated hunts: which hunt step produced
+        # which observable. Step 0 is the initial query; steps 1..N are the correlation
+        # logic's named-property transforms in document order. We classify each extracted
+        # observable by the first path segment of its matched_field (e.g.
+        # "correlate_ip_mscs_logs.0.myUserAgent" -> "correlate_ip_mscs_logs" -> the step
+        # that writes that property; anything else -> the initial query). Keyed by
+        # (type, value) because add_observable() dedups on those and keeps the first
+        # instance's uuid, so uuid isn't stable until observables are added to a root.
+        ordered_provenance_steps: list[dict] = []
+        correlate_property_to_step: dict[str, int] = {}
+        provenance_by_value: dict[tuple[str, str], set[int]] = {}
+        if self.config.correlate is not None:
+            ordered_provenance_steps.append(
+                {"index": 0, "label": HUNT_PROVENANCE_INITIAL_LABEL, "property_name": None}
+            )
+            for i, (description, property_name) in enumerate(
+                collect_correlate_steps(self.config.correlate.logic), start=1
+            ):
+                ordered_provenance_steps.append({
+                    "index": i,
+                    "label": description or f"Correlated step {i}",
+                    "property_name": property_name,
+                })
+                correlate_property_to_step[property_name] = i
+
         # map results to observables
         for event_index, event in enumerate(query_results):
             event_time = self.extract_event_timestamp(event) or local_time()
@@ -835,6 +895,15 @@ class QueryHunt(Hunt):
                 event, self.observable_mapping, event_time,
                 global_ignored_patterns=self.config._ignored_value_patterns if self.config.ignored_values else None,
             )
+
+            # record step provenance per extracted observable before dedup collapses them
+            if self.config.correlate is not None:
+                for ext in extracted:
+                    first_segment = ext.matched_field.split(".")[0]
+                    step_index = correlate_property_to_step.get(first_segment, 0)
+                    provenance_by_value.setdefault(
+                        (ext.observable.type, ext.observable.value), set()
+                    ).add(step_index)
 
             # deduplicate observables (shared extraction may return duplicates across mappings)
             observables: list[Observable] = []
@@ -1104,6 +1173,23 @@ class QueryHunt(Hunt):
         if self.config.correlate is not None and self.original_query_results is not None:
             for submission in submissions:
                 submission.root.details[QUERY_DETAILS_ORIGINAL_EVENTS] = self.original_query_results
+
+        # Attach step provenance to each correlated alert so the GUI can group the
+        # Analysis Overview by the hunt step that produced each observable. We walk each
+        # submission's own observable store and resolve provenance by (type, value) so the
+        # uuid->steps map only covers observables actually present in that alert. The
+        # ordered step list (shared across submissions) carries the labels the UI renders.
+        if self.config.correlate is not None:
+            for submission in submissions:
+                obs_map: dict[str, list[int]] = {}
+                for obs in submission.root.observable_store.values():
+                    steps = provenance_by_value.get((obs.type, obs.value))
+                    if steps:
+                        obs_map[obs.uuid] = sorted(steps)
+                submission.root.details[QUERY_DETAILS_HUNT_PROVENANCE] = {
+                    "steps": ordered_provenance_steps,
+                    "observables": obs_map,
+                }
 
         # filter out groups whose suppression window has not yet elapsed.
         # the hunt is run as a whole because we cannot know which groups are present

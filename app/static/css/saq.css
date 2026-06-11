@@ -357,6 +357,85 @@ th.domain-history-table {
 #analysis-overview-card.indent-rainbow ul[data-indent-depth="5"] { --bar-color: rgba(138,  43, 226, 0.55); }
 #analysis-overview-card.indent-rainbow ul[data-indent-depth="6"] { --bar-color: rgba(199,  21, 133, 0.55); }
 
+/* Provenance grouping for correlated-hunt alerts: the Analysis Overview's top-level
+   observables are partitioned into labeled, color-accented sections, one per hunt step.
+   --provenance-color is set inline per section from the step's palette color. */
+.provenance-group-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0 2px 0;
+  padding: 4px 8px;
+  border-left: 4px solid var(--provenance-color, #adb5bd);
+  background: linear-gradient(to right, var(--provenance-color, rgba(173,181,189,0.35)), rgba(0,0,0,0));
+  /* keep anchor jumps clear of the sticky card header */
+  scroll-margin-top: 70px;
+}
+.provenance-group-header:first-child {
+  margin-top: 2px;
+}
+.provenance-group-header .toggle-icon {
+  flex: 0 0 auto;
+  top: 0;
+}
+/* Overlap sections (observables found by more than one hunt step): two-tone gradient
+   built from the member steps' colors, so the section visually reads as "both of
+   these" and never collides with a single-step section's solid color. */
+.provenance-group-header.provenance-group-multi {
+  background: linear-gradient(to right, var(--provenance-color), var(--provenance-color-2) 35%, rgba(0, 0, 0, 0));
+  border-image: linear-gradient(to bottom, var(--provenance-color), var(--provenance-color-2)) 1;
+}
+ul.provenance-group.provenance-group-multi {
+  border-image: linear-gradient(to bottom, var(--provenance-color), var(--provenance-color-2)) 1;
+}
+.provenance-group-sublabel {
+  flex-basis: 100%;
+  font-weight: 400;
+}
+.provenance-group-chip {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.provenance-group-other .provenance-group-chip {
+  font-weight: 500;
+  color: #6c757d;
+}
+.provenance-trace-link {
+  font-size: 0.8rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.provenance-trace-link:hover {
+  text-decoration: underline;
+}
+ul.provenance-group {
+  border-left: 2px solid var(--provenance-color, #dee2e6);
+  margin-left: 2px;
+  padding-left: 14px;
+}
+ul.provenance-group.provenance-group-other {
+  border-left-color: #dee2e6;
+}
+.provenance-step-anchor {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  scroll-margin-top: 70px;
+}
+/* Correlation Trace "Hunt steps" legend badges — color-matched to the group accents. */
+.ct-provenance-step {
+  background-color: var(--provenance-color, #6c757d);
+  color: #212529;
+  text-decoration: none;
+  font-weight: 600;
+  scroll-margin-top: 70px;
+}
+.ct-provenance-step:hover {
+  filter: brightness(0.95);
+  text-decoration: underline;
+}
+
 .max-hit-observable {
     display: none;
 }
