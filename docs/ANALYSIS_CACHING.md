@@ -1,9 +1,12 @@
 # Per-Module Analysis Diff Tracking & Caching
 
-Status: Phases 1–3 and the Phase 2.5 write-only bake have shipped, plus a
-capture/replay hardening pass (2026-06-10 — see Part II); Phase 3.5
-(single-flight dedup) and Phase 4 (file-observable caching) are designed but not
-yet implemented.
+Status: Phases 1–3, the Phase 2.5 write-only bake, a capture/replay hardening
+pass (2026-06-10 — see Part II), and Phase 4 (file-observable caching +
+tool-version helper + OCR/QR opt-ins, 2026-06-12) have shipped. Phase 3.5
+(single-flight dedup) is designed but not yet implemented — deliberately
+re-sequenced to land *after* Phase 4 (it is a work-dedup optimization with no
+dependents; file-observable support unblocked the modules we most wanted
+cached).
 Origin: design sessions starting 2026-04-09. This document merges the original
 design proposal with the former tactical implementation/progress log.
 
@@ -19,9 +22,9 @@ This document has two parts:
 
 # Part I — Design
 
-## Current state at a glance (2026-06-10)
+## Current state at a glance (2026-06-12)
 
-This document grew as a running log across four PRs and two hardening
+This document grew as a running log across five PRs and two hardening
 passes; several sections below describe earlier states with "superseded
 by" callouts. This table is the current truth — each row links to the
 section with the full design.
@@ -29,17 +32,17 @@ section with the full design.
 | Aspect | Current state | Detail |
 |--------|---------------|--------|
 | **Cache key** | v2: sha256 over `label:length:bytes` fields — format constant, observable type+value, module name+version, **config hash** (module YAML config minus operational/eligibility fields), sorted `ext:<k>=<v>` extended_version pairs. `observable.time` excluded. | §8 |
-| **Storage** | Append-only `analysis_result_cache` in the dedicated `analysis-result-cache` DB; PK `(cache_key, created_at)`; daily `RANGE COLUMNS(created_at)` partitions; zstd-compressed delta payload; `details` > 16 KiB spill to the blob store (`blob_refs` table alongside). | §4, §A3, §A8 |
-| **Read path** | `WHERE cache_key=? AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1` — freshest *data* wins (not longest-lived). Legacy-shape, blob-missing, decode errors → miss; replay errors fall through to a live run. | §5, §A8 |
-| **Write refusals** | empty delta; removals (incl. **root-level**); still-delayed analysis; **non-COMPLETED module result**; file observables; **out-of-scope relationships** (target neither the analyzed observable nor delta-created); compressed size > 1 MiB. | §A4 |
-| **What replays** | Analysis object (summary, summary_details, details, **tags**), new observables + initial state, observable diff additions + scalar transitions, relationships (resolved by uuid → self-target → (type,value,time) spec), root-level additions. NOT: analysis detection points / pivot_links (uncaptured), wide-diff structures. | §5 |
+| **Storage** | Append-only `analysis_result_cache` in the dedicated `analysis-result-cache` DB; PK `(cache_key, created_at)`; daily `RANGE COLUMNS(created_at)` partitions; zstd-compressed delta payload; `details` > 16 KiB spill to the blob store (`blob_refs` table alongside); **file observable bytes always blob-backed** (Phase 4 — content sha256 = `spec.value` is the blob key). | §4, §A3, §A8 |
+| **Read path** | `WHERE cache_key=? AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1` — freshest *data* wins (not longest-lived). Legacy-shape, blob-missing (spilled details **or file blobs**), decode errors → miss; replay errors fall through to a live run. | §5, §A8 |
+| **Write refusals** | empty delta; removals (incl. **root-level**); still-delayed analysis; **non-COMPLETED module result**; **out-of-scope relationships** (target neither the analyzed observable nor delta-created — incl. relationships/redirections on *new* observables); compressed size > 1 MiB; per-file refusals (`file_observables_no_root` / `file_spec_missing_path` / `file_missing` / `file_too_large` > `file_blob_max_bytes` 16 MiB / `file_hash_mismatch`). | §A4, Phase 4 notes |
+| **What replays** | Analysis object (summary, summary_details, details, **tags**), new observables + initial state (incl. **relationships, redirection, volatile** — Phase 4 spec fidelity), **file observables materialized from the blob store via `store_file`**, observable diff additions + scalar transitions, relationships (resolved by uuid-map → uuid → (type,value,time) spec), root-level additions. NOT: analysis detection points / pivot_links (uncaptured), wide-diff structures. | §5, Phase 4 notes |
 | **root.json attribution** | Every non-empty delta recorded per module execution, **details-stripped** (cache row keeps details); cache hits recorded as `from_cache_hit=True` copies with `cached_at`. | §3, Part II hardening notes |
 | **Delayed modules** | Cacheable: final-cycle delta is merged with prior cycles' recorded deltas at write time; mid-delay cycles never cached (COMPLETED gate). | open question 3 |
-| **Config guards** | `cache_ttl` mutually exclusive with `wide_diff` and with `is_grouped_by_time` (pydantic validators); CI contract lint per opt-in (removals / file observables / relationship scope). | §A6, §A1 |
-| **Lifecycle** | Daily partition maintenance (drop > `partition_retention_days`=35, reorganize catchall, provision ahead); read-time `expires_at` filter owns precision; blob GC is a separate grace-period sweep. No row DELETEs anywhere. | §A8 |
-| **Opt-ins (core)** | `rdap_analyzer` 7d; `nrd_analyzer` 24h + DB-file `extended_version`; `site_tagger` 30d + CSV `extended_version`. | Phase 3 notes |
+| **Config guards** | `cache_ttl` mutually exclusive with `wide_diff` and with `is_grouped_by_time` (pydantic validators); CI contract lint per opt-in (removals / relationship scope / file specs blob-backable for `file_capable` modules, no files otherwise). | §A6, §A1 |
+| **Lifecycle** | Daily partition maintenance (drop > `partition_retention_days`=35, reorganize catchall, provision ahead); read-time `expires_at` filter owns precision; blob GC is a separate grace-period sweep. No row DELETEs anywhere. File blobs ride the same `blob_refs`/GC mechanism as spilled details. | §A8 |
+| **Opt-ins (core)** | `rdap_analyzer` 7d; `nrd_analyzer` 24h + DB-file `extended_version`; `site_tagger` 30d + CSV `extended_version`; **`ocr` 7d + tesseract-version `extended_version`; `qrcode` 7d + zbarimg/gs/pdfinfo versions + filter-file fingerprint** (Phase 4). OCR/QR also cache **negative results** (clean scan, nothing found → summary-less analysis recorded; scan *failures* record nothing and are never cached). | Phase 3/4 notes, §A4 |
 | **Metrics** | Per-(root, module) fields on the per-root summary event: hit/miss/write counts, lookup latency (**hits + misses**), write latency/bytes. `cache_stats` heartbeat (15 min) from partition statistics. | PR #242 notes |
-| **Not implemented** | Phase 3.5 single-flight dedup (redesigned 2026-06-10: non-blocking, delayed-analysis requeue, `single_flight` opt-in — §A9); Phase 4 file-observable caching + `materialize()`; tool-version `extended_version` helper. | §A9, Phase 4 |
+| **Not implemented** | Phase 3.5 single-flight dedup (redesigned 2026-06-10: non-blocking, delayed-analysis requeue, `single_flight` opt-in — §A9). Deliberately re-sequenced after Phase 4; it has no dependents. Yara opt-in deferred — not for version reasons (the ruleset under `signature_dir` IS fingerprintable, nrd-style): its filtered output depends on file name and observable meta-tags, which sit outside the content-keyed cache; its SANDBOX directive lands on the *redirection target* (cross-observable, unreplayable); and a local yss socket scan is cheaper than a cache hit anyway. | §A9, Phase 4 notes |
 
 ## Problem
 
@@ -348,9 +351,18 @@ module) cache-hit / lookup-latency counters (§Phase 3 metrics).
    Unresolvable targets (legacy uuid-only rows) log a WARNING and skip.
 4. Apply `delta.root_diff` to root-level tags/detections.
 
-`apply_delta` refuses (read-time) any delta with file observables — that is
-Phase 4 territory (the backing bytes wouldn't exist in the target storage dir).
-It is the ACE3 analogue of `Observable.apply_diff_merge(before, after, type)`
+File-observable deltas replay too (Phase 4, 2026-06-12): before any tree
+mutation, `apply_delta` materializes every file spec's blob into a temp
+staging dir under the target root's `storage_dir` (so a missing blob aborts
+cleanly — the executor's replay-failure handler falls through to a live run
+with the tree untouched), then routes each staged file through
+`Analysis.add_file_observable(staged, target_path=spec.file_path, move=True)`
+— the same `store_file` path a live module uses, so hashing, hardcopy dedup,
+and tree wiring are identical. On the local blob backend the whole
+blob→staging→hardcopy→file_dir chain is hardlinks of one inode (zero byte
+copies). A second pass applies each new observable's captured
+relationships/redirection through a source-uuid→created-observable map.
+`apply_delta` is the ACE3 analogue of `Observable.apply_diff_merge(before, after, type)`
 from ace2-core (`ace/analysis.py:1413-1487`), simplified: because we stored the
 delta directly rather than before/after snapshots, replay is a pure additive
 pass — no set-difference logic, and re-applying the same delta is a no-op.
@@ -374,9 +386,14 @@ references that path. Two options:
   replay. Defer unless Option A proves too large.
 
 Similarly, file observables referenced by `delta.new_observables` need their
-backing file to be present in the target root's storage dir. Phase 2 ships
-without file-observable caching; modules that produce file observables must
-leave `cache_ttl` unset. Phase 4 can add a file-blob copy step.
+backing file to be present in the target root's storage dir. Phase 2 shipped
+without file-observable caching; **Phase 4 (2026-06-12) added it**: at cache
+write the file's bytes go into the content-addressed blob store
+(`spec.value` is already the content sha256 — `FileObservable.value` is the
+hash — so `exists()` dedupes identical content for free), and replay
+materializes them back out (see §5). Modules producing files larger than
+`analysis_cache.file_blob_max_bytes` (default 16 MiB per file) are refused at
+write time.
 
 ### 7. Module config changes
 
@@ -553,14 +570,44 @@ confidence criteria.
   `extended_version` (a file mtime+size hash; §A5). Downstream integrations may
   opt additional modules in via their own overlay configs. Risky /
   file-producing / wide-diff modules remain opted out.
-- Not yet shipped: phishkit read-side opt-in, the tool-version
-  `extended_version` helper (Phase 4), and Phase 3.5 single-flight dedup.
+- Not yet shipped as of Phase 3: phishkit read-side opt-in, the tool-version
+  `extended_version` helper, and Phase 3.5 single-flight dedup. (The
+  tool-version helper has since shipped with Phase 4.)
 
-### Phase 4 — File observables and cross-alert observables
+### Phase 4 — File observables and cross-alert observables — **Implemented (2026-06-12)**
 
-- Inline file content or blob-store references in deltas.
-- Cache replay copies files into target root storage dir.
-- Expand opt-in list.
+> Sequenced *before* Phase 3.5 (a deliberate re-order from the original
+> roadmap — single-flight is a work-dedup optimization with no dependents,
+> while file support unblocked the modules we most wanted cached).
+
+- `ObservableSpec` fidelity extension: `file_path` (relative to the source
+  root's file dir), `volatile`, `initial_relationships`,
+  `initial_redirection` — captured at diff time, serialized
+  omit-when-default (old rows/root.json load unchanged).
+- Cache write (`put_cached_delta`, now taking the source `root`): per file
+  spec, validate (path captured, backing file present, ≤
+  `analysis_cache.file_blob_max_bytes`), then `blob_store.exists(spec.value)`
+  -or-`put()` (the spec value IS the content sha256 — identical content
+  dedupes for free; a `put()` hash mismatch refuses the delta), then
+  `reference()` under the cache row exactly like the details spill.
+- Replay (`apply_delta`): pre-mutation staging pass materializes every blob
+  under the target `storage_dir`, then `add_file_observable(staged,
+  target_path=spec.file_path, move=True)` reuses `store_file` semantics;
+  missing blob = lookup-time `blob_missing` miss (or a clean replay abort →
+  live-run fall-through). See §5/§6.
+- Tool-version helper (`saq/modules/tool_version.py`,
+  `probe_binary_version`) shipped alongside (former Step 3.6).
+- Opt-ins: `ocr` (7d, tesseract version in `extended_version`) and `qrcode`
+  (7d, zbarimg/gs/pdfinfo versions + filter-file mtime+size fingerprint).
+  **Yara deferred** — not for version reasons (the module exposes
+  `signature_dir` and the ruleset is fingerprintable nrd-style): its output
+  depends on the file's *name* and the observable's *meta-tags*, which are
+  outside the content-keyed cache, and its sandbox directive lands on a
+  *different* observable — see the Phase 4 implementation notes for the
+  full breakdown. Phishkit opt-in is downstream (integration repo).
+- See "Phase 4 implementation notes" in Part II for as-built detail and
+  known limitations (shared-inode immutability assumption, mixed-version
+  fleet behavior).
 
 ---
 
@@ -845,6 +892,26 @@ is cheap enough to re-run. Negative caching of an *expensive* module's
 is better served at the module's own client/lookup layer than in the
 analysis-result cache.
 
+> **Phase 4 follow-up (2026-06-12): OCR/QR opted into negative caching at
+> the module layer**, exactly as prescribed above — the cache machinery is
+> unchanged. Both modules now record a summary-less Analysis when their
+> scans *complete cleanly* with no result (`QRCodeAnalysis` with
+> `extracted_text=None`; `OCRAnalysis` with `ocr=False` — both
+> `generate_summary()` shapes return `None`, so the alert view stays
+> clean, and the default tree view prunes detection-less nodes anyway).
+> The analysis dict makes the delta non-empty → cached → replay installs
+> the slot, skipping the re-scan. This matters because the negative path
+> is these modules' *expensive* path (a clean QR scan triggers a second
+> inverted-image scan; PDFs pay pdfinfo + gs rendering first) and the
+> dominant one. **Failure paths deliberately record nothing**: a zbarimg
+> timeout/error exit (`_scan_image` now distinguishes exit codes 0/4 =
+> trusted scan from anything else = failure) or a raising OCR pass leaves
+> the delta empty, so a transient failure can never be cached as a
+> multi-day negative verdict. Volume trade-off: one tiny cache row per
+> unique image/PDF sha (details are two near-null fields) — and recurring
+> email imagery (logos, signature images, tracking pixels) makes the
+> negative hit rate high.
+
 Why refuse to replay removals rather than support them? Replaying a
 removal means "I once saw a state where X existed and I removed it." On
 the target root X may not exist at all, may exist for a different reason
@@ -865,11 +932,15 @@ or an observable the same delta created. Anything else points at
 surrounding tree context a replay onto a different root cannot guarantee
 to reproduce. In-scope relationships ARE replayable — the snapshot
 captures each relationship target's `(type, value, time)` spec alongside
-the uuid, and replay re-resolves through it (§5). Known limitation: a
-relationship hung on a *new* observable (`child.add_relationship(...)`)
-is invisible to the narrow diff (`ObservableSpec` carries no
-`initial_relationships`) — a module doing that must stay uncached until
-the spec grows that field.
+the uuid, and replay re-resolves through it (§5). *(Resolved in Phase 4,
+2026-06-12:)* a relationship hung on a *new* observable
+(`child.add_relationship(...)`) was previously invisible to the narrow
+diff; `ObservableSpec` now carries `initial_relationships` (plus
+`initial_redirection` and `volatile`), captured at diff time and applied
+in a second replay pass once all new observables exist. The scope refusal
+covers these spec-level relationships/redirections too — OCR/QR's
+`R_EXTRACTED_FROM` back to the analyzed file is the motivating in-scope
+case.
 
 Scalar-change handling is similar but laxer: a scalar change is
 effectively "set to new value", and replay sets it. If two modules both
@@ -2437,7 +2508,17 @@ list updated for PR #279 — the cache is now append-only and partition-managed)
 ### Step 3.3 — Metrics (hit/miss per module) — *shipped, then reworked to per-(root,module) aggregation in PR #242*
 ### Step 3.4 — Opt-in first modules — *shipped; current opt-ins are rdap/nrd/site_tagger via `extended_version`*
 ### Step 3.5 — CI lint: cacheable modules produce no removals — *shipped (`test_cacheable_modules_contract.py`, Step 3.8 as-built)*
-### Step 3.6 — Tool-version helper for `extended_version` — **still deferred** (no `saq/modules/tool_version.py` yet; current opt-ins use file mtime+size hashes instead)
+### Step 3.6 — Tool-version helper for `extended_version` — **✅ shipped with Phase 4 (2026-06-12)**
+
+> As-built deviations from the sketch below: negative probe results are
+> cached too (a broken tool must not be re-spawned per cache-key
+> computation); OCR uses `probe_binary_version("tesseract")` rather than
+> `pytesseract.get_tesseract_version()` (the latter spawns a subprocess on
+> every call and isn't mtime-invalidated); QR probes `pdfinfo` with `-v`
+> and the helper falls back to stderr (where pdfinfo prints its version);
+> QR additionally fingerprints its URL-filter file (mtime+size) because
+> the filter's *contents* change output while only its *path* is in the
+> config hash.
 
 Many ACE3 analysis modules shell out to CLI tools whose version
 participates in correctness (OCR uses `tesseract`; QR uses `zbarimg`,
@@ -2603,16 +2684,106 @@ a delayed-analysis request, and re-check the cache when they resume.
 
 ---
 
-## Phase 4: File Observables + Blob Store (outline)
+## Phase 4: File Observables + Blob Store — **✅ Implemented (2026-06-12)**
 
-### Step 4.1 — File observable caching via blob store
-### Step 4.2 — Cache replay copies files into target storage dir
-### Step 4.3 — Expand opt-in module list
+> Landed *before* Phase 3.5 (re-sequenced — see the status table note).
+> No DB schema change was needed: `blob_refs`, `has_blob_refs`, and the
+> blob store (incl. `materialize()`) all shipped with PR #279.
 
-OCR (`tesseract`) and QR (`zbarimg`, `gs`, `pdfinfo`) opt in here.
-Both require the Step 3.6 tool-version helper to be in place —
-ship it as a Phase 3 deliverable if not already done, or as the
-first task of Phase 4 if Phase 3's opt-ins didn't need it.
+### Step 4.1 — File observable caching via blob store — *shipped*
+### Step 4.2 — Cache replay copies files into target storage dir — *shipped*
+### Step 4.3 — Expand opt-in module list — *shipped (ocr, qrcode)*
+
+OCR (`tesseract`) and QR (`zbarimg`, `gs`, `pdfinfo`) opted in here, with
+the Step 3.6 tool-version helper shipped in the same change.
+
+### Phase 4 implementation notes (as built, 2026-06-12)
+
+- **Spec fidelity came first.** OCR sets `volatile=True`, an
+  `R_EXTRACTED_FROM` relationship, directives, and `redirection` on its
+  output file; QR sets a relationship, tags, and an `exclude_analysis`.
+  `ObservableSpec` previously captured none of
+  relationships/redirection/volatile — replay would have been silently
+  unfaithful. The spec grew `file_path`, `volatile`,
+  `initial_relationships` (the enriched `_serialize_relationship` shape
+  with target `(type, value, time)`), and `initial_redirection`, all
+  serialized omit-when-default so pre-Phase-4 rows and root.json load
+  unchanged. `out_of_scope_relationship_targets()` covers the new fields.
+- **Write path** (`put_cached_delta`, new keyword `root=` passed by
+  `_maybe_write_cache_delta`): validation refusals
+  (`file_observables_no_root`, `file_spec_missing_path`, `file_missing`,
+  `file_too_large`) run before any blob I/O; then per spec
+  `exists()`-or-`put()` + `reference()` under the cache row. `put()`
+  re-hashes — a mismatch (`file_hash_mismatch`) means the file mutated
+  on disk after the observable hashed it; the delta is refused and any
+  taken references dropped (`_unreference_blob_refs`, shared with the
+  size-cap bailout, which now covers file refs via the extended
+  `_extract_blob_refs`).
+- **Read path**: `get_cached_delta` checks `blob_store.exists()` per file
+  spec → `blob_missing` miss (GC race / failed remote upload → live-run
+  fall-through that rewrites both row and blob); a spec with no
+  `file_path` → `decode_error` miss.
+- **Replay**: staging-then-mutate (see §5). `_apply_observable_spec`
+  returns the created observable; `apply_delta` builds a
+  source-uuid→created-observable map and a second pass applies spec
+  relationships (via `_apply_relationship`, factored out of
+  `_apply_observable_diff` — the uuid map subsumes the old self-target
+  shortcut) and redirections. Idempotent: `store_file` skips existing
+  links, `FileObservable.__eq__` is `(value, file_path)`.
+- **Size guard**: `analysis_cache.file_blob_max_bytes` (default 16 MiB
+  per produced file) — blob bytes live outside the delta row, so the
+  1 MiB compressed-delta cap doesn't cover them. OCR/QR outputs are
+  KB-scale; this is a safety net.
+- **CI lint**: `CONTRACT_CHECKERS` entries became
+  `ContractCheck(runner, file_capable)`. File-capable modules (ocr,
+  qrcode — checkers run the real module with only the external tool call
+  mocked) assert each file spec is blob-backable: sha256 value, captured
+  `file_path`, backing file present, ≤ size cap; plus the standard
+  removals/relationship-scope assertions. Non-file-capable modules keep
+  the no-files assertion.
+- **Negative-result caching (OCR/QR)**: both modules record a
+  summary-less analysis when their scans complete cleanly with nothing
+  found, making the (dominant, double-scan-expensive) negative case
+  cacheable with zero cache-layer changes — see the §A4 follow-up note
+  for the full rationale and the failure-vs-negative disambiguation
+  (`_scan_image` trusts only zbarimg exit codes 0/4; a raising OCR pass
+  sets `ocr_failed`; failures record nothing so they are never cached).
+- **Known limitations / notes:**
+  - *Shared inodes*: on the local backend, blob → hardcopy → file_dir
+    links share one inode across alerts; stored file content is treated
+    as immutable in ACE (already true within an alert via hardcopy). If
+    in-place mutation ever appears, switch `materialize` callers to copy.
+  - *Mixed-version fleet*: file-bearing rows are only written by builds
+    that also carry the YAML opt-in (same artifact); an older node
+    reading one hits its read-time refusal (silent no-op replay).
+  - *S3 blob store backends* need no code change — Phase 4 consumes only
+    the `BlobStore` interface. Operationally: a bucket lifecycle policy
+    (the recommended GC posture) must expire objects no sooner than the
+    longest file-capable `cache_ttl` + GC grace, or live rows degrade to
+    `blob_missing` misses; per-node local-cache size budgets may need
+    revisiting now that blobs include multi-MB files, and a `head_object`
+    per file spec is paid on cold lookups.
+  - *Yara*: deferred, for reasons beyond versioning (the ruleset IS
+    fingerprintable — `YaraScanner_v3_4.signature_dir` exposes the
+    configured rules directory, and an nrd-style mtime+size walk would
+    work; only the yss daemon's reload lag would briefly let a fresh
+    fingerprint cache results computed from the old rules). The hard
+    blockers: (a) yara matches against *content*, but
+    `yara_scanner.filter_scan_results()` then post-filters hits against
+    rule meta `file_name`/`file_ext`/`full_path` and the observable's
+    `meta_tags` — so the module's filtered output depends on the file's
+    name and the observable's YARA_META directives, neither of which is
+    in the content-sha256 cache key (same bytes, different name/tags →
+    wrong cached result; `full_path` rules compare against the absolute
+    per-alert path and could never be cache-stable); (b) on an alertable
+    match for a decomposed file the module adds `DIRECTIVE_SANDBOX` to
+    `_file.redirection` — a *different* observable, invisible to the
+    narrow diff, so replay would drop the directive that drives
+    detonation; (c) the `$obs_` string path queries the DB at scan time;
+    and (d) payoff is marginal — a local yss socket scan costs
+    milliseconds, comparable to or cheaper than a cache hit's DB
+    round-trip + decode + replay (§A1's "cheap enough to re-run" case).
+    *Phishkit*: integration-repo opt-in, unblocked by this phase.
 
 ---
 
@@ -2642,7 +2813,15 @@ Phase 3 (after Phase 2.5 confidence criteria met):
   3.1-3.5 as above
   --- ship & bake ---
 
-Phase 3.5 (after Phase 3 hit rate validated):
+Phase 4 (re-sequenced ahead of Phase 3.5; shipped 2026-06-12):
+  4.0  ObservableSpec fidelity (file_path / volatile / relationships /
+       redirection) + tool-version helper (former Step 3.6)
+  4.1  Cache write: blob-back file specs (validate → put → reference)
+  4.2  Replay: stage-materialize → add_file_observable(move=True)
+  4.3  Opt-ins: ocr + qrcode (7d each) + contract-lint file_capable mode
+  --- shipped ---
+
+Phase 3.5 (deferred to last; after Phase 4 + payoff data):
   3.5.1 analysis_cache_pending schema + migration
   3.5.2 single_flight config flag + claim / release / reap helpers
   3.5.3 Executor integration (claim-or-defer via delayed analysis)
@@ -2650,10 +2829,6 @@ Phase 3.5 (after Phase 3 hit rate validated):
         prune cron it originally targeted was removed in PR #279)
   3.5.5 Splunk signals: cache_claim, cache_defer_resume, stale_pending_reaped
   3.5.6 Tests
-  --- ship & bake ---
-
-Phase 4 (after Phase 3.5 stable):
-  4.1-4.3 as above
 ```
 
 ## Critical Files
@@ -2681,7 +2856,16 @@ Phase 4 (after Phase 3.5 stable):
 | `saq/engine/executor.py` | Edit (cache-hit short-circuit + `_apply_cached_delta` + metrics, PR #211/#242) | 3 |
 | `saq/logging.py` | Create (`ExtraAwareFluentFormatter`, PR #211) | 3 |
 | `tests/saq/modules/test_cacheable_modules_contract.py` | Create (cacheability CI lint, PR #211) | 3 |
-| `saq/modules/tool_version.py` | Create (`probe_binary_version`) — **deferred, not yet shipped** | 3.6 |
+| `saq/modules/tool_version.py` | Create (`probe_binary_version`, shipped with Phase 4) | 3.6 |
+| `saq/analysis/module_execution_delta.py` | Edit (`ObservableSpec` file_path/volatile/relationships/redirection, `file_observable_specs`, spec-aware scope check) | 4 |
+| `saq/analysis/snapshot.py` | Edit (capture the Phase 4 spec fields) | 4 |
+| `saq/analysis/cache.py` | Edit (file-spec validation + blob write in `put_cached_delta(root=)`; `blob_missing` file check in `get_cached_delta`; staging + `_apply_relationship` second pass in `apply_delta`) | 4 |
+| `saq/configuration/schema.py` | Edit (`file_blob_max_bytes`) | 4 |
+| `saq/engine/executor.py` | Edit (pass `root` to cache write, `blob_store` to replay) | 4 |
+| `saq/modules/file_analysis/ocr.py` / `qrcode.py` | Edit (`extended_version` overrides) | 4.3 |
+| `etc/saq.default.yaml` | Edit (ocr/qrcode `cache_ttl: 604800`) | 4.3 |
+| `tests/saq/modules/test_tool_version.py` / `test_file_analysis_extended_version.py` | Create | 4 |
+| `tests/saq/modules/test_cacheable_modules_contract.py` | Edit (`ContractCheck` + file_capable assertions + ocr/qrcode checkers) | 4.3 |
 
 ---
 

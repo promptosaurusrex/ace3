@@ -1,9 +1,15 @@
 """Unit tests for saq.analysis.cache.apply_delta (Phase 3 Step 3.5)."""
 import logging
+import os
 from datetime import datetime, timezone
 
 import pytest
 
+from saq.analysis.blob_store import (
+    BlobNotFound,
+    LocalHardlinkBlobStore,
+    LocalHardlinkBlobStoreConfig,
+)
 from saq.analysis.cache import apply_delta
 from saq.analysis.module_execution_delta import (
     ModuleExecutionDelta,
@@ -12,7 +18,7 @@ from saq.analysis.module_execution_delta import (
     RootDiff,
 )
 from saq.analysis.root import RootAnalysis
-from saq.constants import F_EMAIL_ADDRESS, F_FILE, F_FQDN, F_IPV4, F_URL, F_USER, R_IS_HASH_OF
+from saq.constants import F_EMAIL_ADDRESS, F_FILE, F_FQDN, F_IPV4, F_URL, F_USER, R_EXTRACTED_FROM, R_IS_HASH_OF
 from saq.modules.rdap import RdapAnalysis
 
 
@@ -280,6 +286,123 @@ class TestApplyDeltaNewObservables:
         assert urls[0].tags.count("replay") == 1
 
 
+class TestApplyDeltaFileObservables:
+    """Phase 4: file specs replay by materializing blob content into the
+    target root's file dir."""
+
+    def _store(self, tmp_path, content=b"phase4 replay content"):
+        store = LocalHardlinkBlobStore(
+            LocalHardlinkBlobStoreConfig(root_dir=str(tmp_path / "blob_store"))
+        )
+        sha = store.put(content)
+        return store, sha
+
+    def _file_spec(self, sha, file_path="output.txt", **kwargs):
+        return ObservableSpec(
+            uuid="44444444-4444-4444-4444-444444444444",
+            type=F_FILE,
+            value=sha,
+            file_path=file_path,
+            **kwargs,
+        )
+
+    @pytest.mark.unit
+    def test_file_materialized_into_target_root(self, tmp_path):
+        root = _make_root(tmp_path / "root")
+        target = root.add_observable_by_spec(F_FQDN, "example.com")
+        store, sha = self._store(tmp_path)
+        spec = self._file_spec(sha, volatile=True, initial_tags=["ocr"])
+        delta = _empty_delta(target, new_observables=[spec])
+
+        apply_delta(root, target, delta, blob_store=store)
+
+        files = [o for o in root.all_observables if o.type == F_FILE]
+        assert len(files) == 1
+        file_obs = files[0]
+        assert file_obs.value == sha
+        assert file_obs.file_path == "output.txt"
+        assert file_obs.volatile is True
+        assert "ocr" in file_obs.tags
+        assert file_obs.exists
+        with open(file_obs.full_path, "rb") as fp:
+            assert fp.read() == b"phase4 replay content"
+
+    @pytest.mark.unit
+    def test_file_materialized_into_subdirectory_path(self, tmp_path):
+        """OCR-style relative paths contain subdirectories
+        (x.png.ocr/x.png.ocr) — store_file must create them."""
+        root = _make_root(tmp_path / "root")
+        target = root.add_observable_by_spec(F_FQDN, "example.com")
+        store, sha = self._store(tmp_path)
+        spec = self._file_spec(sha, file_path="image.png.ocr/image.png.ocr")
+        delta = _empty_delta(target, new_observables=[spec])
+
+        apply_delta(root, target, delta, blob_store=store)
+
+        files = [o for o in root.all_observables if o.type == F_FILE]
+        assert len(files) == 1
+        assert files[0].file_path == "image.png.ocr/image.png.ocr"
+        assert files[0].exists
+
+    @pytest.mark.unit
+    def test_file_spec_relationship_and_redirection_resolved(self, tmp_path):
+        """The relationship/redirection a module set on its output file
+        must point at the *target tree's* analyzed observable after replay
+        (source uuids are per-alert; resolution goes through the uuid map)."""
+        root = _make_root(tmp_path / "root")
+        target = root.add_observable_by_spec(F_FQDN, "example.com")
+        store, sha = self._store(tmp_path)
+        source_target_uuid = "99999999-9999-9999-9999-999999999999"
+        spec = self._file_spec(
+            sha,
+            initial_relationships=[{
+                "type": R_EXTRACTED_FROM,
+                "target": source_target_uuid,
+                "target_type": F_FQDN,
+                "target_value": "example.com",
+            }],
+            initial_redirection=source_target_uuid,
+        )
+        delta = _empty_delta(target, new_observables=[spec])
+        delta.observable_uuid = source_target_uuid  # source alert's uuid for the analyzed observable
+
+        apply_delta(root, target, delta, blob_store=store)
+
+        file_obs = [o for o in root.all_observables if o.type == F_FILE][0]
+        rels = [r for r in file_obs.relationships if r.r_type == R_EXTRACTED_FROM]
+        assert len(rels) == 1
+        assert rels[0].target is target
+        assert file_obs._redirection == target.uuid
+
+    @pytest.mark.unit
+    def test_file_replay_idempotent(self, tmp_path):
+        root = _make_root(tmp_path / "root")
+        target = root.add_observable_by_spec(F_FQDN, "example.com")
+        store, sha = self._store(tmp_path)
+        spec = self._file_spec(sha, initial_tags=["replay"])
+        delta = _empty_delta(target, new_observables=[spec])
+
+        apply_delta(root, target, delta, blob_store=store)
+        apply_delta(root, target, delta, blob_store=store)
+
+        files = [o for o in root.all_observables if o.type == F_FILE]
+        assert len(files) == 1
+        assert files[0].tags.count("replay") == 1
+        assert files[0].exists
+
+    @pytest.mark.unit
+    def test_staging_dir_cleaned_up(self, tmp_path):
+        root = _make_root(tmp_path / "root")
+        target = root.add_observable_by_spec(F_FQDN, "example.com")
+        store, sha = self._store(tmp_path)
+        delta = _empty_delta(target, new_observables=[self._file_spec(sha)])
+
+        apply_delta(root, target, delta, blob_store=store)
+
+        leftovers = [d for d in os.listdir(root.storage_dir) if d.startswith(".cache_replay_")]
+        assert leftovers == []
+
+
 class TestApplyDeltaRehydration:
 
     @pytest.mark.unit
@@ -449,31 +572,32 @@ class TestApplyDeltaContractEnforcement:
             apply_delta(root, target, delta)
 
     @pytest.mark.unit
-    def test_file_observables_refused_at_replay(self, tmp_path, caplog):
-        """Read-time defense-in-depth — even if a malformed row from a
-        prior buggy build slips past the write guard, replay must refuse
-        rather than partially apply.
+    def test_file_observable_with_missing_blob_raises_before_mutation(self, tmp_path):
+        """Phase 4: file deltas replay via the blob store. A missing blob
+        raises (executor falls through to a live run) — and because the
+        staging pass runs before any tree mutation, the tree is untouched.
         """
         root = _make_root(tmp_path)
         target = root.add_observable_by_spec(F_FQDN, "example.com")
+        empty_store = LocalHardlinkBlobStore(
+            LocalHardlinkBlobStoreConfig(root_dir=str(tmp_path / "empty_blob_store"))
+        )
         delta = _empty_delta(
             target,
             new_observables=[
                 ObservableSpec(
                     uuid="33333333-3333-3333-3333-333333333333",
                     type=F_FILE,
-                    value="some/file.txt",
+                    value="0" * 64,
+                    file_path="some/file.txt",
                 ),
             ],
             target_observable_diff=ObservableDiff(added_tags=["should-not-apply"]),
         )
-        with caplog.at_level(logging.WARNING):
-            apply_delta(root, target, delta)
-        # Nothing should have been applied — caller is told via log.
+        with pytest.raises(BlobNotFound):
+            apply_delta(root, target, delta, blob_store=empty_store)
+        # Nothing was applied — the raise happened before tree mutation.
         assert "should-not-apply" not in target.tags
-        warns = [r for r in caplog.records if "refusal_reason=file_observables" in r.getMessage()]
-        assert warns
-        assert warns[0].refusal_reason == "file_observables"
 
 
 class TestApplyDeltaRootLevel:

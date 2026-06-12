@@ -12,6 +12,7 @@ from saq.environment import get_global_runtime_settings
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import is_image, is_pdf_file
+from saq.modules.tool_version import probe_binary_version
 from saq.observables.file import FileObservable
 
 from PIL import Image, ImageOps
@@ -134,6 +135,34 @@ class QRCodeAnalyzer(AnalysisModule):
     def timeout(self):
         return self.config.timeout
 
+    @property
+    def extended_version(self) -> dict[str, str]:
+        """Mix the external tools' versions and the URL filter file's
+        identity into the cache key.
+
+        zbarimg / gs / pdfinfo each affect what this module extracts, so a
+        package upgrade must invalidate cached results. A failed probe
+        omits that tool's key (staleness over key poisoning). The filter
+        file's *contents* change the module's output but only its *path*
+        sits in the config (and thus the config hash), so an
+        mtime+size fingerprint covers analyst edits — same pattern as
+        nrd_analyzer / site_tagger. pdfinfo prints its version to stderr
+        via ``-v``; probe_binary_version falls back to stderr.
+        """
+        result = {}
+        for tool, args in (("zbarimg", None), ("gs", None), ("pdfinfo", ["-v"])):
+            version = probe_binary_version(tool, args=args)
+            if version is not None:
+                result[tool] = version
+        filter_path = self.qrcode_filter_path
+        if filter_path is not None:
+            try:
+                st = os.stat(filter_path)
+                result["qrcode_filter_version"] = f"{st.st_mtime_ns}-{st.st_size}"
+            except OSError:
+                pass
+        return result
+
     def _get_pdf_page_count(self, pdf_path: str) -> Optional[int]:
         """Use pdfinfo to get the page count of a PDF."""
         try:
@@ -166,14 +195,30 @@ class QRCodeAnalyzer(AnalysisModule):
             process.communicate()
             return False
 
+    # zbarimg exit codes that mean the scan itself completed: 0 = at least
+    # one symbol decoded, 4 = scanned cleanly but no symbol detected.
+    # Anything else is a scan failure.
+    _ZBARIMG_TRUSTED_RETURNCODES = (0, 4)
+
     def _scan_image(self, image_path: str) -> Optional[str]:
-        """Run zbarimg on an image and return stdout, or None on failure/timeout."""
+        """Run zbarimg on an image.
+
+        Returns stdout when the scan completed — an empty string means the
+        image was scanned cleanly and contains no decodable symbol. Returns
+        None only when the scan FAILED (timeout, or a zbarimg error exit) —
+        callers must treat None as "unknown", never as "no QR code", so a
+        transient failure is never recorded (or cached) as a negative
+        result.
+        """
         try:
             process = Popen(["zbarimg", "-q", "--raw", "--nodbus", image_path], stdout=PIPE, stderr=PIPE, text=True)
             stdout, stderr = process.communicate(timeout=self.timeout)
             if stderr:
                 logging.debug(f"zbarimg stderr for {image_path}: {stderr}")
-            return stdout if stdout else None
+            if process.returncode not in self._ZBARIMG_TRUSTED_RETURNCODES:
+                logging.warning(f"zbarimg failed on {image_path} with exit code {process.returncode}")
+                return None
+            return stdout
         except TimeoutExpired:
             logging.warning(f"zbarimg timed out on {image_path}")
             process.kill()
@@ -181,7 +226,10 @@ class QRCodeAnalyzer(AnalysisModule):
             return None
 
     def _scan_inverted_image(self, image_path: str) -> Optional[str]:
-        """Invert the image and scan it for QR codes. Uses a temp file for the inverted image."""
+        """Invert the image and scan it for QR codes. Uses a temp file for
+        the inverted image. Same return semantics as _scan_image: empty
+        string = scanned clean with no symbol, None = the invert/save/scan
+        failed (treat as unknown, not as a negative result)."""
         try:
             image = Image.open(image_path).convert("RGB")
             image_inverted = ImageOps.invert(image)
@@ -321,15 +369,22 @@ class QRCodeAnalyzer(AnalysisModule):
             qrcode_filter = QRCodeFilter(self.qrcode_filter_path)
             qrcode_filter.load()
 
-        # Scan each page/image for QR codes, processing results per-page
+        # Scan each page/image for QR codes, processing results per-page.
+        # scan_failed tracks whether ANY scan attempt failed (None return:
+        # timeout or zbarimg error) as opposed to completing with no match
+        # (empty string) — a failed scan means "unknown", so the negative
+        # ("no QR code") result below must not be recorded for it.
         normal_urls = []
         inverted_urls = []
+        scan_failed = False
 
         for target_file_path in target_file_paths:
             logging.info(f"looking for a QR code in {target_file_path}")
 
             # Normal scan
             stdout = self._scan_image(target_file_path)
+            if stdout is None:
+                scan_failed = True
             page_urls = self._extract_valid_urls(stdout, qrcode_filter) if stdout else []
 
             if page_urls:
@@ -337,6 +392,8 @@ class QRCodeAnalyzer(AnalysisModule):
             else:
                 # Only run inverted scan if normal scan found nothing on this page
                 inverted_stdout = self._scan_inverted_image(target_file_path)
+                if inverted_stdout is None:
+                    scan_failed = True
                 inverted_page_urls = self._extract_valid_urls(inverted_stdout, qrcode_filter) if inverted_stdout else []
                 if inverted_page_urls:
                     inverted_urls.extend(inverted_page_urls)
@@ -347,6 +404,21 @@ class QRCodeAnalyzer(AnalysisModule):
                     os.unlink(target_file_path)
                 except Exception as e:
                     logging.error(f"unable to remove {target_file_path}: {e}")
+
+        # No QR code found and every scan completed cleanly: record a
+        # negative-result analysis. The constructor defaults (extracted_text
+        # None) already encode the negative, and generate_summary returns
+        # None for that shape so the empty analysis doesn't clutter the
+        # alert view. Recording the negative makes "this image has no QR
+        # code" a cacheable fact — without it the delta is empty (refused
+        # at cache write) and every recurrence of the image re-pays the
+        # double zbarimg scan (and gs render for PDFs). A failed scan
+        # deliberately records nothing, so a transient timeout is never
+        # cached as a negative.
+        if not normal_urls and not inverted_urls:
+            if not scan_failed:
+                self.create_analysis(_file)
+            return AnalysisExecutionResult.COMPLETED
 
         # Create analysis from results, preferring normal over inverted
         for extracted_urls, is_inverted in [(normal_urls, False), (inverted_urls, True)]:

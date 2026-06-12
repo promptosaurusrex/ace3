@@ -1115,7 +1115,7 @@ class AnalysisExecutor:
         completes in milliseconds.
         """
         replay_start_ns = time.monotonic_ns()
-        apply_delta(root, observable, delta)
+        apply_delta(root, observable, delta, blob_store=get_blob_store())
         replay_ms = (time.monotonic_ns() - replay_start_ns) // 1_000_000
 
         attribution_delta = delta.with_cache_hit_metadata(
@@ -1140,6 +1140,7 @@ class AnalysisExecutor:
     def _maybe_write_cache_delta(
         self,
         context: "AnalysisExecutionContext",
+        root: RootAnalysis,
         observable: Observable,
         analysis_module: AnalysisModuleInterface,
         delta: ModuleExecutionDelta,
@@ -1177,7 +1178,12 @@ class AnalysisExecutor:
             cache_delta = delta
             if prior_deltas:
                 cache_delta = merge_module_execution_deltas(prior_deltas, delta)
-            write_result = put_cached_delta(cache_delta, analysis_module, get_blob_store())
+            # root is required for Phase 4 file-observable deltas — the
+            # produced files' bytes are read from this root's file dir into
+            # the blob store.
+            write_result = put_cached_delta(
+                cache_delta, analysis_module, get_blob_store(), root=root,
+            )
             if write_result is not None:
                 module_name = analysis_module.name
                 context.cache_write_count_insert[module_name] = (
@@ -1469,7 +1475,7 @@ class AnalysisExecutor:
                             )
 
                         self._maybe_write_cache_delta(
-                            context, work_item.observable, analysis_module,
+                            context, root, work_item.observable, analysis_module,
                             delta, analysis_result, prior_deltas,
                         )
                     except Exception:

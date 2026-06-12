@@ -1626,6 +1626,9 @@ analysis_module_ocr:
   # do not run ocr on internal alerts
   # control the number of threads tesseract uses
   omp_thread_limit: 1
+  # 30 days — output file content is blob-backed (Phase 4); a tesseract
+  # upgrade invalidates the key via extended_version
+  cache_ttl: 2592000
 
 analysis_module_qrcode:
   name: qrcode
@@ -1639,6 +1642,9 @@ analysis_module_qrcode:
   pdf_last_pages: 3
   # timeout in seconds for subprocess execution (gs, zbarimg, pdfinfo)
   timeout: 30
+  # 30 days — zbarimg/gs/pdfinfo upgrades and analyst edits to the filter
+  # file invalidate the key via extended_version
+  cache_ttl: 2592000
 
 analysis_module_hidden_mime:
   name: hidden_mime

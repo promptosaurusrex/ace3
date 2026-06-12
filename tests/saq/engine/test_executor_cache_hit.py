@@ -281,7 +281,7 @@ class TestMaybeWriteCacheDelta:
         delta = self._delta(obs, analysis=None)  # mid-delay shape
 
         executor._maybe_write_cache_delta(
-            context, obs, module, delta,
+            context, root, obs, module, delta,
             AnalysisExecutionResult.INCOMPLETE, [],
         )
         put_mock.assert_not_called()
@@ -298,7 +298,7 @@ class TestMaybeWriteCacheDelta:
         delta = self._delta(obs)
 
         executor._maybe_write_cache_delta(
-            context, obs, module, delta,
+            context, root, obs, module, delta,
             AnalysisExecutionResult.COMPLETED, [],
         )
         put_mock.assert_called_once()
@@ -316,7 +316,7 @@ class TestMaybeWriteCacheDelta:
         delta = self._delta(obs)
 
         executor._maybe_write_cache_delta(
-            context, obs, module, delta,
+            context, root, obs, module, delta,
             AnalysisExecutionResult.COMPLETED, [],
         )
         put_mock.assert_not_called()
@@ -345,7 +345,7 @@ class TestMaybeWriteCacheDelta:
         )
 
         executor._maybe_write_cache_delta(
-            context, obs, module, final,
+            context, root, obs, module, final,
             AnalysisExecutionResult.COMPLETED, [prior],
         )
         written = put_mock.call_args[0][0]

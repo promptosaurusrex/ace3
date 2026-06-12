@@ -134,6 +134,47 @@ class TestObservableSpec:
         assert restored.initial_excluded_analysis == []
         assert restored.initial_limited_analysis == []
 
+    @pytest.mark.unit
+    def test_file_spec_round_trip(self):
+        """Phase 4 fields (file_path/volatile/relationships/redirection)
+        survive serialization."""
+        spec = ObservableSpec(
+            uuid="u4",
+            type="file",
+            value="a" * 64,
+            file_path="image.png.ocr/image.png.ocr",
+            volatile=True,
+            initial_relationships=[
+                {"type": "extracted_from", "target": "parent-uuid",
+                 "target_type": "file", "target_value": "b" * 64},
+            ],
+            initial_redirection="parent-uuid",
+        )
+        d = spec.to_dict()
+        restored = ObservableSpec.from_dict(d)
+        assert restored.file_path == spec.file_path
+        assert restored.volatile is True
+        assert restored.initial_relationships == spec.initial_relationships
+        assert restored.initial_redirection == "parent-uuid"
+
+    @pytest.mark.unit
+    def test_from_dict_backward_compat_missing_phase4_fields(self):
+        """Cache rows written before Phase 4 lack the new keys entirely."""
+        restored = ObservableSpec.from_dict({"uuid": "u5", "type": "fqdn", "value": "x.com"})
+        assert restored.file_path is None
+        assert restored.volatile is False
+        assert restored.initial_relationships == []
+        assert restored.initial_redirection is None
+
+    @pytest.mark.unit
+    def test_phase4_fields_omitted_when_default(self):
+        """Compact serialization: defaults add no keys (root.json size)."""
+        d = ObservableSpec(uuid="u6", type="fqdn", value="x.com").to_dict()
+        assert "file_path" not in d
+        assert "volatile" not in d
+        assert "initial_relationships" not in d
+        assert "initial_redirection" not in d
+
 
 class TestRootDiff:
     @pytest.mark.unit

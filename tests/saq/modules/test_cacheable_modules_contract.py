@@ -1,9 +1,11 @@
 """CI lint: every module configured with ``cache_ttl`` must satisfy the
-cacheability contract — its execute_analysis must not produce removals
-and must not spawn file observables.
+cacheability contract — its execute_analysis must not produce removals,
+must keep relationships within its own output, and (unless registered
+``file_capable``) must not spawn file observables.
 
-Phase 3 design doc §A4 / Step 3.8. Catches forgotten opt-outs at PR
-time before they corrupt the cache.
+Phase 3 design doc §A4 / Step 3.8; file-capable handling added in
+Phase 4. Catches forgotten opt-outs at PR time before they corrupt the
+cache.
 
 Two-layer enforcement:
 
@@ -16,25 +18,34 @@ Two-layer enforcement:
 
 2. ``test_module_contract`` (parametrized) — for each registered
    module, runs ``execute_analysis`` against a synthetic observable
-   (with external dependencies mocked) and asserts ``not
-   delta.has_removals and not delta.has_file_observables``.
+   (with external dependencies mocked) and asserts the delta is
+   contract-clean. ``file_capable`` modules (Phase 4: OCR, QR) may
+   spawn file observables, but each file spec must be blob-backable:
+   sha256 value, captured relative path, backing file present, and
+   under the size cap.
 """
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Callable, NamedTuple
 
 import pytest
 import yaml
 
 from saq.analysis.snapshot import ModuleExecutionSnapshot
-from saq.configuration.config import get_analysis_module_config
+from saq.configuration.config import get_analysis_module_config, get_config
 from saq.constants import (
+    ANALYSIS_MODULE_OCR,
+    ANALYSIS_MODULE_QRCODE,
     ANALYSIS_MODULE_SITE_TAGGER,
     ANALYSIS_MODULE_NRD_ANALYZER,
     ANALYSIS_MODULE_RDAP_ANALYZER,
     AnalysisExecutionResult,
+    DIRECTIVE_OCR,
+    F_FILE,
     F_FQDN,
     F_IPV4,
+    FILE_SUBDIR,
 )
+from saq.util.hashing import is_sha256_hex
 from tests.saq.helpers import create_root_analysis
 
 
@@ -88,7 +99,7 @@ def _check_rdap_analyzer(test_context, monkeypatch):
     after = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
 
     assert result == AnalysisExecutionResult.COMPLETED
-    return ModuleExecutionSnapshot.diff(before, after, analyzer, obs)
+    return ModuleExecutionSnapshot.diff(before, after, analyzer, obs), root
 
 
 def _check_nrd_analyzer(test_context, monkeypatch):
@@ -138,7 +149,7 @@ def _check_nrd_analyzer(test_context, monkeypatch):
     _reset_connection_for_tests()
 
     assert result == AnalysisExecutionResult.COMPLETED
-    return ModuleExecutionSnapshot.diff(before, after, analyzer, obs)
+    return ModuleExecutionSnapshot.diff(before, after, analyzer, obs), root
 
 
 def _check_site_tagger(test_context, monkeypatch):
@@ -179,7 +190,93 @@ def _check_site_tagger(test_context, monkeypatch):
     after = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
 
     assert result == AnalysisExecutionResult.COMPLETED
-    return ModuleExecutionSnapshot.diff(before, after, analyzer, obs)
+    return ModuleExecutionSnapshot.diff(before, after, analyzer, obs), root
+
+
+def _make_png(directory) -> str:
+    """Write a small synthetic PNG and return its path."""
+    import os
+
+    from PIL import Image
+
+    path = os.path.join(directory, "contract_test.png")
+    Image.new("RGB", (64, 64), "white").save(path)
+    return path
+
+
+def _check_ocr(test_context, monkeypatch):
+    """Runs OCRAnalyzer against a synthetic PNG with the tesseract call
+    (``get_image_text``) mocked to fixed text — the delta shape (output
+    file write, add_file_observable, relationship, redirection) is real,
+    only the text extraction is faked, keeping the lint deterministic.
+    """
+    import tempfile
+
+    from saq.modules.file_analysis.ocr import OCRAnalyzer
+
+    monkeypatch.setattr(
+        "saq.modules.file_analysis.ocr.get_image_text",
+        lambda _image: "EXTRACTED TEXT https://example.com/",
+    )
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    obs = root.add_file_observable(_make_png(tempfile.mkdtemp()))
+    obs.add_directive(DIRECTIVE_OCR)
+
+    analyzer = OCRAnalyzer(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_OCR),
+    )
+    analyzer.root = root
+
+    before = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+    result = analyzer.execute_analysis(obs)
+    after = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    delta = ModuleExecutionSnapshot.diff(before, after, analyzer, obs)
+    assert delta.has_file_observables, "OCR contract check failed to produce a file"
+    return delta, root
+
+
+def _check_qrcode(test_context, monkeypatch):
+    """Runs QRCodeAnalyzer against a synthetic PNG with the zbarimg call
+    (``_scan_image``) mocked to return a URL — the delta shape (output
+    file write, add_file_observable, relationship, tags) is real.
+    """
+    import tempfile
+
+    from saq.modules.file_analysis.qrcode import QRCodeAnalyzer
+
+    monkeypatch.setattr(
+        QRCodeAnalyzer, "_scan_image",
+        lambda _self, _path: "https://example.com/qr-target\n",
+    )
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    obs = root.add_file_observable(_make_png(tempfile.mkdtemp()))
+
+    analyzer = QRCodeAnalyzer(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_QRCODE),
+    )
+    analyzer.root = root
+
+    before = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+    result = analyzer.execute_analysis(obs)
+    after = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    delta = ModuleExecutionSnapshot.diff(before, after, analyzer, obs)
+    assert delta.has_file_observables, "QR contract check failed to produce a file"
+    return delta, root
+
+
+class ContractCheck(NamedTuple):
+    runner: Callable  # callable(test_context, monkeypatch) -> (delta, root)
+    file_capable: bool  # True: module may spawn file observables (Phase 4)
 
 
 # Registry of contract checkers — one entry per module with cache_ttl
@@ -188,11 +285,13 @@ def _check_site_tagger(test_context, monkeypatch):
 # ``test_yaml_cache_ttl_modules_have_contract_check``.
 #
 # Key: YAML config block name (e.g. ``analysis_module_rdap_analyzer``).
-# Value: callable(test_context, monkeypatch) -> ModuleExecutionDelta.
-CONTRACT_CHECKERS: dict[str, Callable] = {
-    "analysis_module_site_tagger": _check_site_tagger,
-    "analysis_module_nrd_analyzer": _check_nrd_analyzer,
-    "analysis_module_rdap_analyzer": _check_rdap_analyzer,
+# Value: ContractCheck(runner, file_capable).
+CONTRACT_CHECKERS: dict[str, ContractCheck] = {
+    "analysis_module_site_tagger": ContractCheck(_check_site_tagger, file_capable=False),
+    "analysis_module_nrd_analyzer": ContractCheck(_check_nrd_analyzer, file_capable=False),
+    "analysis_module_rdap_analyzer": ContractCheck(_check_rdap_analyzer, file_capable=False),
+    "analysis_module_ocr": ContractCheck(_check_ocr, file_capable=True),
+    "analysis_module_qrcode": ContractCheck(_check_qrcode, file_capable=True),
 }
 
 
@@ -265,19 +364,16 @@ def test_module_contract(module_key, test_context, monkeypatch):
     """For each registered cacheable module, run execute_analysis with
     mocked external dependencies and assert the delta is contract-clean.
     """
-    checker = CONTRACT_CHECKERS[module_key]
-    delta = checker(test_context, monkeypatch)
+    import os
+
+    check = CONTRACT_CHECKERS[module_key]
+    delta, root = check.runner(test_context, monkeypatch)
 
     assert not delta.has_removals, (
         f"{module_key}: delta has removals — the cacheability contract "
         f"requires monotonic (additive-only) modules. Either remove "
         f"cache_ttl from this module's YAML or fix the module to be "
         f"additive."
-    )
-    assert not delta.has_file_observables, (
-        f"{module_key}: delta spawns file observables — Phase 3 cache "
-        f"replay does not yet materialize file bytes (Phase 4). Either "
-        f"remove cache_ttl from this module's YAML or wait for Phase 4."
     )
     assert not delta.out_of_scope_relationship_targets(), (
         f"{module_key}: delta adds relationships targeting observables "
@@ -286,3 +382,34 @@ def test_module_contract(module_key, test_context, monkeypatch):
         f"surrounding tree context and cannot be replayed onto a "
         f"different root — remove cache_ttl from this module's YAML."
     )
+    if not check.file_capable:
+        assert not delta.has_file_observables, (
+            f"{module_key}: delta spawns file observables but is not "
+            f"registered file_capable. If the module's file output is "
+            f"blob-backable (Phase 4), set file_capable=True in its "
+            f"ContractCheck; otherwise remove cache_ttl from its YAML."
+        )
+        return
+
+    # Phase 4 file-capable contract: every file spec must be exactly what
+    # the write path needs to blob-back it.
+    max_bytes = get_config().analysis_cache.file_blob_max_bytes
+    for spec in delta.file_observable_specs():
+        assert is_sha256_hex(spec.value), (
+            f"{module_key}: file spec value {spec.value!r} is not a "
+            f"sha256 — the blob store keys on content hash."
+        )
+        assert spec.file_path, (
+            f"{module_key}: file spec has no file_path — replay cannot "
+            f"place the file in the target alert."
+        )
+        backing = os.path.join(root.storage_dir, FILE_SUBDIR, spec.file_path)
+        assert os.path.exists(backing), (
+            f"{module_key}: file spec's backing file {backing} does not "
+            f"exist — the cache write would be refused (file_missing)."
+        )
+        assert os.path.getsize(backing) <= max_bytes, (
+            f"{module_key}: produced file exceeds "
+            f"analysis_cache.file_blob_max_bytes ({max_bytes}) — the "
+            f"cache write would be refused (file_too_large)."
+        )

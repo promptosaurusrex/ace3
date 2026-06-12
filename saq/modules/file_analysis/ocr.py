@@ -16,6 +16,7 @@ from saq.constants import (
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import is_image
+from saq.modules.tool_version import probe_binary_version
 from saq.observables.file import FileObservable
 from saq.ocr import (
     add_border,
@@ -110,6 +111,20 @@ class OCRAnalyzer(AnalysisModule):
     def omp_thread_limit(self):
         return self.config.omp_thread_limit
 
+    @property
+    def extended_version(self) -> dict[str, str]:
+        """Mix the tesseract binary's version into the cache key so an
+        upgrade (which can change extraction output) invalidates cached
+        results. ``probe_binary_version`` is process-cached on the binary's
+        (path, mtime, size), so this costs one stat per lookup. On probe
+        failure the key is omitted — accepting staleness across an upgrade
+        rather than poisoning the cache key with a transient failure.
+        """
+        version = probe_binary_version("tesseract")
+        if version is None:
+            return {}
+        return {"tesseract": version}
+
     def custom_requirement(self, observable):
         if self.valid_analysis_modes:
             if self.get_root().analysis_mode not in self.valid_analysis_modes:
@@ -168,6 +183,11 @@ class OCRAnalyzer(AnalysisModule):
         # The dictionary key is the header to use in the output text file, and the value is the extracted text.
         extracted_text = dict()
 
+        # Set when an OCR pass raises rather than completing with no text.
+        # A failed pass means "unknown", so the negative-result analysis
+        # below must not be recorded (or cached) for it.
+        ocr_failed = False
+
         # Pass 1: OCR on the preprocessed grayscale image
         try:
             text = get_image_text(grayscale_image)
@@ -177,6 +197,7 @@ class OCRAnalyzer(AnalysisModule):
                 extracted_text["GRAYSCALE NO LINE BREAKS"] = remove_line_wrapping(text)
         except Exception as e:
             logging.warning(f"Unable to extract text from grayscale image: {local_file_path}: {e}")
+            ocr_failed = True
 
         # Pass 2: OCR on the denoised form of the image
         denoised_image = denoise_image(grayscale_image)
@@ -188,10 +209,21 @@ class OCRAnalyzer(AnalysisModule):
                 extracted_text["DENOISED NO LINE BREAKS"] = remove_line_wrapping(text)
         except Exception as e:
             logging.warning(f"Unable to extract text from denoised image: {local_file_path}: {e}")
+            ocr_failed = True
 
-        # Quit if no text at all was extracted
+        # Quit if no text at all was extracted. When both passes completed
+        # cleanly, record a negative-result analysis first — the constructor
+        # default (ocr=False) encodes the negative and generate_summary
+        # returns None for it, so the alert view stays clean. Recording the
+        # negative makes "OCR found no text in this image" a cacheable fact;
+        # without it the delta is empty (refused at cache write) and every
+        # recurrence of the image re-runs both tesseract passes. A failed
+        # pass deliberately records nothing, so a transient tesseract error
+        # is never cached as a negative.
         if not extracted_text:
             logging.debug(f"nothing was extracted from {local_file_path}")
+            if not ocr_failed:
+                self.create_analysis(_file)
             return AnalysisExecutionResult.COMPLETED
 
         # Create the OCR output directory and write the extracted text to a file
