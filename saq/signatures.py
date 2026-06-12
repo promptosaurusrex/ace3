@@ -18,6 +18,12 @@ from dataclasses import dataclass
 # ACE_VERSION is not set in the environment (local/non-container runs, tests).
 SIGNATURE_VERSION_UNKNOWN = "unknown"
 
+# version sentinel stamped on detection points that predate signature attribution
+# (serialized before this feature existed). distinct from SIGNATURE_VERSION_UNKNOWN
+# ("version couldn't be determined for a known signature") - "legacy" means the
+# detection has no attribution because it predates the feature entirely.
+LEGACY_SIGNATURE_VERSION = "legacy"
+
 
 def get_builtin_signature_version() -> str:
     """returns the version stamp for built-in (ACE-native) detection logic:
@@ -57,9 +63,16 @@ URL_GOOGLE_SAFE_BROWSING      = BuiltinSignature("url_google_safe_browsing_match
 DHASH_IMAGE_MATCH             = BuiltinSignature("dhash_image_match", "10d1e320-3b07-45f1-9bcf-078044643b7e", "image dhash match")
 # fallback for YARA rules that matched but carry no uuid meta (warn-but-detect)
 YARA_RULE_MATCH               = BuiltinSignature("yara_rule_match", "3557435e-da7f-4b1b-a5dd-655107839530", "YARA rule match with no uuid meta")
+# special built-in for detection points that predate signature attribution: applied
+# on load when a serialized detection point is missing the signature fields. distinct
+# from GENERIC so legacy detections are not conflated with freshly-created un-attributed ones.
+LEGACY                        = BuiltinSignature("legacy", "3c649355-160e-405c-ad91-6916ab539849", "detection point predating signature attribution")
 
 # constructor default for DetectionPoint
 BUILTIN_SIGNATURE_UUID = GENERIC.uuid
+
+# applied on load to detection points serialized before signature attribution existed
+LEGACY_SIGNATURE_UUID = LEGACY.uuid
 
 # uuid -> BuiltinSignature lookup
 BUILTIN_SIGNATURES = {
@@ -82,5 +95,6 @@ BUILTIN_SIGNATURES = {
         URL_GOOGLE_SAFE_BROWSING,
         DHASH_IMAGE_MATCH,
         YARA_RULE_MATCH,
+        LEGACY,
     )
 }

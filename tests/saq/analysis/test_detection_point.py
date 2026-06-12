@@ -6,6 +6,8 @@ from saq.analysis.detection_point import DetectionPoint
 from saq.signatures import (
     BUILTIN_SIGNATURE_UUID,
     BUILTIN_SIGNATURES,
+    LEGACY_SIGNATURE_UUID,
+    LEGACY_SIGNATURE_VERSION,
     SIGNATURE_VERSION_UNKNOWN,
     get_builtin_signature_version,
 )
@@ -68,16 +70,20 @@ def test_explicit_signature_round_trips_through_json():
 
 
 @pytest.mark.unit
-def test_old_serialized_form_backfills_builtin(monkeypatch):
+def test_old_serialized_form_backfills_legacy(monkeypatch):
     monkeypatch.setenv("ACE_VERSION", "1.2.3")
-    # a detection point serialized before signature attribution existed
+    # a detection point serialized before signature attribution existed gets the
+    # special legacy identity (NOT the generic built-in / current ACE version), so
+    # it stays distinguishable from freshly-created un-attributed detections
     restored = DetectionPoint.from_json({"description": "old"})
-    assert restored.signature_uuid == BUILTIN_SIGNATURE_UUID
-    assert restored.signature_version == "1.2.3"
-    # an explicit null also backfills
+    assert restored.signature_uuid == LEGACY_SIGNATURE_UUID
+    assert restored.signature_version == LEGACY_SIGNATURE_VERSION
+    # an explicit null also backfills the legacy identity
     restored = DetectionPoint.from_json({"description": "old", "signature_uuid": None, "signature_version": None})
-    assert restored.signature_uuid == BUILTIN_SIGNATURE_UUID
-    assert restored.signature_version == "1.2.3"
+    assert restored.signature_uuid == LEGACY_SIGNATURE_UUID
+    assert restored.signature_version == LEGACY_SIGNATURE_VERSION
+    # the legacy identity is distinct from the generic built-in
+    assert LEGACY_SIGNATURE_UUID != BUILTIN_SIGNATURE_UUID
 
 
 @pytest.mark.unit
