@@ -4,7 +4,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.nodes.schemas import CollectorStatusRead, NodeRead
-from saq.constants import NODE_STATUS_DRAINED, NODE_STATUS_DRAINING, NODE_STATUS_RUNNING
+from saq.constants import NODE_STATUS_DRAINED, NODE_STATUS_DRAINING, NODE_STATUS_DRAINING_COLLECTORS, NODE_STATUS_RUNNING
 from saq.database.model import CollectorStatus, DelayedAnalysis, Nodes, Workload
 
 
@@ -71,10 +71,14 @@ async def transition_node_status(session: AsyncSession, node_id: int, to_status:
 
 
 async def drain_node(session: AsyncSession, node_id: int) -> bool:
-    """Transitions the node from running to draining."""
-    return await transition_node_status(session, node_id, NODE_STATUS_DRAINING, [NODE_STATUS_RUNNING])
+    """Transitions the node from running to draining_collectors, the first phase
+    of the drain. The node advances to draining on its own once every collector
+    has flushed its backlog."""
+    return await transition_node_status(session, node_id, NODE_STATUS_DRAINING_COLLECTORS, [NODE_STATUS_RUNNING])
 
 
 async def resume_node(session: AsyncSession, node_id: int) -> bool:
-    """Transitions the node from draining or drained back to running."""
-    return await transition_node_status(session, node_id, NODE_STATUS_RUNNING, [NODE_STATUS_DRAINING, NODE_STATUS_DRAINED])
+    """Transitions the node from any drain phase back to running."""
+    return await transition_node_status(
+        session, node_id, NODE_STATUS_RUNNING,
+        [NODE_STATUS_DRAINING_COLLECTORS, NODE_STATUS_DRAINING, NODE_STATUS_DRAINED])

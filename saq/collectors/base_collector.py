@@ -18,6 +18,7 @@ from saq.configuration.config import get_config
 from saq.constants import (
     NODE_STATUS_DRAINED,
     NODE_STATUS_DRAINING,
+    NODE_STATUS_DRAINING_COLLECTORS,
     NODE_STATUS_RUNNING,
     NODE_STATUS_STOPPED,
 )
@@ -430,9 +431,9 @@ class CollectorService(ACEServiceInterface):
 
     def is_collection_paused(self) -> bool:
         """Returns True if collection is paused because the node is draining.
-        Note that only draining and drained pause collection -- a collector can
+        Note that only the draining statuses pause collection -- a collector can
         legitimately run on a node with no engine (status stopped)."""
-        return get_node_status_cached() in [NODE_STATUS_DRAINING, NODE_STATUS_DRAINED]
+        return get_node_status_cached() in [NODE_STATUS_DRAINING_COLLECTORS, NODE_STATUS_DRAINING, NODE_STATUS_DRAINED]
 
     def get_backlog_count(self) -> int:
         """Returns the number of work distribution entries this collector still needs to deliver."""

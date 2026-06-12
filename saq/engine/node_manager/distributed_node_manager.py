@@ -4,18 +4,20 @@ import socket
 from typing import Optional
 
 from saq.configuration.config import get_config, get_engine_config
-from saq.constants import NODE_STATUS_DRAINED, NODE_STATUS_DRAINING, NODE_STATUS_STARTING
+from saq.constants import NODE_STATUS_DRAINED, NODE_STATUS_DRAINING, NODE_STATUS_DRAINING_COLLECTORS, NODE_STATUS_STARTING
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
 from saq.database.util.locking import clear_expired_locks
 from saq.database.util.node import (
     assign_node_analysis_modes,
+    check_and_advance_collectors_drained,
     check_and_mark_drained,
     get_node_status,
     initialize_node,
     is_primary_node,
     reconcile_stale_node_statuses,
     revert_drained_if_work_appeared,
+    revert_draining_if_collector_pending,
     set_node_status,
     warn_if_blob_store_not_multi_node_safe,
 )
@@ -211,7 +213,21 @@ class DistributedNodeManager(NodeManagerInterface):
             node_id = get_global_runtime_settings().saq_node_id
             status = get_node_status(node_id)
 
-            if status == NODE_STATUS_DRAINING:
+            if status == NODE_STATUS_DRAINING_COLLECTORS:
+                # advance to draining once every collector has flushed its backlog
+                check_and_advance_collectors_drained(
+                    node_id,
+                    collector_stale_seconds=self.node_status_update_frequency * 4)
+
+            elif status == NODE_STATUS_DRAINING:
+                # if a collector came back with an unflushed backlog (e.g. it crashed
+                # during the flush and restarted) then go back to draining_collectors
+                # so the node accepts work again and the backlog can flush
+                if revert_draining_if_collector_pending(
+                        node_id,
+                        collector_stale_seconds=self.node_status_update_frequency * 4):
+                    return
+
                 # push any outstanding delayed analysis to a compatible node
                 transferred, untransferable, skipped = transfer_delayed_analysis()
 

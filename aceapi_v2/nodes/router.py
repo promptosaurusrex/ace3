@@ -1,8 +1,12 @@
 """Node management router for ACE API v2.
 
-Supports draining a node: a draining node receives no new work but completes
-the work it already has. When nothing is outstanding the engine marks the node
-as drained and it is safe to shut down.
+Supports draining a node. The drain happens in two phases: the node first
+enters draining_collectors, where its collectors stop collecting new work and
+flush their delivery backlog while the node still accepts new work (so
+collectors whose only eligible target is this node can flush). Once every
+collector has flushed, the node advances to draining: it receives no new work
+and completes the work it already has. When nothing is outstanding the engine
+marks the node as drained and it is safe to shut down.
 
 Notes for operators:
 - treat drained as safe once it has persisted for one node status update cycle
@@ -82,5 +86,5 @@ async def resume_node(
     session: Annotated[AsyncSession, Depends(get_async_session)],
     auth: Annotated[ApiAuthResult, Depends(require_permission("node", "manage"))],
 ) -> NodeRead:
-    """Returns a draining or drained node to running."""
+    """Returns a node in any drain phase back to running."""
     return await _transition_or_error(session, node_id, service.resume_node, "resume")

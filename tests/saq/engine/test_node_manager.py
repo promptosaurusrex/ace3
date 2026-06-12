@@ -2,11 +2,12 @@ import pytest
 from saq.constants import (
     NODE_STATUS_DRAINED,
     NODE_STATUS_DRAINING,
+    NODE_STATUS_DRAINING_COLLECTORS,
     NODE_STATUS_RUNNING,
     NODE_STATUS_STARTING,
 )
 from saq.database.pool import get_db_connection
-from saq.database.util.node import get_node_status, set_node_status
+from saq.database.util.node import get_node_status, set_node_status, update_collector_status
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineType
@@ -85,6 +86,51 @@ def test_execute_drain_routines(monkeypatch):
 
     node_manager._node_manager.execute_drain_routines()
     assert get_node_status(node_id) == NODE_STATUS_DRAINING
+
+
+@pytest.mark.integration
+def test_execute_drain_routines_advances_draining_collectors(monkeypatch):
+    from saq.engine.node_manager import distributed_node_manager
+
+    node_manager = create_node_manager(ConfigurationManager(EngineConfiguration()))
+    node_manager.initialize_node()
+    node_id = get_global_runtime_settings().saq_node_id
+
+    # a live collector with an unflushed backlog holds the node in draining_collectors
+    node_manager.set_status(NODE_STATUS_DRAINING_COLLECTORS)
+    update_collector_status(node_id, "test", NODE_STATUS_DRAINING, 3)
+    node_manager._node_manager.execute_drain_routines()
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING_COLLECTORS
+
+    # once the collector reports drained the node advances to draining
+    update_collector_status(node_id, "test", NODE_STATUS_DRAINED, 0)
+    node_manager._node_manager.execute_drain_routines()
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING
+
+    # and the next cycle completes the drain
+    monkeypatch.setattr(distributed_node_manager, "transfer_delayed_analysis", lambda: (0, 0, 0))
+    node_manager._node_manager.execute_drain_routines()
+    assert get_node_status(node_id) == NODE_STATUS_DRAINED
+
+
+@pytest.mark.integration
+def test_execute_drain_routines_reverts_draining_on_pending_collector(monkeypatch):
+    from saq.engine.node_manager import distributed_node_manager
+
+    node_manager = create_node_manager(ConfigurationManager(EngineConfiguration()))
+    node_manager.initialize_node()
+    node_id = get_global_runtime_settings().saq_node_id
+
+    # a collector that came back with an unflushed backlog (e.g. crash and restart)
+    # reverts a draining node to draining_collectors so the backlog can flush
+    def fail_transfer():
+        raise AssertionError("transfer_delayed_analysis should not be called after a revert")
+
+    monkeypatch.setattr(distributed_node_manager, "transfer_delayed_analysis", fail_transfer)
+    node_manager.set_status(NODE_STATUS_DRAINING)
+    update_collector_status(node_id, "test", NODE_STATUS_DRAINING, 3)
+    node_manager._node_manager.execute_drain_routines()
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING_COLLECTORS
 
 
 @pytest.mark.integration

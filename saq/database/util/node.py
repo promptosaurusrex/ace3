@@ -193,6 +193,8 @@ def assign_node_analysis_modes(node_id: Optional[int]=None, analysis_modes: Opti
 # a node moves through the following statuses:
 # starting: node is starting up
 # running: node is running normally
+# draining_collectors: collectors stop collecting new work and flush their backlog,
+#                      the node still accepts new work so local-only collectors can flush
 # draining: no new work may be assigned to the node, outstanding work is being completed
 # drained: nothing outstanding, safe to shut down
 # stopped: node is not running (set on graceful shutdown, or reconciled by the primary node)
@@ -273,6 +275,65 @@ def transition_node_status(node_id: int, to_status: str, from_statuses: list[str
     if rowcount == 1:
         clear_node_status_cache()
         logging.info("node %s status transitioned to %s", node_id, to_status)
+        return True
+
+    return False
+
+def check_and_advance_collectors_drained(node_id: int, collector_stale_seconds: int=120) -> bool:
+    """Atomically transitions the node from draining_collectors to draining once
+    every collector on the node has finished flushing its backlog: no live
+    collector reports a status other than drained or stopped. Collectors with a
+    stale status are ignored (they may have crashed). Returns True if the node
+    was advanced to draining."""
+
+    # warn about any collectors we are ignoring because their status is stale
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("""SELECT name, status FROM collector_status
+                          WHERE node_id = %s
+                          AND status NOT IN ( 'drained', 'stopped' )
+                          AND TIMESTAMPDIFF(SECOND, last_update, NOW()) > %s""",
+                       (node_id, collector_stale_seconds))
+        for name, status in cursor.fetchall():
+            logging.warning("ignoring stale collector status for %s (status %s) on node %s -- "
+                            "the collector may have crashed with an unflushed backlog", name, status, node_id)
+
+        rowcount = execute_with_retry(db, cursor, """UPDATE nodes SET status = 'draining'
+            WHERE id = %s AND status = 'draining_collectors'
+            AND NOT EXISTS ( SELECT 1 FROM collector_status
+                WHERE node_id = %s
+                AND status NOT IN ( 'drained', 'stopped' )
+                AND TIMESTAMPDIFF(SECOND, last_update, NOW()) <= %s )""",
+            (node_id, node_id, collector_stale_seconds),
+            commit=True)
+
+    if rowcount == 1:
+        clear_node_status_cache()
+        logging.info("node %s collectors have finished draining -- node is now draining", node_id)
+        return True
+
+    return False
+
+def revert_draining_if_collector_pending(node_id: int, collector_stale_seconds: int=120) -> bool:
+    """Atomically transitions the node from draining back to draining_collectors
+    if a live collector reports a status other than drained or stopped (e.g. a
+    collector that crashed during the flush restarted with an unflushed backlog).
+    Returns True if the node was reverted."""
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        rowcount = execute_with_retry(db, cursor, """UPDATE nodes SET status = 'draining_collectors'
+            WHERE id = %s AND status = 'draining'
+            AND EXISTS ( SELECT 1 FROM collector_status
+                WHERE node_id = %s
+                AND status NOT IN ( 'drained', 'stopped' )
+                AND TIMESTAMPDIFF(SECOND, last_update, NOW()) <= %s )""",
+            (node_id, node_id, collector_stale_seconds),
+            commit=True)
+
+    if rowcount == 1:
+        clear_node_status_cache()
+        logging.error("node %s has a collector with an unflushed backlog -- reverted to draining_collectors", node_id)
         return True
 
     return False

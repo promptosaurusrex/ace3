@@ -5,12 +5,14 @@ import pytest
 from saq.constants import (
     NODE_STATUS_DRAINED,
     NODE_STATUS_DRAINING,
+    NODE_STATUS_DRAINING_COLLECTORS,
     NODE_STATUS_RUNNING,
     NODE_STATUS_STARTING,
     NODE_STATUS_STOPPED,
 )
 from saq.database.pool import get_db_connection
 from saq.database.util.node import (
+    check_and_advance_collectors_drained,
     check_and_mark_drained,
     clear_node_status_cache,
     get_collector_statuses,
@@ -19,6 +21,7 @@ from saq.database.util.node import (
     get_node_workload_counts,
     reconcile_stale_node_statuses,
     revert_drained_if_work_appeared,
+    revert_draining_if_collector_pending,
     set_node_status,
     transition_node_status,
     update_collector_status,
@@ -119,6 +122,90 @@ def test_transition_node_status():
     # resume from either draining or drained
     assert transition_node_status(node_id, NODE_STATUS_RUNNING, [NODE_STATUS_DRAINING, NODE_STATUS_DRAINED])
     assert get_node_status(node_id) == NODE_STATUS_RUNNING
+
+
+def test_check_and_advance_collectors_drained_no_collectors():
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_DRAINING_COLLECTORS)
+
+    # a node with no collectors advances immediately
+    assert check_and_advance_collectors_drained(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING
+
+
+def test_check_and_advance_collectors_drained_requires_status():
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_RUNNING)
+    assert not check_and_advance_collectors_drained(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_RUNNING
+
+
+def test_check_and_advance_collectors_drained_blocked_by_live_collector():
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_DRAINING_COLLECTORS)
+
+    # a live collector that is still flushing blocks the advance
+    update_collector_status(node_id, "test", NODE_STATUS_DRAINING, 3)
+    assert not check_and_advance_collectors_drained(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING_COLLECTORS
+
+    # a drained collector does not
+    update_collector_status(node_id, "test", NODE_STATUS_DRAINED, 0)
+    assert check_and_advance_collectors_drained(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING
+
+
+def test_check_and_advance_collectors_drained_ignores_stopped_collector():
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_DRAINING_COLLECTORS)
+    update_collector_status(node_id, "test", NODE_STATUS_STOPPED, 0)
+    assert check_and_advance_collectors_drained(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING
+
+
+def test_check_and_advance_collectors_drained_ignores_stale_collector(caplog):
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_DRAINING_COLLECTORS)
+    update_collector_status(node_id, "test", NODE_STATUS_DRAINING, 3)
+
+    # backdate the collector heartbeat past the stale threshold
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("UPDATE collector_status SET last_update = NOW() - INTERVAL 1 HOUR WHERE node_id = %s", (node_id,))
+        db.commit()
+
+    assert check_and_advance_collectors_drained(node_id, collector_stale_seconds=120)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING
+    assert "ignoring stale collector status" in caplog.text
+
+
+def test_revert_draining_if_collector_pending():
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_DRAINING)
+
+    # no collector activity -- stays draining
+    assert not revert_draining_if_collector_pending(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING
+
+    # a live collector with an unflushed backlog reverts the node
+    update_collector_status(node_id, "test", NODE_STATUS_DRAINING, 3)
+    assert revert_draining_if_collector_pending(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING_COLLECTORS
+
+
+def test_revert_draining_if_collector_pending_ignores_stale_collector():
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_DRAINING)
+    update_collector_status(node_id, "test", NODE_STATUS_DRAINING, 3)
+
+    # a stale collector status does not revert the node
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("UPDATE collector_status SET last_update = NOW() - INTERVAL 1 HOUR WHERE node_id = %s", (node_id,))
+        db.commit()
+
+    assert not revert_draining_if_collector_pending(node_id, collector_stale_seconds=120)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING
 
 
 def test_check_and_mark_drained_no_outstanding_work():
