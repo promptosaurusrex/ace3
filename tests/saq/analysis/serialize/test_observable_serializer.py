@@ -19,6 +19,8 @@ from saq.analysis.serialize.observable_serializer import (
     KEY_GROUPING_TARGET,
     KEY_VOLATILE,
     KEY_LLM_CONTEXT_DOCUMENTS,
+    KEY_ADDED_BY,
+    KEY_ADDED_TIME,
 )
 from saq.constants import F_TEST
 
@@ -422,6 +424,55 @@ def test_deserialize_with_string_time():
     from saq.util import parse_event_time
     expected_time = parse_event_time("2023-01-01 12:00:00")
     assert observable.time == expected_time
+
+
+@pytest.mark.unit
+def test_added_by_round_trip():
+    """Test that added_by and added_time survive serialize -> deserialize."""
+    observable = MockObservable(type=F_TEST, value="manually-added")
+    observable.added_by = "analyst1"
+    added_time = datetime(2026, 6, 11, 9, 30, 0, tzinfo=timezone.utc)
+    observable.added_time = added_time
+
+    serialized = ObservableSerializer.serialize(observable)
+    assert serialized[KEY_ADDED_BY] == "analyst1"
+    assert serialized[KEY_ADDED_TIME] == added_time
+
+    new_observable = MockObservable()
+    ObservableSerializer.deserialize(new_observable, serialized)
+    assert new_observable.added_by == "analyst1"
+    assert new_observable.added_time == added_time
+
+
+@pytest.mark.unit
+def test_deserialize_added_time_from_string():
+    """Test that added_time deserializes from a JSON string back to datetime."""
+    observable = MockObservable()
+
+    ObservableSerializer.deserialize(observable, {
+        KEY_ADDED_BY: "analyst1",
+        KEY_ADDED_TIME: "2026-06-11 09:30:00 +0000",
+    })
+
+    assert observable.added_by == "analyst1"
+    assert isinstance(observable.added_time, datetime)
+    from saq.util import parse_event_time
+    assert observable.added_time == parse_event_time("2026-06-11 09:30:00 +0000")
+
+
+@pytest.mark.unit
+def test_added_by_defaults_to_none():
+    """Test that legacy data without the added_by keys deserializes to None."""
+    observable = MockObservable()
+    ObservableSerializer.deserialize(observable, {KEY_ID: "legacy-id"})
+
+    assert observable.added_by is None
+    assert observable.added_time is None
+
+    # and a fresh observable serializes them as None
+    serialized = ObservableSerializer.serialize(MockObservable())
+    assert serialized[KEY_ADDED_BY] is None
+    assert serialized[KEY_ADDED_TIME] is None
 
 
 @pytest.mark.unit

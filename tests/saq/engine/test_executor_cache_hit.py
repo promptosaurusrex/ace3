@@ -7,7 +7,7 @@ manager, delayed analysis interface, tracking message manager, work
 stacks) and is deliberately deferred. These tests focus on the helper
 ``_apply_cached_delta`` and the dataclass plumbing that supports it.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -20,7 +20,7 @@ from saq.analysis.module_execution_delta import (
     RootDiff,
 )
 from saq.analysis.root import RootAnalysis
-from saq.constants import F_FILE, F_FQDN, F_URL
+from saq.constants import AnalysisExecutionResult, F_FILE, F_FQDN, F_URL
 from saq.engine.executor import AnalysisExecutionContext, AnalysisExecutor
 from saq.modules.rdap import RdapAnalysis
 
@@ -130,6 +130,30 @@ class TestApplyCachedDelta:
         assert recorded.execution_time_ms >= 4
 
     @pytest.mark.unit
+    def test_attribution_delta_details_stripped(self, tmp_path):
+        """The recorded attribution delta must not duplicate the bulk
+        analysis.details payload into root.json — the rehydrated analysis
+        on the tree already carries it. The input (cached) delta keeps its
+        details intact for the actual replay."""
+        executor = _make_executor()
+        root = _make_root(tmp_path)
+        context = _make_context(root)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        module = _make_module()
+        delta = _make_delta_for(obs)
+        assert delta.analysis["details"]  # precondition
+
+        executor._apply_cached_delta(context, root, obs, module, delta, lookup_ms=4)
+
+        recorded = root.module_executions[0]
+        assert "details" not in recorded.analysis
+        # Identity/metadata survives the strip.
+        assert recorded.from_cache_hit is True
+        assert recorded.analysis["module_path"] == delta.analysis["module_path"]
+        # The cached delta itself is untouched — replay used the details.
+        assert delta.analysis["details"] == {"registrar": "Test Registrar"}
+
+    @pytest.mark.unit
     def test_bumps_cache_hit_counters_on_context(self, tmp_path):
         """The plain ``analysis cache hit`` log line was replaced by
         per-(root, module) aggregation on the AnalysisExecutionContext.
@@ -208,6 +232,127 @@ class TestApplyCachedDelta:
         rehydrated = obs.get_analysis(RdapAnalysis)
         assert rehydrated is not None
         assert rehydrated.details == {"registrar": "Test Registrar"}
+
+
+def _make_cacheable_module(name="rdap_analyzer", ttl=timedelta(hours=1)):
+    """Stub module with the attributes _maybe_write_cache_delta touches."""
+    return SimpleNamespace(
+        name=name,
+        config=SimpleNamespace(name=name),
+        cache_ttl=ttl,
+        version=1,
+        extended_version={},
+    )
+
+
+class TestMaybeWriteCacheDelta:
+    """Gating and delayed-cycle merging in the executor's cache-write
+    helper. ``put_cached_delta`` is mocked — its own refusal logic is
+    covered in tests/saq/analysis/test_cache.py."""
+
+    def _delta(self, obs, **overrides):
+        defaults = dict(
+            module_path="saq.modules.rdap:RdapAnalysis",
+            module_instance=None,
+            module_version=1,
+            observable_uuid=obs.uuid,
+            observable_type=obs.type,
+            observable_value=obs.value,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            execution_time_ms=10,
+            target_observable_diff=ObservableDiff(added_tags=["t"]),
+        )
+        defaults.update(overrides)
+        return ModuleExecutionDelta(**defaults)
+
+    @pytest.mark.unit
+    def test_incomplete_result_blocks_cache_write(self, tmp_path, monkeypatch):
+        """A-0: a delayed module returns INCOMPLETE for every mid-delay
+        cycle. An intermediate cycle's delta has analysis=None, which
+        slips past put_cached_delta's still-delayed check — the executor
+        must not attempt the write at all for non-COMPLETED results."""
+        put_mock = MagicMock()
+        monkeypatch.setattr("saq.engine.executor.put_cached_delta", put_mock)
+        executor = _make_executor()
+        root = _make_root(tmp_path)
+        context = _make_context(root)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        module = _make_cacheable_module()
+        delta = self._delta(obs, analysis=None)  # mid-delay shape
+
+        executor._maybe_write_cache_delta(
+            context, obs, module, delta,
+            AnalysisExecutionResult.INCOMPLETE, [],
+        )
+        put_mock.assert_not_called()
+
+    @pytest.mark.unit
+    def test_completed_result_writes(self, tmp_path, monkeypatch):
+        put_mock = MagicMock(return_value=None)
+        monkeypatch.setattr("saq.engine.executor.put_cached_delta", put_mock)
+        executor = _make_executor()
+        root = _make_root(tmp_path)
+        context = _make_context(root)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        module = _make_cacheable_module()
+        delta = self._delta(obs)
+
+        executor._maybe_write_cache_delta(
+            context, obs, module, delta,
+            AnalysisExecutionResult.COMPLETED, [],
+        )
+        put_mock.assert_called_once()
+        assert put_mock.call_args[0][0] is delta
+
+    @pytest.mark.unit
+    def test_not_opted_in_blocks_cache_write(self, tmp_path, monkeypatch):
+        put_mock = MagicMock()
+        monkeypatch.setattr("saq.engine.executor.put_cached_delta", put_mock)
+        executor = _make_executor()
+        root = _make_root(tmp_path)
+        context = _make_context(root)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        module = _make_cacheable_module(ttl=None)
+        delta = self._delta(obs)
+
+        executor._maybe_write_cache_delta(
+            context, obs, module, delta,
+            AnalysisExecutionResult.COMPLETED, [],
+        )
+        put_mock.assert_not_called()
+
+    @pytest.mark.unit
+    def test_prior_deltas_merged_into_cache_write(self, tmp_path, monkeypatch):
+        """A delayed resume passes prior cycles' deltas; the written delta
+        must carry their mutations merged with the final cycle's."""
+        put_mock = MagicMock(return_value=None)
+        monkeypatch.setattr("saq.engine.executor.put_cached_delta", put_mock)
+        executor = _make_executor()
+        root = _make_root(tmp_path)
+        context = _make_context(root)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        module = _make_cacheable_module()
+        prior = self._delta(
+            obs,
+            analysis={"module_path": "saq.modules.rdap:RdapAnalysis", "delayed": True},
+            target_observable_diff=ObservableDiff(added_tags=["pre-delay"]),
+        )
+        final = self._delta(
+            obs,
+            analysis={"module_path": "saq.modules.rdap:RdapAnalysis",
+                      "delayed": False, "details": {"done": True}},
+            target_observable_diff=ObservableDiff(added_tags=["post-delay"]),
+        )
+
+        executor._maybe_write_cache_delta(
+            context, obs, module, final,
+            AnalysisExecutionResult.COMPLETED, [prior],
+        )
+        written = put_mock.call_args[0][0]
+        assert written.target_observable_diff.added_tags == ["pre-delay", "post-delay"]
+        assert written.analysis["details"] == {"done": True}
+        # The recorded (final) delta itself is not mutated by the merge.
+        assert final.target_observable_diff.added_tags == ["post-delay"]
 
 
 class TestModuleExecutionDeltaCacheHitMetadata:

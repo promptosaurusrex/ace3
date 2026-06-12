@@ -174,6 +174,8 @@ class PhishkitAnalysis(Analysis):
 
         if self.scan_type == SCAN_TYPE_URL or self.scan_type == SCAN_TYPE_FILE:
             summary = f"{self.display_name}: output files created (" + format_item_list_for_summary(self.output_files) + ")"
+            if (self.metrics and self.metrics.get("interrupted")) or self.exit_code == 143:
+                summary += " - PARTIAL (scanner timed out)"
             if self.metrics and self.metrics.get("total_bytes_downloaded"):
                 mb = self.metrics["total_bytes_downloaded"] / (1024 * 1024)
                 summary += f" - {mb:.2f} MB downloaded"
@@ -381,8 +383,10 @@ class PhishkitAnalyzer(AnalysisModule):
             logging.info(f"scan results not ready yet for {observable} job ID {analysis.job_id}")
             return self.delay_analysis(observable, analysis, seconds=3, timeout_seconds=max(self.config.scanner_timeout, 60) * 2 + 30)
 
-        # if we get this far then the scan results are ready
-        analysis.scan_result = f"successfully scanned {observable}"
+        # if we get this far then the scan results are ready (possibly partial —
+        # the worker now returns the output dir even when the scan timed out, so
+        # we can still harvest captured-traffic observables). The success vs.
+        # partial scan_result label is decided after we've read metrics/exit code.
         analysis.error = None
 
         for file_path in scan_results:
@@ -392,7 +396,13 @@ class PhishkitAnalyzer(AnalysisModule):
 
             if os.path.basename(file_path) == "exit.code":
                 with open(file_path, "r") as fp:
-                    analysis.exit_code = int(fp.read())
+                    raw_exit_code = fp.read().strip()
+                try:
+                    analysis.exit_code = int(raw_exit_code)
+                except ValueError:
+                    # a hard-killed container can leave a non-numeric payload
+                    # (e.g. "None"); don't let it abort result processing
+                    logging.warning(f"non-integer exit.code {raw_exit_code!r} for {observable} job ID {analysis.job_id}")
             elif os.path.basename(file_path) == "std.out":
                 with open(file_path, "r") as fp:
                     analysis.stdout = self._redact_proxy_credentials(fp.read())
@@ -448,6 +458,17 @@ class PhishkitAnalyzer(AnalysisModule):
 
 
                 # TODO follow the logic of the existing crawlphish module here
+
+        # A scan that was interrupted mid-crawl still flushes partial
+        # requests.json/dom.html/metrics.json (interrupted=True) and exits 143.
+        # Label it honestly so analysts know the capture is incomplete, while
+        # the extraction below still promotes whatever traffic was captured
+        # (e.g. redirect/CDN domains) to observables.
+        interrupted = bool(analysis.metrics and analysis.metrics.get("interrupted")) or analysis.exit_code == 143
+        if interrupted:
+            analysis.scan_result = f"partial scan of {observable}: scanner timed out"
+        else:
+            analysis.scan_result = f"successfully scanned {observable}"
 
         # extract URL observables from MARKER URL entries in dom.html
         dom_path = os.path.join(analysis.output_dir, "dom.html")

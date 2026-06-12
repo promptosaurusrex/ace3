@@ -189,6 +189,47 @@ class TestPutCachedDelta:
         assert _row_count(delta.cache_key) == 0
 
     @pytest.mark.integration
+    def test_refuses_out_of_scope_relationship(self, blob_store, caplog):
+        """A relationship targeting an observable that is neither the
+        analyzed observable nor created by this delta depends on tree
+        context a replay cannot reproduce — refused at write time."""
+        module = _make_module()
+        delta = _make_delta(module)
+        delta.target_observable_diff.added_relationships = [{
+            "type": "is_hash_of",
+            "target": "some-other-tree-node-uuid",
+            "target_type": "ipv4",
+            "target_value": "9.9.9.9",
+        }]
+        with caplog.at_level(logging.WARNING):
+            assert put_cached_delta(delta, module, blob_store) is None
+        assert _row_count(delta.cache_key) == 0
+        assert any(
+            "relationship_out_of_scope" in rec.message for rec in caplog.records
+        )
+
+    @pytest.mark.integration
+    def test_accepts_in_scope_relationships(self, blob_store):
+        """Relationships to the analyzed observable itself or to an
+        observable this delta created are within scope and cacheable."""
+        module = _make_module()
+        delta = _make_delta(module)
+        delta.new_observables = [
+            ObservableSpec(uuid="child-uuid", type="ipv4", value="1.2.3.4"),
+        ]
+        delta.target_observable_diff.added_relationships = [
+            {"type": "is_hash_of", "target": delta.observable_uuid,
+             "target_type": delta.observable_type, "target_value": delta.observable_value},
+            {"type": "is_hash_of", "target": "child-uuid",
+             "target_type": "ipv4", "target_value": "1.2.3.4"},
+        ]
+        try:
+            assert put_cached_delta(delta, module, blob_store) is not None
+            assert _row_count(delta.cache_key) == 1
+        finally:
+            _delete_cache_row(delta.cache_key)
+
+    @pytest.mark.integration
     def test_skips_delta_with_delayed_analysis(self, blob_store, caplog):
         """Step 3.2: deltas captured mid-delay must not be cached.
 

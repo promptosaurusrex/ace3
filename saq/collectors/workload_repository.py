@@ -87,4 +87,20 @@ LIMIT %s""", (workload_type_id, limit))
         """Delete a workload item from the database."""
         with get_db_connection(DB_COLLECTION) as db:
             cursor = db.cursor()
-            execute_with_retry(db, cursor, "DELETE FROM incoming_workload WHERE id = %s", (work_id,), commit=True) 
+            execute_with_retry(db, cursor, "DELETE FROM incoming_workload WHERE id = %s", (work_id,), commit=True)
+
+    def get_workload_backlog_count(self, workload_type_id: int) -> int:
+        """Returns the number of work distribution entries for the given workload
+        type that still need to be delivered to a remote node."""
+        with get_db_connection(DB_COLLECTION) as db:
+            cursor = db.cursor()
+            cursor.execute("""
+SELECT
+    COUNT(*)
+FROM
+    incoming_workload i JOIN work_distribution w ON i.id = w.work_id
+WHERE
+    i.type_id = %s
+    AND w.status IN ('READY', 'LOCKED')""", (workload_type_id,))
+
+            return cursor.fetchone()[0] 

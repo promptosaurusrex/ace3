@@ -1713,6 +1713,34 @@ class Nodes(Base):
     last_update: Mapped[datetime] = mapped_column(DATETIME, nullable=False)
     is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     any_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    status: Mapped[str] = mapped_column(
+        Enum('starting', 'running', 'draining', 'drained', 'stopped', 'draining_collectors'),
+        nullable=False,
+        server_default=text("'stopped'"))
+
+class CollectorStatus(Base):
+    """Status reported by a collector service running on a node. Used by the
+    node drain feature to determine when a node's collectors have flushed
+    their distribution backlog."""
+
+    __tablename__ = 'collector_status'
+
+    node_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('nodes.id', ondelete='CASCADE', onupdate='CASCADE'),
+        primary_key=True)
+
+    # the workload_type of the collector service, e.g. 'email', 'hunter'
+    name: Mapped[str] = mapped_column(String(256), primary_key=True)
+
+    status: Mapped[str] = mapped_column(
+        Enum('running', 'draining', 'drained', 'stopped'),
+        nullable=False)
+
+    # number of work_distribution rows the collector still needs to flush
+    backlog_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+
+    last_update: Mapped[datetime] = mapped_column(DATETIME, nullable=False)
 
 class Observable(Base):
 

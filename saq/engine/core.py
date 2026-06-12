@@ -7,6 +7,7 @@ from typing import Optional, Type, Union
 from pydantic import BaseModel, Field
 
 
+from saq.constants import NODE_STATUS_RUNNING, NODE_STATUS_STOPPED
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.worker_manager import WorkerManager
 from saq.engine.node_manager.node_manager_factory import create_node_manager
@@ -181,6 +182,7 @@ class Engine():
         
         logging.info("entering main controller loop")
         self._set_state(EngineState.RUNNING)
+        self.node_manager.set_status(NODE_STATUS_RUNNING)
         self.started_event.set()
 
         while True:
@@ -232,6 +234,7 @@ class Engine():
 
         logging.info("ended main controller loop")
         self._set_state(EngineState.STOPPED)
+        self.node_manager.set_status(NODE_STATUS_STOPPED)
 
     def initialize_single_threaded_worker(self, analysis_priority_mode: Optional[str]=None, execution_mode: EngineExecutionMode=EngineExecutionMode.NORMAL) -> Worker:
         """Initializes a single-threaded worker."""

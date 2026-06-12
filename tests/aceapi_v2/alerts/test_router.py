@@ -1,6 +1,7 @@
 """Tests for aceapi_v2 alerts router — bulk add observable endpoint."""
 
 import zipfile
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,6 +16,8 @@ def _make_mock_alert(uuid: str):
     alert.uuid = uuid
     alert.lock_uuid = None
     alert.root_analysis = MagicMock()
+    # the observable does not already exist in the alert by default
+    alert.root_analysis.get_observable_by_spec = MagicMock(return_value=None)
     alert.root_analysis.add_observable_by_spec = MagicMock(return_value=MagicMock())
     alert.root_analysis.analysis_mode = None
     return alert
@@ -350,6 +353,83 @@ class TestBulkAddObservable:
 
         # Only valid directive should be applied
         mock_observable.add_directive.assert_called_once_with("sandbox")
+
+    @pytest.mark.asyncio
+    @patch("aceapi_v2.alerts.service.add_workload")
+    @patch("aceapi_v2.alerts.service.release_lock")
+    @patch("aceapi_v2.alerts.service.acquire_lock", return_value=True)
+    @patch("aceapi_v2.alerts.service.get_db")
+    async def test_bulk_add_observable_stamps_added_by(
+        self,
+        mock_get_db,
+        mock_acquire_lock,
+        mock_release_lock,
+        mock_add_workload,
+        client: AsyncClient,
+    ):
+        """A newly added observable should be stamped with the auth user and time."""
+        alert = _make_mock_alert("uuid-1")
+        mock_observable = MagicMock()
+        alert.root_analysis.add_observable_by_spec.return_value = mock_observable
+
+        mock_query = MagicMock()
+        mock_filter = MagicMock()
+        mock_get_db.return_value.query.return_value = mock_query
+        mock_query.filter.return_value = mock_filter
+        mock_filter.one_or_none.return_value = alert
+
+        response = await client.post("/alerts/bulk-add-observable", json={
+            "alert_uuids": ["uuid-1"],
+            "observable_type": "domain",
+            "observable_value": "evil.example.com",
+        })
+
+        assert response.status_code == 200
+        assert response.json()["success_count"] == 1
+
+        # the api auth fixture authenticates as the unittest user
+        assert mock_observable.added_by == "unittest"
+        assert isinstance(mock_observable.added_time, datetime)
+
+    @pytest.mark.asyncio
+    @patch("aceapi_v2.alerts.service.add_workload")
+    @patch("aceapi_v2.alerts.service.release_lock")
+    @patch("aceapi_v2.alerts.service.acquire_lock", return_value=True)
+    @patch("aceapi_v2.alerts.service.get_db")
+    async def test_bulk_add_observable_existing_not_stamped(
+        self,
+        mock_get_db,
+        mock_acquire_lock,
+        mock_release_lock,
+        mock_add_workload,
+        client: AsyncClient,
+    ):
+        """An observable that already existed in the alert should not be stamped."""
+        alert = _make_mock_alert("uuid-1")
+        mock_observable = MagicMock()
+        mock_observable.added_by = None
+        mock_observable.added_time = None
+        # the observable already exists in the alert (e.g. added by the engine)
+        alert.root_analysis.get_observable_by_spec.return_value = mock_observable
+        alert.root_analysis.add_observable_by_spec.return_value = mock_observable
+
+        mock_query = MagicMock()
+        mock_filter = MagicMock()
+        mock_get_db.return_value.query.return_value = mock_query
+        mock_query.filter.return_value = mock_filter
+        mock_filter.one_or_none.return_value = alert
+
+        response = await client.post("/alerts/bulk-add-observable", json={
+            "alert_uuids": ["uuid-1"],
+            "observable_type": "domain",
+            "observable_value": "evil.example.com",
+        })
+
+        assert response.status_code == 200
+        assert response.json()["success_count"] == 1
+
+        assert mock_observable.added_by is None
+        assert mock_observable.added_time is None
 
     @pytest.mark.asyncio
     async def test_valid_time_format(self, client: AsyncClient):

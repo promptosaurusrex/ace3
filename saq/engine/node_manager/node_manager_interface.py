@@ -41,7 +41,11 @@ class NodeManagerInterface(Protocol):
     def initialize_node(self) -> None:
         """Initialize this node in the database and configure analysis modes."""
         ...
-    
+
+    def set_status(self, status: str) -> None:
+        """Sets the status of this node in the database."""
+        ...
+
     def execute_primary_node_routines(self) -> None:
         """Executes primary node routines if this node is configured as primary via the ACE_IS_PRIMARY_NODE environment variable."""
         ...

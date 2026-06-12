@@ -128,6 +128,15 @@
     {% endif %}
 {% endblock %}
 
+{# manually-added provenance #}
+{% if _observable.added_by %}
+<div class="observable-added-by" style="margin-left: 4px; margin-top: 2px; font-size: 85%; color: #555;">
+    <span class="bi bi-person-plus" style="color: #888;"></span>
+    {% if _observable.added_time %}<span class="text-muted">{{ _observable.display_added_time }}</span>{% endif %}
+    added by <strong>{{ (observable_added_by_display | default({})).get(_observable.added_by, _observable.added_by) }}</strong>
+</div>
+{% endif %}
+
 {# observable comments #}
 {% set obs_comments = observable_comments.get(_observable.uuid, []) %}
 {% if obs_comments %}

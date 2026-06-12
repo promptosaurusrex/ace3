@@ -17,6 +17,8 @@ def mock_alert():
     alert.load = Mock()
     alert.sync = Mock()
     alert.root_analysis = Mock()
+    # the observable does not already exist in the alert by default
+    alert.root_analysis.get_observable_by_spec = Mock(return_value=None)
     alert.root_analysis.add_observable_by_spec = Mock()
     alert.root_analysis.analysis_mode = None
     return alert
@@ -350,6 +352,63 @@ class TestAddObservable:
             mock_alert.sync.assert_called_once()
             mock_add_workload.assert_called_once_with(mock_alert.root_analysis)
             mock_release_lock.assert_called_once_with('test-alert-uuid', 'test-lock-uuid')
+
+    def test_added_by_stamped_on_new_observable(self, web_client, mock_alert):
+        """Test that a newly added observable is stamped with the current user and time."""
+        with patch('app.analysis.views.edit.observable.get_db') as mock_get_db, \
+             patch('app.analysis.views.edit.observable.acquire_lock') as mock_acquire_lock, \
+             patch('app.analysis.views.edit.observable.release_lock') as mock_release_lock, \
+             patch('app.analysis.views.edit.observable.add_workload') as mock_add_workload:
+
+            mock_db = Mock()
+            mock_get_db.return_value = mock_db
+            mock_db.query.return_value.filter.return_value.one.return_value = mock_alert
+            mock_acquire_lock.return_value = True
+
+            mock_observable = Mock()
+            mock_alert.root_analysis.add_observable_by_spec.return_value = mock_observable
+
+            response = web_client.post(url_for('analysis.add_observable'), data={
+                'alert_uuid': 'test-uuid',
+                'add_observable_type': 'ipv4',
+                'add_observable_value': '192.168.1.1',
+                'add_observable_time': ''
+            })
+
+            assert response.status_code == 302
+            # the web_client fixture logs in as user "john"
+            assert mock_observable.added_by == 'john'
+            assert isinstance(mock_observable.added_time, datetime)
+
+    def test_added_by_not_stamped_on_existing_observable(self, web_client, mock_alert):
+        """Test that an observable that already existed in the alert is not stamped."""
+        with patch('app.analysis.views.edit.observable.get_db') as mock_get_db, \
+             patch('app.analysis.views.edit.observable.acquire_lock') as mock_acquire_lock, \
+             patch('app.analysis.views.edit.observable.release_lock') as mock_release_lock, \
+             patch('app.analysis.views.edit.observable.add_workload') as mock_add_workload:
+
+            mock_db = Mock()
+            mock_get_db.return_value = mock_db
+            mock_db.query.return_value.filter.return_value.one.return_value = mock_alert
+            mock_acquire_lock.return_value = True
+
+            mock_observable = Mock()
+            mock_observable.added_by = None
+            mock_observable.added_time = None
+            # the observable already exists in the alert (e.g. added by the engine)
+            mock_alert.root_analysis.get_observable_by_spec.return_value = mock_observable
+            mock_alert.root_analysis.add_observable_by_spec.return_value = mock_observable
+
+            response = web_client.post(url_for('analysis.add_observable'), data={
+                'alert_uuid': 'test-uuid',
+                'add_observable_type': 'ipv4',
+                'add_observable_value': '192.168.1.1',
+                'add_observable_time': ''
+            })
+
+            assert response.status_code == 302
+            assert mock_observable.added_by is None
+            assert mock_observable.added_time is None
 
     def test_lock_release_error_handling(self, web_client, mock_alert):
         """Test that lock release errors are handled gracefully."""

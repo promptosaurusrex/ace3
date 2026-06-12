@@ -1094,6 +1094,73 @@ def test_phishkit_analyzer_continue_analysis_extracts_requests_json_urls(monkeyp
 
 
 @pytest.mark.unit
+def test_phishkit_analyzer_continue_analysis_partial_on_interrupt(monkeypatch, test_context):
+    """A timed-out scan still flushes partial requests.json/metrics.json.
+
+    The worker now returns the output dir even on interruption, so the redirect
+    chain captured before the kill must be promoted to URL observables, the scan
+    must be labeled partial (not "successfully scanned"), and the analysis must
+    NOT be treated as unfinished (so analysts get the observables, not an empty
+    "no content captured" stub).
+    """
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    url_observable = root.add_observable_by_spec(F_URL, "https://login.microsoftonline.com/common/oauth2/v2.0/authorize")
+    analysis = PhishkitAnalysis()
+    analysis.job_id = "test-job-partial"
+    analysis.scan_type = SCAN_TYPE_URL
+    url_observable.add_analysis(analysis)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # SIGTERM-flushed partials: a non-zero exit, interrupted metrics, and a
+        # requests.json capturing the redirect to a downstream CDN domain.
+        with open(os.path.join(temp_dir, "exit.code"), "w") as f:
+            f.write("143")
+        with open(os.path.join(temp_dir, "metrics.json"), "w") as f:
+            json.dump({"url_scanned": "https://login.microsoftonline.com/...",
+                       "total_bytes_downloaded": 1234, "interrupted": True}, f)
+        requests_file = os.path.join(temp_dir, "requests.json")
+        with open(requests_file, "w") as f:
+            json.dump([
+                {"type": "request", "url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"},
+                {"type": "request", "url": "https://redirect-cdn.example.net/ns"},
+                {"type": "request", "url": "https://redirect-cdn.example.net/?user@example.com"},
+            ], f)
+
+        output_files = [os.path.join(temp_dir, "exit.code"),
+                        os.path.join(temp_dir, "metrics.json"), requests_file]
+        analysis.output_dir = temp_dir
+
+        monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result",
+                            lambda job_id, output_dir, timeout=1: output_files)
+
+        added_urls = []
+        original_add = analysis.add_observable_by_spec
+        def tracking_add(o_type, o_value, **kwargs):
+            if o_type == F_URL:
+                added_urls.append(o_value)
+            return original_add(o_type, o_value, **kwargs)
+        monkeypatch.setattr(analysis, "add_observable_by_spec", tracking_add)
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+        result = analyzer.continue_analysis(url_observable, analysis)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    # the redirect/CDN URLs captured before the timeout are promoted to observables
+    assert "https://redirect-cdn.example.net/ns" in added_urls
+    assert "https://redirect-cdn.example.net/?user@example.com" in added_urls
+    # labeled partial, not a clean success, and not abandoned-as-unfinished
+    assert analysis.scan_result.startswith("partial scan of")
+    assert analysis.error is None
+    assert analysis.exit_code == 143
+    assert analysis._is_unfinished() is False
+    assert "PARTIAL (scanner timed out)" in analysis.generate_summary()
+
+
+@pytest.mark.unit
 def test_phishkit_analyzer_continue_analysis_no_marker_urls(monkeypatch, test_context):
     """Test that dom.html with no MARKER URL lines adds no URL observables."""
     root = create_root_analysis(analysis_mode='test_single')

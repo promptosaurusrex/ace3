@@ -48,7 +48,7 @@ function export_events_to_csv() {
         const params = new URLSearchParams();
         // mimic jQuery default array serialization: checked_events[]
         checked_events.forEach(function(id){ params.append('checked_events[]', id); });
-        fetch('export_events_to_csv?' + params.toString(), { credentials: 'same-origin' })
+        fetch('/api/v2/events/export?type=csv&' + params.toString(), { credentials: 'same-origin' })
         .then(function(resp){
             if (!resp.ok) { throw new Error(resp.statusText); }
             return resp.text();

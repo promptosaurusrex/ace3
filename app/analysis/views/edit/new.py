@@ -15,6 +15,7 @@ from saq.database.pool import get_db, get_db_connection
 from saq.engine.node_manager.distributed_node_manager import translate_node
 from saq.environment import get_temp_dir
 from saq.error.reporting import report_exception
+from saq.util import format_iso8601, local_time
 from saq.util.filesystem import abs_path
 from saq.util.hashing import sha256_file
 from aceapi_v2.sync import run_async_with_session
@@ -118,6 +119,10 @@ ORDER BY
                     'type': o_type,
                     'value': o_value,
                     'directives': directives,
+                    # track who manually added this observable and when
+                    # (string so it survives json encoding in ace_api.submit)
+                    'added_by': current_user.username,
+                    'added_time': format_iso8601(local_time()),
                 }
 
                 if o_time:

@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.64] - 2026-06-11
+
+- [Analysis cache replay fixes](https://github.com/ACE-Collective/ace3/pull/309)
+- [Analysis cache key updates](https://github.com/ACE-Collective/ace3/pull/310)
+- [Prevent duplicate concurrent file collections](https://github.com/ACE-Collective/ace3/pull/313)
+- [Track the user and time an observable was manually added to alert](https://github.com/ACE-Collective/ace3/pull/314)
+- [Skip RDAP on non-routable IPs](https://github.com/ACE-Collective/ace3/pull/315)
+- [Allow interpolated observable types in hunts](https://github.com/ACE-Collective/ace3/pull/316)
+
+## [3.0.63] - 2026-06-11
+
+- [Migrates event API endpoints to FastAPI](https://github.com/ACE-Collective/ace3/pull/306)
+- [Enhances Analysis Overview for correlated hunt alerts](https://github.com/ACE-Collective/ace3/pull/308)
+- [node draining support](https://github.com/ACE-Collective/ace3/pull/311)
+
+## [3.0.62] - 2026-06-09
+
+- [Let partial Phishkit results flow back to ACE](https://github.com/ACE-Collective/ace3/pull/302)
+- [Render hunt title in Correlation Trace](https://github.com/ACE-Collective/ace3/pull/303)
+- [Update RDAP module to support IP addresses](https://github.com/ACE-Collective/ace3/pull/304)
+- [Let --save-original-results work for non-correlated hunts](https://github.com/ACE-Collective/ace3/pull/305)
+
+## [3.0.61] - 2026-06-08
+
+- [Do not add observables without values](https://github.com/ACE-Collective/ace3/pull/298)
+
 ## [3.0.60] - 2026-06-05
 
 - [fix issue with create_file_path](https://github.com/ACE-Collective/ace3/pull/281)

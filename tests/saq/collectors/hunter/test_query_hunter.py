@@ -637,6 +637,53 @@ def test_process_query_results(monkeypatch):
 
 
 @pytest.mark.unit
+def test_process_query_results_templated_observable_type(monkeypatch):
+    """A Jinja-templated observable type resolves per event, with fallback_type
+       used (and an error logged) when the rendered type is not defined."""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_templated_type",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(fields=["src"], type="{{ kind }}", fallback_type="ipv4")
+        ],
+    )
+
+    # rendered type is lowercased and resolved per event
+    submissions = hunt.process_query_results([{"src": "1.2.3.4", "kind": "IPV4"}])
+    assert len(submissions) == 1
+    ipv4_observable = next((o for o in submissions[0].root.observables if o.type == F_IPV4), None)
+    assert ipv4_observable is not None
+    assert ipv4_observable.value == "1.2.3.4"
+
+    # missing template field skips the observable silently (no fallback)
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert len(submissions) == 1
+    assert [o.type for o in submissions[0].root.observables] == [F_SIGNATURE_ID]
+
+    # unknown rendered type falls back to fallback_type
+    submissions = hunt.process_query_results([{"src": "1.2.3.4", "kind": "not_a_type"}])
+    assert len(submissions) == 1
+    ipv4_observable = next((o for o in submissions[0].root.observables if o.type == F_IPV4), None)
+    assert ipv4_observable is not None
+    assert ipv4_observable.value == "1.2.3.4"
+
+    # per-event resolution: one batch can emit different observable types
+    hunt.config.group_by = "ALL"
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4", "kind": "ipv4"},
+        {"src": "host.example.com", "kind": "hostname"},
+    ])
+    assert len(submissions) == 1
+    types = {o.type for o in submissions[0].root.observables}
+    assert F_IPV4 in types
+    assert F_HOSTNAME in types
+
+
+@pytest.mark.unit
 def test_group_value_attached_to_submission(monkeypatch):
     """Each submission produced by a grouped hunt should carry its group_value
        so the manager can record per-group last_alert_time without re-deriving the grouping."""
@@ -787,8 +834,8 @@ def test_suppressed_property_false_when_group_by_set(monkeypatch):
 @pytest.mark.unit
 def test_process_query_results_captures_original_events(monkeypatch):
     """When correlation is configured, the hunter should snapshot the raw event list
-    before correlation mutates/filters it. When correlation is not configured, the
-    snapshot stays None to avoid an unnecessary deep copy."""
+    before correlation mutates/filters it. For a normal (non-manual) non-correlate hunt
+    the snapshot stays None to avoid an unnecessary deep copy on production runs."""
     import saq.collectors.hunter.query_hunter
     from saq.collectors.hunter.correlation.schema import CorrelateConfig
 
@@ -857,6 +904,125 @@ def test_process_query_results_captures_original_events(monkeypatch):
     input_events[2]["tag"] = "mutated_again"
     assert hunt.original_query_results[2]["tag"] == "keep"
 
+
+class _StubCorrelationResult:
+    """Minimal stand-in for CorrelationEngine.execute()'s result so a unit test can
+    exercise the post-correlation submission path without running real queries. The
+    events are returned untouched (already carrying the correlated property)."""
+    def __init__(self, events):
+        self.trace = None
+        self.captured_queries = []
+        self.discarded = False
+        self.events = events
+        self.event_actions = {}
+        self.alert_event_origin_indices = list(range(len(events)))
+
+
+class _StubCorrelationEngine:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def execute(self, query_results):
+        return _StubCorrelationResult(query_results)
+
+
+@pytest.mark.unit
+def test_process_query_results_records_hunt_provenance(monkeypatch):
+    """Correlated hunts attach per-observable step provenance to root.details so the GUI
+    can group the Analysis Overview by the hunt step that produced each observable.
+
+    Observables from initial-query fields map to step 0; observables from a correlation
+    transform's named property map to that transform's step; an observable produced by
+    both (here, an IP appearing in the initial query and the correlated results) carries
+    both step indices."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    # don't run real correlation queries — events already carry the correlated property
+    monkeypatch.setattr(
+        "saq.collectors.hunter.correlation.engine.CorrelationEngine",
+        _StubCorrelationEngine,
+    )
+
+    correlate = CorrelateConfig.model_validate({
+        "logic": [
+            {
+                "description": "Check other activity from this IP",
+                "transform": {
+                    "type": "event",
+                    "method": "property",
+                    "property_type": "list",
+                    "property_name": "correlate_logs",
+                    "command": {"type": "query", "source": "splunk", "query": "index=x"},
+                },
+            },
+        ],
+    })
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="prov_hunt",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        observable_mapping=[
+            ObservableMapping(fields=["src"], type=F_IPV4),  # initial query -> step 0
+            ObservableMapping(fields=["correlate_logs.*.ip"], type=F_IPV4, field_lookup_type="dot"),      # -> step 1
+            ObservableMapping(fields=["correlate_logs.*.host"], type=F_HOSTNAME, field_lookup_type="dot"),  # -> step 1
+        ],
+        correlate=correlate,
+    )
+
+    event = {
+        "src": "1.2.3.4",
+        "correlate_logs": [
+            {"ip": "1.2.3.4", "host": "host-a"},  # ip shared with initial query
+            {"ip": "9.9.9.9", "host": "host-b"},
+        ],
+    }
+    submissions = hunt.process_query_results([event])
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    provenance = submission.root.details["hunt_provenance"]
+
+    # ordered steps: step 0 is the initial query, step 1 is the correlation transform
+    assert provenance["steps"] == [
+        {"index": 0, "label": "Initial Query", "property_name": None},
+        {"index": 1, "label": "Check other activity from this IP", "property_name": "correlate_logs"},
+    ]
+
+    # resolve observable uuids by (type, value) so we can assert their step attribution
+    uuid_by_spec = {(o.type, o.value): o.uuid for o in submission.root.observables}
+    obs_map = provenance["observables"]
+
+    assert obs_map[uuid_by_spec[(F_IPV4, "1.2.3.4")]] == [0, 1]   # initial + correlated
+    assert obs_map[uuid_by_spec[(F_IPV4, "9.9.9.9")]] == [1]      # correlated only
+    assert obs_map[uuid_by_spec[(F_HOSTNAME, "host-a")]] == [1]
+    assert obs_map[uuid_by_spec[(F_HOSTNAME, "host-b")]] == [1]
+
+    # the injected signature-id observable has no provenance and is left unattributed
+    signature_id = next(o for o in submission.root.observables if o.type == F_SIGNATURE_ID)
+    assert signature_id.uuid not in obs_map
+
+
+@pytest.mark.unit
+def test_process_query_results_no_provenance_without_correlate(monkeypatch):
+    """Non-correlated hunts attach no hunt_provenance, so the GUI renders a flat tree."""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="no_prov_hunt",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type=F_IPV4)],
+    )
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert len(submissions) == 1
+    assert "hunt_provenance" not in submissions[0].root.details
+
     # the no-correlate hunt produced submissions earlier; verify their details do
     # NOT contain original_events (the key is only attached when correlate ran)
     no_correlate_hunt = default_hunt(
@@ -869,6 +1035,42 @@ def test_process_query_results_captures_original_events(monkeypatch):
     no_correlate_subs = no_correlate_hunt.process_query_results([{"src": "1.2.3.4"}])
     assert no_correlate_subs
     for submission in no_correlate_subs:
+        assert "original_events" not in submission.root.details
+
+
+@pytest.mark.unit
+def test_process_query_results_captures_original_events_for_manual_non_correlate(monkeypatch):
+    """A manual/validate run of a non-correlate hunt snapshots the raw query results (so the
+    validator can report exactly what the data source returned), but does NOT duplicate them
+    into every root's details — those events already live in details["events"]."""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="manual_no_correlate",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+    hunt.manual_hunt = True
+    assert hunt.original_query_results is None
+
+    input_events = [{"src": "1.2.3.4"}, {"src": "5.6.7.8"}, {"src": "9.9.9.9"}]
+    submissions = hunt.process_query_results(input_events)
+
+    # snapshot has every raw row, in the original order
+    assert hunt.original_query_results is not None
+    assert [e["src"] for e in hunt.original_query_results] == ["1.2.3.4", "5.6.7.8", "9.9.9.9"]
+
+    # snapshot is a deep copy: mutating the input must not affect it
+    input_events[0]["src"] = "0.0.0.0"
+    assert hunt.original_query_results[0]["src"] == "1.2.3.4"
+
+    # non-correlate roots are NOT bloated with a per-root copy of the originals
+    assert submissions
+    for submission in submissions:
         assert "original_events" not in submission.root.details
 
 
@@ -1025,6 +1227,46 @@ def test_correlation_trace_scoped_per_alert_with_grouping(monkeypatch):
         for et in s.root.details["correlation_trace"]["event_traces"]:
             assert et["summary"], f"missing summary on {group_value}/{et['event_index']}"
             assert group_value in et["summary"]
+
+
+@pytest.mark.unit
+def test_hunt_metadata_name_renders_jinja(monkeypatch):
+    """When the hunt name is itself a Jinja template, hunt_metadata.name should hold
+    the rendered value (consistent with the alert description) rather than the raw
+    template text — otherwise the Correlation Trace UI leaks the raw Jinja."""
+    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
+
+    # Name depends on an event field
+    hunt = default_hunt(
+        manager=MockManager(),
+        name='Foo{{- " BAR" if has_x | list | length > 0 else "" -}}',
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+
+    submissions = hunt.process_query_results([{"src": "1.2.3.4", "has_x": ["yes"]}])
+    assert submissions and len(submissions) == 1
+    hm = submissions[0].root.details["hunt_metadata"]
+    assert hm["name"] == "Foo BAR"
+    assert "{{" not in hm["name"]
+
+
+@pytest.mark.unit
+def test_hunt_metadata_name_plain_name_unchanged(monkeypatch):
+    """A hunt name with no Jinja markers passes through _render_name's fast path and
+    is stored verbatim in hunt_metadata."""
+    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="Plain Hunt Name",
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+    )
+
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert submissions and len(submissions) == 1
+    assert submissions[0].root.details["hunt_metadata"]["name"] == "Plain Hunt Name"
 
 
 @pytest.mark.unit

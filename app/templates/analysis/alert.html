@@ -417,9 +417,13 @@
 
         {# recursively display child nodes #}
         {% if not node.is_analysis and node.reference_node is not none %}
-            {% if node.reference_node.is_collapsible(prune_display_tree) %} 
+            {% if node.reference_node.is_collapsible(prune_display_tree) %}
                 <ul><li class="saq-analysis-li"><span class="saq-analysis-bullet">&bull;</span><a href="#{{node.reference_node.obj.uuid}}">Jump To Analysis</a></li></ul>
             {% endif %}
+        {% elif node.is_root_analysis and provenance_groups %}
+            {# correlated-hunt alert: group the top-level observables by the hunt step
+               that produced them instead of one flat list (see build_provenance_groups) #}
+            {{ display_provenance_groups(node) }}
         {% else %}
             <ul{% if is_default_collapsed %} style="display: none;"{% endif %}>
                 {% for child in node.children %}
@@ -427,6 +431,67 @@
                 {% endfor %}
             </ul>
         {% endif %}
+    {% endif %}
+{% endmacro %}
+
+{% macro display_provenance_groups(node) %}
+    {# Render the root's top-level observable children grouped into labeled, color-coded
+       sections, one per distinct set of contributing hunt steps. Each child is rendered
+       by the normal display_tree_node macro, so its subtree / pruning / anchors are
+       unchanged — only the top-level partitioning is new. #}
+    {% set ns = namespace(anchored=[]) %}
+    {% for group in provenance_groups %}
+        {# overlap groups (observables found by more than one step) render a two-tone
+           gradient from their member steps' colors so they never collide with a
+           single-step section's solid color #}
+        {% set _multi = group.colors | length > 1 %}
+        {% set _group_style = "--provenance-color: " ~ group.colors[0] ~ ";" ~ (" --provenance-color-2: " ~ group.colors[-1] ~ ";" if _multi else "") %}
+        <div class="provenance-group-header{% if _multi %} provenance-group-multi{% endif %}" id="{{ group.anchor_id }}" style="{{ _group_style }}">
+            <i class="toggle-icon bi bi-chevron-down" onclick="collapseTree(this)" title="Collapse / expand this section"></i>
+            <span class="provenance-group-chip" title="{{ group.full_label }}">{{ group.label }}</span>
+            {% for ts in group.trace_steps %}
+                <a class="provenance-trace-link" href="#trace-step-{{ ts.property_name }}" title="Jump to this step in the Correlation Trace below">
+                    <i class="bi bi-diagram-3"></i> View in Correlation Trace
+                </a>
+            {% endfor %}
+            {# back-link anchor targets for the Correlation Trace's "observables from this
+               step" links — one per step, rendered only once (first group containing it) #}
+            {% for s in group.steps %}
+                {% if s not in ns.anchored %}
+                    <span id="provenance-step-{{ s }}" class="provenance-step-anchor"></span>
+                    {% set _ = ns.anchored.append(s) %}
+                {% endif %}
+            {% endfor %}
+            {% if group.sublabel %}
+                <div class="provenance-group-sublabel text-body-secondary small">{{ group.sublabel }}</div>
+            {% endif %}
+        </div>
+        <ul class="provenance-group{% if _multi %} provenance-group-multi{% endif %}" data-provenance-key="{{ group.key }}" style="{{ _group_style }}">
+            {% for child in node.children %}
+                {% if child.obj.uuid in group.observable_uuids %}
+                    {{ display_tree_node(child) }}
+                {% endif %}
+            {% endfor %}
+        </ul>
+    {% endfor %}
+    {# trailing "Other" section: any top-level observable with no recorded provenance
+       (e.g. the injected signature-id observable) — preserves today's behavior for them #}
+    {% set other_ns = namespace(count=0) %}
+    {% for child in node.children %}
+        {% if child.obj.uuid not in provenance_attributed_uuids %}{% set other_ns.count = other_ns.count + 1 %}{% endif %}
+    {% endfor %}
+    {% if other_ns.count > 0 %}
+        <div class="provenance-group-header provenance-group-other">
+            <i class="toggle-icon bi bi-chevron-down" onclick="collapseTree(this)" title="Collapse / expand this section"></i>
+            <span class="provenance-group-chip">Other</span>
+        </div>
+        <ul class="provenance-group provenance-group-other">
+            {% for child in node.children %}
+                {% if child.obj.uuid not in provenance_attributed_uuids %}
+                    {{ display_tree_node(child) }}
+                {% endif %}
+            {% endfor %}
+        </ul>
     {% endif %}
 {% endmacro %}
 

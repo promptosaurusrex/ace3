@@ -1,5 +1,6 @@
 """Tests for ModuleExecutionSnapshot capture and diff computation."""
 
+from datetime import datetime, UTC
 from unittest.mock import MagicMock
 import pytest
 
@@ -483,6 +484,28 @@ class TestObservableDiffRemovals:
         assert len(added) == 1
         assert added[0]["type"] == R_IS_HASH_OF
         assert added[0]["target"] == other.uuid
+        # Target spec lets cache replay re-resolve the target on a
+        # different root, where the uuid is meaningless.
+        assert added[0]["target_type"] == F_FQDN
+        assert added[0]["target_value"] == "example.com"
+        assert "target_time" not in added[0]
+
+    @pytest.mark.unit
+    def test_diff_add_relationship_with_timed_target(self, tmp_path):
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        event_time = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
+        other = root.add_observable_by_spec(F_FQDN, "timed.example.com", o_time=event_time)
+        module = _make_mock_module()
+
+        before = ModuleExecutionSnapshot.narrow(root, obs, module)
+        obs.add_relationship(R_IS_HASH_OF, other)
+        after = ModuleExecutionSnapshot.narrow(root, obs, module)
+        delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
+
+        added = delta.target_observable_diff.added_relationships
+        assert added[0]["target_value"] == "timed.example.com"
+        assert added[0]["target_time"] == event_time.isoformat()
 
     @pytest.mark.unit
     def test_diff_remove_relationship(self, tmp_path):
@@ -605,6 +628,44 @@ class TestAnalysisDetailsCapture:
             "to default=str on SummaryDetail objects"
         )
 
+    @pytest.mark.unit
+    def test_analysis_dict_includes_tags(self, tmp_path):
+        """Tags set on the Analysis object itself (analysis.add_tag) must
+        be captured so cache replay can restore them — they're invisible
+        to the observable-level tag diff."""
+
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
+
+        before = ModuleExecutionSnapshot.narrow(root, obs, module)
+        analysis = RdapAnalysis()
+        analysis.add_tag("registrar:test")
+        obs.analysis_tree_manager.add_analysis(obs, analysis)
+        after = ModuleExecutionSnapshot.narrow(root, obs, module)
+        delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
+
+        assert delta.analysis["tags"] == ["registrar:test"]
+        # Captured list is a copy — mutating the live analysis afterwards
+        # must not leak into the already-captured delta.
+        analysis.add_tag("late-tag")
+        assert delta.analysis["tags"] == ["registrar:test"]
+
+    @pytest.mark.unit
+    def test_no_tags_key_when_analysis_untagged(self, tmp_path):
+
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
+
+        before = ModuleExecutionSnapshot.narrow(root, obs, module)
+        analysis = RdapAnalysis()
+        obs.analysis_tree_manager.add_analysis(obs, analysis)
+        after = ModuleExecutionSnapshot.narrow(root, obs, module)
+        delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
+
+        assert "tags" not in delta.analysis
+
 
 # ---------------------------------------------------------------------------
 # Phase 3 Step 3.0: delayed→completed transition capture
@@ -654,9 +715,10 @@ class TestDelayedAnalysisTransitions:
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
         module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
 
-        # First call: delayed analysis already in slot.
+        # First call: delayed analysis already in slot, tagged pre-delay.
         analysis = RdapAnalysis()
         analysis.delayed = True
+        analysis.add_tag("pre-delay-tag")
         obs.analysis_tree_manager.add_analysis(obs, analysis)
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
@@ -672,6 +734,9 @@ class TestDelayedAnalysisTransitions:
         )
         assert delta.analysis["delayed"] is False
         assert delta.analysis["details"]["registrar"] == "Test"
+        # Whole-capture semantics: a tag added in the pre-delay cycle is
+        # still on the analysis object, so the final capture carries it.
+        assert delta.analysis["tags"] == ["pre-delay-tag"]
 
     @pytest.mark.unit
     def test_intermediate_delayed_cycle_no_capture(self, tmp_path):

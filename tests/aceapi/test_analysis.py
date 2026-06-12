@@ -1,4 +1,5 @@
 from datetime import datetime
+import hashlib
 import io
 import json
 import os
@@ -171,8 +172,47 @@ def test_api_analysis_submit(test_client):
             assert observable['time'] == '2017-11-11T07:36:01.000001+0000'
 
     assert result["files"][0].endswith("files/sample.dat")
-    
-    
+
+
+@pytest.mark.integration
+def test_api_analysis_submit_added_by(test_client):
+    """Observables submitted with added_by/added_time keep that provenance."""
+    added_time = get_local_timezone().localize(datetime(2026, 6, 11, hour=9, minute=30, second=0)).astimezone(pytz.UTC).strftime(EVENT_TIME_FORMAT_JSON_TZ)
+    file_sha256 = hashlib.sha256(b'Hello, world!').hexdigest()
+    result = test_client.post(url_for('analysis.submit'), data={
+        'analysis': json.dumps({
+            'analysis_mode': 'analysis',
+            'tool': 'unittest',
+            'tool_instance': 'unittest_instance',
+            'type': 'unittest',
+            'description': 'testing',
+            'details': {},
+            'observables': [
+                { 'type': F_IPV4, 'value': '1.2.3.4', 'added_by': 'analyst1', 'added_time': added_time },
+                { 'type': F_USER, 'value': 'test_user' },
+                { 'type': F_FILE, 'value': file_sha256, 'file_path': 'sample.dat', 'added_by': 'analyst1', 'added_time': added_time },
+            ],
+        }, cls=_JSONEncoder),
+        'file': (io.BytesIO(b'Hello, world!'), 'sample.dat'),
+    }, content_type='multipart/form-data', headers = { 'x-ace-auth': get_config().api.api_key })
+
+    result = result.get_json()
+    assert result
+    uuid = result['result']['uuid']
+
+    result = test_client.get(url_for('analysis.get_analysis', uuid=uuid), headers = { 'x-ace-auth': get_config().api.api_key })
+    result = result.get_json()['result']
+
+    assert len(result['observable_store']) == 3
+    for observable in result['observable_store'].values():
+        if observable['type'] in (F_IPV4, F_FILE):
+            assert observable['added_by'] == 'analyst1'
+            assert observable['added_time'] == '2026-06-11T09:30:00.000000+0000'
+        elif observable['type'] == F_USER:
+            assert observable['added_by'] is None
+            assert observable['added_time'] is None
+
+
 @pytest.mark.integration
 def test_api_analysis_submit_queue(test_client):
     t = get_local_timezone().localize(datetime(2017, 11, 11, hour=7, minute=36, second=1, microsecond=1)).astimezone(pytz.UTC).strftime(EVENT_TIME_FORMAT_JSON_TZ)
@@ -615,3 +655,38 @@ rule test_files {
 
     result = test_client.get(url_for('analysis.get_analysis', uuid=result['uuid']), headers = { 'x-ace-auth': get_config().api.api_key })
     assert result.status_code == 400
+@pytest.mark.integration
+def test_api_analysis_submit_rejected_while_draining(test_client):
+    from saq.constants import NODE_STATUS_DRAINING, NODE_STATUS_RUNNING
+    from saq.database.util.node import set_node_status
+
+    node_id = get_global_runtime_settings().saq_node_id
+    submission_data = {
+        'analysis': json.dumps({
+            'analysis_mode': 'analysis',
+            'tool': 'unittest',
+            'tool_instance': 'unittest_instance',
+            'type': 'unittest',
+            'description': 'testing',
+            'details': {},
+            'observables': [],
+            'tags': [],
+        }, cls=_JSONEncoder),
+    }
+
+    # a draining node rejects new submissions
+    set_node_status(node_id, NODE_STATUS_DRAINING)
+    result = test_client.post(url_for('analysis.submit'), data=dict(submission_data),
+                              content_type='multipart/form-data', headers={'x-ace-auth': get_config().api.api_key})
+    assert result.status_code == 503
+
+    # resubmit is also rejected
+    result = test_client.get(url_for('analysis.resubmit', uuid=str(uuid.uuid4())),
+                             headers={'x-ace-auth': get_config().api.api_key})
+    assert result.status_code == 503
+
+    # once the node is running again submissions are accepted
+    set_node_status(node_id, NODE_STATUS_RUNNING)
+    result = test_client.post(url_for('analysis.submit'), data=dict(submission_data),
+                              content_type='multipart/form-data', headers={'x-ace-auth': get_config().api.api_key})
+    assert result.status_code == 200
