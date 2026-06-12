@@ -1,7 +1,7 @@
 """add detection_points table
 
 Revision ID: 21378106119b
-Revises: dbae3bc8cdd5
+Revises: e7f2a4c81b09
 Create Date: 2026-06-06 15:24:51.843570
 
 """
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import mysql
 
 # revision identifiers, used by Alembic.
 revision: str = '21378106119b'
-down_revision: Union[str, None] = 'dbae3bc8cdd5'
+down_revision: Union[str, None] = 'e7f2a4c81b09'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
