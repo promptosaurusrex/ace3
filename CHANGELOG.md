@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.65] - 2026-06-12
+
+- [Add 'draining_collectors' node status and update draining logic](https://github.com/ACE-Collective/ace3/pull/318)
+
 ## [3.0.64] - 2026-06-11
 
 - [Analysis cache replay fixes](https://github.com/ACE-Collective/ace3/pull/309)
