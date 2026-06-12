@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from saq.constants import (
     NODE_STATUS_DRAINED,
     NODE_STATUS_DRAINING,
+    NODE_STATUS_DRAINING_COLLECTORS,
     NODE_STATUS_RUNNING,
     NODE_STATUS_STOPPED,
 )
@@ -107,11 +108,11 @@ class TestNodesRouter:
 
         response = await client.post(f"/nodes/{node.id}/drain")
         assert response.status_code == 200
-        assert response.json()["status"] == NODE_STATUS_DRAINING
+        assert response.json()["status"] == NODE_STATUS_DRAINING_COLLECTORS
 
     @pytest.mark.asyncio
     async def test_drain_invalid_status(self, session: AsyncSession, client: AsyncClient):
-        for status in [NODE_STATUS_STOPPED, NODE_STATUS_DRAINING, NODE_STATUS_DRAINED]:
+        for status in [NODE_STATUS_STOPPED, NODE_STATUS_DRAINING_COLLECTORS, NODE_STATUS_DRAINING, NODE_STATUS_DRAINED]:
             node = await create_node(session, name=f"test_api_node_{status}", status=status)
 
             response = await client.post(f"/nodes/{node.id}/drain")
@@ -122,6 +123,14 @@ class TestNodesRouter:
     async def test_drain_unknown_node(self, client: AsyncClient):
         response = await client.post("/nodes/999999999/drain")
         assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_resume_draining_collectors_node(self, session: AsyncSession, client: AsyncClient):
+        node = await create_node(session, status=NODE_STATUS_DRAINING_COLLECTORS)
+
+        response = await client.post(f"/nodes/{node.id}/resume")
+        assert response.status_code == 200
+        assert response.json()["status"] == NODE_STATUS_RUNNING
 
     @pytest.mark.asyncio
     async def test_resume_draining_node(self, session: AsyncSession, client: AsyncClient):
@@ -159,7 +168,7 @@ class TestNodesRouter:
 
         response = await client.post(f"/nodes/{node.id}/drain")
         assert response.status_code == 200
-        assert response.json()["status"] == NODE_STATUS_DRAINING
+        assert response.json()["status"] == NODE_STATUS_DRAINING_COLLECTORS
 
         # draining a draining node fails
         response = await client.post(f"/nodes/{node.id}/drain")

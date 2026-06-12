@@ -1676,7 +1676,7 @@ class Nodes(Base):
     is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     any_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     status: Mapped[str] = mapped_column(
-        Enum('starting', 'running', 'draining', 'drained', 'stopped'),
+        Enum('starting', 'running', 'draining', 'drained', 'stopped', 'draining_collectors'),
         nullable=False,
         server_default=text("'stopped'"))
 
