@@ -1,6 +1,11 @@
 import json
 
-from saq.signatures import BUILTIN_SIGNATURE_UUID, get_builtin_signature_version
+from saq.signatures import (
+    BUILTIN_SIGNATURE_UUID,
+    LEGACY_SIGNATURE_UUID,
+    LEGACY_SIGNATURE_VERSION,
+    get_builtin_signature_version,
+)
 from saq.util import sha256_str
 
 KEY_DESCRIPTION = 'description'
@@ -44,11 +49,12 @@ class DetectionPoint:
             self.details = value[KEY_DETAILS]
         if KEY_QUEUE in value:
             self.queue = value[KEY_QUEUE]
-        # backfill the built-in defaults for OLD serialized detection points that
+        # backfill the LEGACY identity for OLD serialized detection points that
         # predate signature attribution (or carry an explicit null) so the
-        # never-null invariant holds on load.
-        self.signature_uuid = value.get(KEY_SIGNATURE_UUID) or BUILTIN_SIGNATURE_UUID
-        self.signature_version = value.get(KEY_SIGNATURE_VERSION) or get_builtin_signature_version()
+        # never-null invariant holds on load and legacy detections stay distinguishable
+        # from freshly-created un-attributed ones (which get the generic built-in).
+        self.signature_uuid = value.get(KEY_SIGNATURE_UUID) or LEGACY_SIGNATURE_UUID
+        self.signature_version = value.get(KEY_SIGNATURE_VERSION) or LEGACY_SIGNATURE_VERSION
 
     @staticmethod
     def from_json(dp_json):
