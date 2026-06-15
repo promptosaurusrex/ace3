@@ -49,10 +49,8 @@ hunt_type_splunk:
   name: splunk
   python_module: saq.collectors.hunter.splunk_hunter
   python_class: SplunkHunt
-  rule_dirs:
-    - rule_dir: signatures/hunts/splunk
+  rule_dirs: []
   update_frequency: 60
 
 config:
-  splunk_local: etc/saq.splunk.yaml
   splunk_modules: etc/saq.splunk_modules.yaml
