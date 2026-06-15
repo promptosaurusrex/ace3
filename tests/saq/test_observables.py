@@ -73,6 +73,38 @@ def test_user_observable(initial_value, expected_value):
     assert o.value == expected_value
 
 
+@pytest.mark.parametrize('value', ['', '   ', '\t\n'])
+@pytest.mark.unit
+def test_empty_value_user_observable_rejected(value):
+    """A user observable with an empty/whitespace-only value must not be added.
+
+    Reproduces a production alert where a hunt added a `user` observable with an
+    empty value. UserObservable is a CaselessObservable with no empty-value guard
+    of its own, so the rejection happens centrally in ObservableRegistry.record().
+    """
+    root = RootAnalysis()
+    assert root.add_observable_by_spec(F_USER, value) is None
+
+
+@pytest.mark.unit
+def test_empty_value_generic_observable_rejected():
+    """Unknown/generic observable types (DefaultObservable) must also reject empty values."""
+    root = RootAnalysis()
+    assert root.add_observable_by_spec('some_unknown_type', '') is None
+    assert root.add_observable_by_spec('some_unknown_type', '   ') is None
+
+
+@pytest.mark.unit
+def test_non_empty_user_observable_still_added():
+    """A valid user observable is still added and dedupes as before."""
+    root = RootAnalysis()
+    o = root.add_observable_by_spec(F_USER, 'testuser')
+    assert o is not None
+    assert o.value == 'testuser'
+    # adding the same value again returns the existing observable
+    assert root.add_observable_by_spec(F_USER, 'testuser') is o
+
+
 @pytest.mark.unit
 def test_message_id_observable(caplog):
     root = RootAnalysis()

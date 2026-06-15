@@ -17,7 +17,7 @@ from saq.collectors.collector_configuration import CollectorServiceConfiguration
 from saq.collectors.remote_node import RemoteNode, RemoteNodeGroup
 from saq.configuration.config import get_config, get_database_config, get_engine_config, get_service_config
 from saq.configuration.schema import DatabaseConfig
-from saq.constants import ANALYSIS_MODE_ANALYSIS, DB_ACE, DB_COLLECTION, QUEUE_DEFAULT
+from saq.constants import ANALYSIS_MODE_ANALYSIS, DB_ACE, DB_COLLECTION, NODE_STATUS_RUNNING, QUEUE_DEFAULT
 from saq.database.model import PersistenceSource
 from saq.database.pool import get_db, get_db_connection
 from saq.database.util.node import initialize_node
@@ -116,6 +116,8 @@ def engine():
     result = Engine(config=EngineConfiguration(default_analysis_mode=ANALYSIS_MODE_ANALYSIS))
     result.node_manager.initialize_node()
     result.node_manager.update_node_status()
+    # only running nodes are eligible to receive work
+    result.node_manager.set_status(NODE_STATUS_RUNNING)
     return result
 
 @pytest.mark.integration
@@ -493,9 +495,10 @@ def test_submit_target_nodes(mock_api_call):
     assert log_count('submitting 1 items') == 0
 
     # now make node_1 active and run again
+    # a node must be running (not just have a fresh heartbeat) to receive work
     with get_db_connection() as db:
         cursor = db.cursor()
-        cursor.execute("UPDATE nodes SET last_update = NOW() WHERE id = %s", (node_1_id,))
+        cursor.execute("UPDATE nodes SET last_update = NOW(), status = 'running' WHERE id = %s", (node_1_id,))
         db.commit()
 
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
@@ -1109,3 +1112,259 @@ def test_collector_update():
     assert not collector_service.collector.updated
     collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SHOT)
     assert collector_service.collector.updated
+
+# node drain tests
+# ------------------------------------------------------------------------
+
+@pytest.mark.integration
+def test_collection_paused_while_node_draining():
+    from saq.constants import NODE_STATUS_DRAINED, NODE_STATUS_DRAINING, NODE_STATUS_DRAINING_COLLECTORS
+    from saq.database.util.node import clear_node_status_cache, set_node_status
+    from saq.environment import get_global_runtime_settings as _grs
+
+    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
+    node_id = _grs().saq_node_id
+
+    try:
+        # a running (or stopped) node does not pause collection
+        set_node_status(node_id, NODE_STATUS_RUNNING)
+        assert not collector_service.is_collection_paused()
+
+        # any drain phase pauses collection
+        set_node_status(node_id, NODE_STATUS_DRAINING_COLLECTORS)
+        assert collector_service.is_collection_paused()
+
+        set_node_status(node_id, NODE_STATUS_DRAINING)
+        assert collector_service.is_collection_paused()
+
+        set_node_status(node_id, NODE_STATUS_DRAINED)
+        assert collector_service.is_collection_paused()
+    finally:
+        clear_node_status_cache()
+
+
+@pytest.mark.integration
+def test_collection_loop_skips_collection_while_paused(monkeypatch):
+    from saq.constants import NODE_STATUS_DRAINING
+    from saq.database.util.node import clear_node_status_cache, set_node_status
+    from saq.environment import get_global_runtime_settings as _grs
+
+    class _counting_collector(TestCollector):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.collect_count = 0
+
+        @override
+        def collect(self) -> Generator[Submission, None, None]:
+            self.collect_count += 1
+            if False:
+                yield
+
+    collector_service = CollectorService(collector=_counting_collector(), config=get_service_config("test_collector"))
+    set_node_status(_grs().saq_node_id, NODE_STATUS_DRAINING)
+    clear_node_status_cache()
+
+    try:
+        # run the collection loop on a thread in continuous mode while paused
+        collector_service.execution_mode = CollectorExecutionMode.CONTINUOUS
+        collection_thread = threading.Thread(target=collector_service.collection_loop)
+        collection_thread.start()
+        assert collector_service.collect_started_event.wait(5)
+
+        # wait for the pause to be logged, then stop
+        wait_for_log_count("pausing collection", 1, timeout=5)
+        collector_service.shutdown_event.set()
+        collection_thread.join(5)
+        assert not collection_thread.is_alive()
+
+        # collection never executed
+        assert collector_service.collector.collect_count == 0
+    finally:
+        collector_service.shutdown_event.set()
+        clear_node_status_cache()
+
+
+@pytest.mark.integration
+def test_report_collector_status():
+    from saq.constants import NODE_STATUS_DRAINED, NODE_STATUS_DRAINING
+    from saq.database.util.node import clear_node_status_cache, get_collector_statuses, set_node_status
+    from saq.environment import get_global_runtime_settings as _grs
+
+    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
+    node_id = _grs().saq_node_id
+
+    try:
+        # a collector on a running node reports running
+        set_node_status(node_id, NODE_STATUS_RUNNING)
+        collector_service.report_collector_status()
+        statuses = get_collector_statuses(node_id)
+        assert len(statuses) == 1
+        assert statuses[0][0] == "test"
+        assert statuses[0][1] == NODE_STATUS_RUNNING
+
+        # a collector on a draining node with a backlog reports draining
+        set_node_status(node_id, NODE_STATUS_DRAINING)
+        clear_node_status_cache()
+
+        work_id = collector_service.workload_repository.insert_workload(
+            collector_service.workload_type_id, ANALYSIS_MODE_ANALYSIS, str(uuid4()))
+        group_id = collector_service.workload_repository.create_or_get_work_distribution_group("test_group_1")
+        collector_service.workload_repository.assign_work_to_group(work_id, group_id)
+
+        collector_service.report_collector_status()
+        statuses = get_collector_statuses(node_id)
+        assert statuses[0][1] == NODE_STATUS_DRAINING
+        assert statuses[0][2] == 1
+
+        # once the backlog is flushed it reports drained
+        with get_db_connection(DB_COLLECTION) as db:
+            cursor = db.cursor()
+            cursor.execute("UPDATE work_distribution SET status = 'COMPLETED'")
+            db.commit()
+
+        collector_service.report_collector_status()
+        statuses = get_collector_statuses(node_id)
+        assert statuses[0][1] == NODE_STATUS_DRAINED
+        assert statuses[0][2] == 0
+    finally:
+        clear_node_status_cache()
+
+
+@pytest.mark.integration
+def test_no_submission_to_draining_node(engine):
+    from saq.constants import NODE_STATUS_DRAINING
+
+    class _custom_collector(TestCollector):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.available_work = [create_submission() for _ in range(1)]
+
+        def collect(self) -> Generator[Submission, None, None]:
+            if not self.available_work:
+                return None
+
+            yield self.available_work.pop()
+
+    # the only node available is draining so it cannot receive work
+    engine.node_manager.set_status(NODE_STATUS_DRAINING)
+
+    collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace')
+    collector_service.remote_node_groups.append(tg1)
+    collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
+
+    # the work was collected but no node was available to send it to
+    assert log_count('no remote nodes are avaiable') == 1
+
+    # the work stays READY in the distribution queue (full delivery group)
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM work_distribution WHERE group_id = %s AND status = 'READY'", (tg1.group_id,))
+        assert cursor.fetchone()[0] == 1
+
+        # and nothing landed in the engine workload
+        cursor.execute("SELECT COUNT(*) FROM workload")
+        assert cursor.fetchone()[0] == 0
+
+
+@pytest.mark.integration
+def test_local_backlog_flushes_while_node_draining_collectors(engine):
+    from saq.constants import NODE_STATUS_DRAINED, NODE_STATUS_DRAINING_COLLECTORS
+    from saq.database.util.node import get_collector_statuses
+
+    class _custom_collector(TestCollector):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.available_work = [create_submission() for _ in range(1)]
+
+        def collect(self) -> Generator[Submission, None, None]:
+            if not self.available_work:
+                return None
+
+            yield self.available_work.pop()
+
+    # the only node available is the local node in the first phase of the drain
+    # it still accepts work so the collector can flush its backlog
+    engine.node_manager.set_status(NODE_STATUS_DRAINING_COLLECTORS)
+
+    collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace')
+    collector_service.remote_node_groups.append(tg1)
+    collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
+
+    # the work was delivered to the local node and the backlog is empty
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM work_distribution WHERE group_id = %s AND status IN ( 'READY', 'LOCKED' )", (tg1.group_id,))
+        assert cursor.fetchone()[0] == 0
+
+        cursor.execute("SELECT COUNT(*) FROM workload")
+        assert cursor.fetchone()[0] == 1
+
+    # with the backlog flushed the collector reports drained
+    collector_service.report_collector_status()
+    statuses = get_collector_statuses(get_global_runtime_settings().saq_node_id)
+    assert statuses[0][1] == NODE_STATUS_DRAINED
+    assert statuses[0][2] == 0
+
+    # and the rest of the drain proceeds: the node advances to draining,
+    # the workers finish the workload, and the node is marked drained
+    from saq.constants import NODE_STATUS_DRAINING
+    from saq.database.util.node import check_and_advance_collectors_drained, check_and_mark_drained, get_node_status
+
+    node_id = get_global_runtime_settings().saq_node_id
+    assert check_and_advance_collectors_drained(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING
+
+    # the flushed work blocks the drain until the workers complete it
+    assert not check_and_mark_drained(node_id)
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("DELETE FROM workload")
+        db.commit()
+
+    assert check_and_mark_drained(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINED
+
+
+@pytest.mark.integration
+def test_running_node_preferred_over_draining_collectors_node(engine, monkeypatch):
+    from saq.constants import NODE_STATUS_DRAINING_COLLECTORS
+
+    class _custom_collector(TestCollector):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.available_work = [create_submission() for _ in range(1)]
+
+        def collect(self) -> Generator[Submission, None, None]:
+            if not self.available_work:
+                return None
+
+            yield self.available_work.pop()
+
+    # the local node is starting to drain but another running node is available
+    engine.node_manager.set_status(NODE_STATUS_DRAINING_COLLECTORS)
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("""INSERT INTO nodes ( name, location, company_id, last_update, status, any_mode )
+                          VALUES ( 'test_running_node', 'test_running_node:443', %s, NOW(), 'running', 1 )""",
+                       (get_global_runtime_settings().company_id,))
+        db.commit()
+
+    submitted_to = []
+
+    def fake_submit(self, submission):
+        submitted_to.append(self.name)
+        return {'result': 'test'}
+
+    monkeypatch.setattr(RemoteNode, "submit", fake_submit)
+
+    collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace')
+    collector_service.remote_node_groups.append(tg1)
+    collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
+
+    # the running node was preferred over the local draining_collectors node
+    assert submitted_to == ['test_running_node']

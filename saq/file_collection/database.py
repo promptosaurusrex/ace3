@@ -46,6 +46,48 @@ def queue_file_collection(
     return file_collection.id
 
 
+def resolve_duplicate_pending_file_collection(collection_id: int) -> int:
+    """Resolves a duplicate pending file collection created by a check-then-insert race.
+
+    Call this immediately after queue_file_collection(). If an older pending
+    (NEW or IN_PROGRESS) request exists for the same (name, type, key), the
+    just-queued request is deleted and the older request's ID is returned so the
+    caller attaches to it. Otherwise the given ID is returned unchanged.
+
+    The just-queued request is only deleted while it is still NEW and unlocked.
+    If the collector loop already picked it up, it is kept (a brief duplicate is
+    preferable to deleting a row the worker is about to record history against).
+    """
+    own = get_file_collection(collection_id)
+    if own is None:
+        return collection_id
+
+    earlier = (
+        get_db()
+        .query(FileCollection)
+        .filter(
+            FileCollection.name == own.name,
+            FileCollection.type == own.type,
+            FileCollection.key == own.key,
+            FileCollection.status.in_([
+                FileCollectionStatus.NEW.value,
+                FileCollectionStatus.IN_PROGRESS.value,
+            ]),
+            FileCollection.id < collection_id,
+        )
+        .order_by(FileCollection.id.asc())
+        .first()
+    )
+    if earlier is None:
+        return collection_id
+
+    if own.status == FileCollectionStatus.NEW.value and own.lock is None:
+        delete_file_collection(collection_id)
+        return earlier.id
+
+    return collection_id
+
+
 def get_file_collection(collection_id: int) -> Optional[FileCollection]:
     """Returns the file collection request with the given ID."""
     return (
@@ -91,21 +133,22 @@ def get_pending_file_collection_by_observable(
     collector_name: str,
     observable_type: str,
     observable_value: str,
-    alert_uuid: str,
+    alert_uuid: Optional[str] = None,
 ) -> Optional[FileCollection]:
     """Returns any pending (NEW or IN_PROGRESS) file collection request for the observable.
 
-    This is used to avoid creating duplicate requests when multiple users trigger
-    collection for the same observable.
+    This is used to avoid creating duplicate requests when multiple users or alerts
+    trigger collection for the same observable.
 
     Args:
         collector_name: Name of the FileCollector.
         observable_type: The observable type.
         observable_value: The observable value.
-        alert_uuid: The alert UUID to filter by.
+        alert_uuid: Optional alert UUID to filter by. When None, pending requests
+            from any alert are considered.
 
     Returns:
-        The most recent pending FileCollection matching the criteria, or None.
+        The matching pending FileCollection, or None.
     """
     query = (
         get_db()
@@ -114,11 +157,19 @@ def get_pending_file_collection_by_observable(
             FileCollection.name == collector_name,
             FileCollection.type == observable_type,
             FileCollection.key == observable_value,
-            FileCollection.alert_uuid == alert_uuid,
-            FileCollection.status != FileCollectionStatus.COMPLETED.value,
+            FileCollection.status.in_([
+                FileCollectionStatus.NEW.value,
+                FileCollectionStatus.IN_PROGRESS.value,
+            ]),
         )
     )
-    return query.order_by(FileCollection.id.desc()).first()
+    if alert_uuid is not None:
+        query = query.filter(FileCollection.alert_uuid == alert_uuid)
+        return query.order_by(FileCollection.id.desc()).first()
+
+    # cross-alert lookup: return the oldest pending request so that all
+    # concurrent callers converge on the same collection
+    return query.order_by(FileCollection.id.asc()).first()
 
 
 def get_file_collection_history(collection_id: int) -> list[FileCollectionHistory]:

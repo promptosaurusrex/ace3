@@ -133,6 +133,7 @@ logger = logging.getLogger(__name__)
 METHOD_GET = 'get'
 METHOD_POST = 'post'
 METHOD_PUT = 'put'
+METHOD_PATCH = 'patch'
 
 def set_default_remote_host(remote_host):
     """Sets the default remote host used when no remote host is provided to the API calls.
@@ -191,9 +192,10 @@ def _execute_api_call(command,
                       ssl_verification=None, 
                       disable_ssl_verification=False,
                       api_key=None,
-                      stream=False, 
-                      data=None, 
-                      files=None, 
+                      stream=False,
+                      data=None,
+                      json=None,
+                      files=None,
                       params=None,
                       proxies=None,
                       timeout=None):
@@ -218,6 +220,8 @@ def _execute_api_call(command,
         func = requests.get
     elif method == METHOD_PUT:
         func = requests.put
+    elif method == METHOD_PATCH:
+        func = requests.patch
     else:
         func = requests.post
 
@@ -230,6 +234,8 @@ def _execute_api_call(command,
         kwargs['verify'] = False
     if data is not None:
         kwargs['data'] = data
+    if json is not None:
+        kwargs['json'] = json
     if files is not None:
         kwargs['files'] = files
     if proxies is not None:
@@ -1471,7 +1477,7 @@ def get_open_events(*args, **kwargs):
     :return: A result list.
     :rtype: list
     """
-    return _execute_api_call('events/open', *args, **kwargs).json()
+    return _execute_api_call('v2/events/open', *args, **kwargs).json()['data']
 
 
 def _cli_get_open_events(args):
@@ -1489,7 +1495,7 @@ def update_event_status(event_id, status, *args, **kwargs):
     :return: The updated event.
     :rtype: dict
     """
-    return _execute_api_call('events/{}/status'.format(event_id), data={'status': status}, method=METHOD_PUT, *args, **kwargs).json()
+    return _execute_api_call('v2/events/{}'.format(event_id), json={'status': status}, method=METHOD_PATCH, *args, **kwargs).json()
 
 
 def _cli_update_event_status(args):

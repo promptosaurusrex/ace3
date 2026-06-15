@@ -176,7 +176,9 @@ def upload(uuid):
             root.schedule()
 
         # looks like it worked
-        return json_result({'result': True})
+        # the storage_dir is included so the sender can repoint database rows
+        # at this node (the path includes the node name so the sender cannot compute it)
+        return json_result({'result': True, 'storage_dir': root.storage_dir})
 
     except Exception as e:
         logging.error("unable to upload {}: {}".format(uuid, e))

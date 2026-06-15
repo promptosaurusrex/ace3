@@ -1,5 +1,6 @@
 # utility class to translate custom objects into JSON
 from datetime import datetime
+import ipaddress
 import json
 
 from pydantic import BaseModel
@@ -30,6 +31,9 @@ class _JSONEncoder(json.JSONEncoder):
             }
         elif isinstance(obj, AnalysisExecutionResult):
             return obj.value
+        elif isinstance(obj, (ipaddress.IPv4Network, ipaddress.IPv6Network,
+                              ipaddress.IPv4Address, ipaddress.IPv6Address)):
+            return str(obj)
         elif isinstance(obj, yara.StringMatchInstance):
             return {
                 "matched_data": obj.matched_data,

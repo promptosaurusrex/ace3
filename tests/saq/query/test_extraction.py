@@ -1,4 +1,7 @@
+import logging
+
 import pytest
+from pydantic import ValidationError
 
 from saq.constants import F_FILE, F_FILE_LOCATION, F_HOSTNAME, F_IPV4, SUMMARY_DETAIL_FORMAT_JINJA
 from saq.observables.mapping import (
@@ -6,6 +9,7 @@ from saq.observables.mapping import (
     RelationshipMapping,
     RelationshipMappingTarget,
 )
+from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.query.config import SummaryDetailConfig
 from saq.query.decoder import DecoderType
 from saq.query.extraction import (
@@ -486,6 +490,242 @@ def test_extract_observables_file_type_skips_unresolved_tags_directives():
     assert not any(t.startswith("origin:") for t in fc.tags)
     assert "analyze_file" in fc.directives
     assert all(d == "analyze_file" for d in fc.directives)
+
+
+# --- Jinja-templated observable type tests ---
+
+
+@pytest.fixture
+def declare_yaml_types():
+    """Temporarily add YAML-declared observable types to the global registry."""
+    hierarchy = get_type_hierarchy()
+    snapshot = set(hierarchy._yaml_declared_types)
+
+    def _declare(*names: str):
+        hierarchy._yaml_declared_types.update(names)
+
+    yield _declare
+    hierarchy._yaml_declared_types = snapshot
+
+
+def _error_records(caplog):
+    return [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+@pytest.mark.unit
+def test_extract_observables_templated_type_resolves():
+    """A Jinja-templated type renders against the event before observable creation."""
+    mappings = [ObservableMapping(field="src", type="{{ obs_type }}")]
+    event = {"src": "1.2.3.4", "obs_type": "ipv4"}
+
+    extracted, _, _ = extract_observables_from_event(event, mappings)
+
+    assert len(extracted) == 1
+    assert extracted[0].observable.type == F_IPV4
+    assert extracted[0].observable.value == "1.2.3.4"
+
+
+@pytest.mark.unit
+def test_extract_observables_templated_type_lowercased():
+    """The rendered type is lowercased before validation/creation."""
+    mappings = [ObservableMapping(field="src", type="{{ obs_type }}")]
+    event = {"src": "1.2.3.4", "obs_type": "IPV4"}
+
+    extracted, _, _ = extract_observables_from_event(event, mappings)
+
+    assert len(extracted) == 1
+    assert extracted[0].observable.type == F_IPV4
+
+
+@pytest.mark.unit
+def test_extract_observables_templated_type_dotted_event_key(declare_yaml_types):
+    """The motivating shape: a platform-specific type from a flat dotted event key."""
+    declare_yaml_types("azure_user_id")
+    mappings = [
+        ObservableMapping(
+            fields=["event.subjectResource.providerUniqueId"],
+            type="{{ event.cloudPlatform }}_user_id",
+        )
+    ]
+    event = {
+        "event.cloudPlatform": "Azure",
+        "event.subjectResource.providerUniqueId": "f10fa516-dc68-4497-88c5-23e4904bcae3",
+    }
+
+    extracted, _, _ = extract_observables_from_event(event, mappings)
+
+    assert len(extracted) == 1
+    assert extracted[0].observable.type == "azure_user_id"
+    assert extracted[0].observable.value == "f10fa516-dc68-4497-88c5-23e4904bcae3"
+
+
+@pytest.mark.unit
+def test_extract_observables_templated_type_unknown_skips_with_error(caplog):
+    """An unknown resolved type with no fallback_type skips the observable and logs an error."""
+    mappings = [ObservableMapping(field="src", type="{{ platform }}_user_id")]
+    event = {"src": "some-id", "platform": "gcp"}
+
+    with caplog.at_level(logging.ERROR):
+        extracted, _, _ = extract_observables_from_event(event, mappings)
+
+    assert extracted == []
+    assert "{{ platform }}_user_id" in caplog.text
+    assert "gcp_user_id" in caplog.text
+
+
+@pytest.mark.unit
+def test_extract_observables_templated_type_unknown_uses_fallback(caplog):
+    """An unknown resolved type falls back to fallback_type and still logs an error."""
+    mappings = [
+        ObservableMapping(field="src", type="{{ platform }}_user_id", fallback_type=F_IPV4)
+    ]
+    event = {"src": "1.2.3.4", "platform": "gcp"}
+
+    with caplog.at_level(logging.ERROR):
+        extracted, _, _ = extract_observables_from_event(event, mappings)
+
+    assert len(extracted) == 1
+    assert extracted[0].observable.type == F_IPV4
+    assert "gcp_user_id" in caplog.text
+    assert "fallback_type" in caplog.text
+
+
+@pytest.mark.unit
+def test_extract_observables_templated_type_valid_ignores_fallback(caplog):
+    """A valid resolved type is used directly; fallback_type stays unused and nothing is logged."""
+    mappings = [ObservableMapping(field="src", type="{{ kind }}", fallback_type=F_HOSTNAME)]
+    event = {"src": "1.2.3.4", "kind": "ipv4"}
+
+    with caplog.at_level(logging.ERROR):
+        extracted, _, _ = extract_observables_from_event(event, mappings)
+
+    assert len(extracted) == 1
+    assert extracted[0].observable.type == F_IPV4
+    assert _error_records(caplog) == []
+
+
+@pytest.mark.unit
+def test_extract_observables_templated_type_unknown_fallback_skips(caplog):
+    """A fallback_type that is itself unknown skips the observable and logs an error."""
+    mappings = [
+        ObservableMapping(
+            field="src", type="{{ platform }}_user_id", fallback_type="zz_also_unknown"
+        )
+    ]
+    event = {"src": "some-id", "platform": "gcp"}
+
+    with caplog.at_level(logging.ERROR):
+        extracted, _, _ = extract_observables_from_event(event, mappings)
+
+    assert extracted == []
+    assert "zz_also_unknown" in caplog.text
+
+
+@pytest.mark.unit
+def test_extract_observables_templated_type_missing_field_skips_silently(caplog):
+    """A type template referencing a missing field skips silently — fallback does not apply."""
+    event = {"src": "some-id"}  # no 'platform'
+
+    for mapping in [
+        ObservableMapping(field="src", type="{{ platform }}_user_id"),
+        ObservableMapping(field="src", type="{{ platform }}_user_id", fallback_type=F_IPV4),
+    ]:
+        with caplog.at_level(logging.ERROR):
+            extracted, _, _ = extract_observables_from_event(event, [mapping])
+        assert extracted == []
+        assert _error_records(caplog) == []
+
+
+@pytest.mark.unit
+def test_extract_observables_templated_type_empty_field(caplog):
+    """A present-but-empty field resolves to an unknown type and takes the fallback path."""
+    event = {"src": "1.2.3.4", "platform": ""}
+
+    mappings = [ObservableMapping(field="src", type="{{ platform }}_user_id")]
+    with caplog.at_level(logging.ERROR):
+        extracted, _, _ = extract_observables_from_event(event, mappings)
+    assert extracted == []
+    assert "_user_id" in caplog.text
+
+    mappings = [
+        ObservableMapping(field="src", type="{{ platform }}_user_id", fallback_type=F_IPV4)
+    ]
+    with caplog.at_level(logging.ERROR):
+        extracted, _, _ = extract_observables_from_event(event, mappings)
+    assert len(extracted) == 1
+    assert extracted[0].observable.type == F_IPV4
+
+
+@pytest.mark.unit
+def test_extract_observables_templated_type_resolving_to_file_rejected(caplog):
+    """A templated type resolving to 'file' is unusable (no file_name handling)."""
+    mappings = [ObservableMapping(field="src", type="{{ t }}")]
+    event = {"src": "content", "t": "FILE"}
+
+    with caplog.at_level(logging.ERROR):
+        extracted, file_contents, _ = extract_observables_from_event(event, mappings)
+
+    assert extracted == []
+    assert file_contents == []
+    assert len(_error_records(caplog)) == 1
+
+
+@pytest.mark.unit
+def test_extract_observables_templated_type_syntax_error_skips(caplog):
+    """A malformed type template skips the mapping; the rendering layer logs the error."""
+    mappings = [ObservableMapping(field="src", type="{{ unclosed")]
+    event = {"src": "1.2.3.4", "unclosed": "ipv4"}
+
+    with caplog.at_level(logging.ERROR):
+        extracted, _, _ = extract_observables_from_event(event, mappings)
+
+    assert extracted == []
+    assert len(_error_records(caplog)) >= 1
+
+
+@pytest.mark.unit
+def test_extract_observables_static_unknown_type_unchanged():
+    """Regression guard: a static unknown type still creates an observable (no validation)."""
+    mappings = [ObservableMapping(field="src", type="zz_pytest_unknown_type")]
+    event = {"src": "some-value"}
+
+    extracted, _, _ = extract_observables_from_event(event, mappings)
+
+    assert len(extracted) == 1
+    assert extracted[0].observable.type == "zz_pytest_unknown_type"
+    assert extracted[0].observable.value == "some-value"
+
+
+@pytest.mark.unit
+def test_templated_type_parse_time_constraints():
+    """Pydantic validators reject invalid templated-type / fallback_type combinations."""
+    with pytest.raises(ValidationError):
+        ObservableMapping(field="x", type="{{ t }}", file_name="dump.bin")
+    with pytest.raises(ValidationError):
+        ObservableMapping(field="x", type="{{ t }}", file_decoder=DecoderType.BASE64)
+    with pytest.raises(ValidationError):
+        ObservableMapping(field="x", type=F_IPV4, fallback_type=F_HOSTNAME)
+    with pytest.raises(ValidationError):
+        ObservableMapping(field="x", type="{{ t }}", fallback_type="{{ u }}")
+    with pytest.raises(ValidationError):
+        ObservableMapping(field="x", type="{{ t }}", fallback_type=F_FILE)
+
+
+@pytest.mark.unit
+def test_extract_observables_templated_type_with_value_template():
+    """A templated type and a templated value resolve from the same event."""
+    mappings = [
+        ObservableMapping(
+            fields=["host", "domain"], type="{{ kind }}", value="{{ host }}.{{ domain }}"
+        )
+    ]
+    event = {"host": "workstation", "domain": "example.com", "kind": "HOSTNAME"}
+
+    extracted, _, _ = extract_observables_from_event(event, mappings)
+
+    assert len(extracted) == 1
+    assert extracted[0].observable.type == F_HOSTNAME
+    assert extracted[0].observable.value == "workstation.example.com"
 
 
 @pytest.mark.unit

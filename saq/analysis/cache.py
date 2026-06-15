@@ -56,10 +56,67 @@ if TYPE_CHECKING:
     from saq.analysis.root import RootAnalysis
 
 
-def generate_cache_key(observable: "Observable", module) -> Optional[str]:
-    """sha256 over observable identity + module identity + extended version.
+# Cache-key format version, hashed into every key. Bump whenever the key
+# derivation changes — existing rows become unreachable (their keys are
+# never generated again) and age out with their daily partitions. No
+# migration is ever needed for a key-format change.
+CACHE_KEY_FORMAT = "ace-analysis-cache-key-v2"
 
-    NOTE right now we are excluding ``observable.time`` from the key.
+# AnalysisModuleConfig base-class fields excluded from the config hash.
+# Two categories: operational knobs that don't change a module's output,
+# and eligibility filters that gate WHETHER the module runs — the executor
+# applies those before any cache lookup, so they can't change what a
+# cached result should contain. Everything else, crucially including any
+# module-specific field a config subclass adds (the get_config_class()
+# pattern), participates in the key — so an analyst editing a module's
+# YAML config invalidates that module's cache without a version bump.
+CONFIG_HASH_EXCLUDED_FIELDS = frozenset({
+    # identity — carried as separate key fields already
+    "name", "version",
+    # operational
+    "enabled", "description", "priority", "automation_limit",
+    "maximum_analysis_time", "cooldown_period", "semaphore_name",
+    "cache_ttl", "default_collapsed",
+    # eligibility filters (pre-execution gates, orthogonal to output)
+    "observable_exclusions", "expected_observables", "is_grouped_by_time",
+    "observation_grouping_time_range", "file_size_limit",
+    "valid_observable_types", "valid_queues", "invalid_queues",
+    "invalid_alert_types", "required_directives", "required_tags",
+    "requires_detection_path", "wide_diff",
+})
+
+
+def _config_hash(module) -> str:
+    """sha256 over the module's resolved config, minus operational and
+    eligibility fields (see CONFIG_HASH_EXCLUDED_FIELDS).
+
+    Computed per call — a pydantic model_dump + json.dumps of a small
+    config model is microseconds, negligible next to the DB lookup that
+    follows. Returns "none" for config objects without model_dump (test
+    stubs); python_module/python_class stay included so an implementation
+    swap invalidates too.
+    """
+    config = getattr(module, "config", None)
+    if config is None or not hasattr(config, "model_dump"):
+        return "none"
+    dumped = config.model_dump(mode="json")
+    filtered = {k: v for k, v in dumped.items() if k not in CONFIG_HASH_EXCLUDED_FIELDS}
+    serialized = json.dumps(filtered, sort_keys=True, default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def generate_cache_key(observable: "Observable", module) -> Optional[str]:
+    """sha256 over observable identity + module identity + module config +
+    extended version (key format v2).
+
+    Each component is hashed as ``label:length:bytes`` so field boundaries
+    are unambiguous (the v1 format concatenated raw values — and hashed
+    only extended_version *values*, so ``{"tool_a": "1.0"}`` and
+    ``{"tool_b": "1.0"}`` collided).
+
+    NOTE ``observable.time`` is deliberately excluded from the key — a
+    cacheable module's output must be a pure function of the observable
+    *value*; staleness is bounded by ``cache_ttl`` (design doc §8).
 
     Returns None when the module hasn't opted into caching.
     """
@@ -67,12 +124,20 @@ def generate_cache_key(observable: "Observable", module) -> Optional[str]:
         return None
 
     h = hashlib.sha256()
-    h.update(observable.type.encode("utf-8", "ignore"))
-    h.update(observable.value.encode("utf-8", "ignore"))
-    h.update(module.config.name.encode("utf-8", "ignore"))
-    h.update(str(module.version).encode("utf-8", "ignore"))
+
+    def _update(label: str, value: str) -> None:
+        encoded = value.encode("utf-8", "ignore")
+        h.update(f"{label}:{len(encoded)}:".encode("utf-8"))
+        h.update(encoded)
+
+    _update("format", CACHE_KEY_FORMAT)
+    _update("type", observable.type)
+    _update("value", observable.value)
+    _update("module", module.config.name)
+    _update("version", str(module.version))
+    _update("config", _config_hash(module))
     for key in sorted(module.extended_version):
-        h.update(module.extended_version[key].encode("utf-8", "ignore"))
+        _update(f"ext:{key}", module.extended_version[key])
     return h.hexdigest()
 
 
@@ -149,6 +214,30 @@ def put_cached_delta(
                     "observable_type": delta.observable_type,
                     "observable_value": delta.observable_value,
                     "refusal_reason": "removals",
+                },
+            )
+            return None
+
+        # Refuse relationships that point outside the delta's own scope
+        # (anything other than the analyzed observable or an observable
+        # this delta created). Such a relationship depends on surrounding
+        # tree context that a replay onto a different root cannot
+        # guarantee — replaying it would silently drop the relationship
+        # or attach it to the wrong node.
+        out_of_scope = delta.out_of_scope_relationship_targets()
+        if out_of_scope:
+            logging.warning(
+                "refusing to cache delta module_name=%s observable_type=%s "
+                "observable_value=%s refusal_reason=relationship_out_of_scope "
+                "relationship_count=%d",
+                module.config.name, delta.observable_type, delta.observable_value,
+                len(out_of_scope),
+                extra={
+                    "module_name": module.config.name,
+                    "observable_type": delta.observable_type,
+                    "observable_value": delta.observable_value,
+                    "refusal_reason": "relationship_out_of_scope",
+                    "relationship_count": len(out_of_scope),
                 },
             )
             return None
@@ -438,8 +527,12 @@ def get_cached_delta(
 
     try:
         # The cache is append-only, so several non-expired rows can share a
-        # cache_key; order by expires_at DESC so the freshest (longest-lived)
-        # row wins.
+        # cache_key; order by created_at DESC so the freshest *data* wins.
+        # (Ordering by expires_at DESC — the original choice — breaks down
+        # when a module's cache_ttl is reduced: rows written under the old,
+        # longer TTL keep a later expires_at than any new row and shadow
+        # fresher results until they expire.) The clustered PK is
+        # (cache_key, created_at), so this is an index-order read.
         row = get_db(DB_ANALYSIS_RESULT_CACHE).execute(
             select(
                 AnalysisResultCache.delta_zstd,
@@ -449,7 +542,7 @@ def get_cached_delta(
                 AnalysisResultCache.cache_key == cache_key,
                 AnalysisResultCache.expires_at > func.now(),
             )
-            .order_by(AnalysisResultCache.expires_at.desc())
+            .order_by(AnalysisResultCache.created_at.desc())
             .limit(1)
         ).first()
 
@@ -474,7 +567,7 @@ def get_cached_delta(
         # Step 3.4 legacy-shape guard: pre-Step-3.1 rows wrote
         # `analysis` dicts without a `details` key. Treat as miss so the
         # executor falls through to a live run; that run inserts a fresh
-        # Step-3.1-shaped row, which then wins the expires_at ordering above.
+        # Step-3.1-shaped row, which then wins the created_at ordering above.
         analysis_in_dict = delta_dict.get("analysis")
         if isinstance(analysis_in_dict, dict) and "details" not in analysis_in_dict:
             return CacheLookupResult(None, "legacy_no_details", _elapsed_ms(), cache_key_prefix)
@@ -594,7 +687,10 @@ def apply_delta(
         _apply_observable_spec(parent_for_new, spec)
 
     # 3. Apply mutations to the target observable.
-    _apply_observable_diff(target_observable, delta.target_observable_diff, root)
+    _apply_observable_diff(
+        target_observable, delta.target_observable_diff, root,
+        source_observable_uuid=delta.observable_uuid,
+    )
 
     # 4. Apply root-level mutations.
     _apply_root_diff(root, delta.root_diff)
@@ -709,9 +805,13 @@ def _apply_observable_spec(parent_analysis, spec) -> None:
             new_obs._limited_analysis.append(name)
 
 
-def _apply_observable_diff(observable, diff, root) -> None:
+def _apply_observable_diff(observable, diff, root, source_observable_uuid=None) -> None:
     """Apply an ObservableDiff's additions and scalar transitions to a
     live observable. All primitives are idempotent; safe to re-apply.
+
+    ``source_observable_uuid`` is the analyzed observable's uuid as
+    captured in the *source* alert — used to resolve self-referencing
+    relationships when replaying onto a different root.
     """
     for tag in diff.added_tags:
         observable.add_tag(tag)
@@ -728,11 +828,38 @@ def _apply_observable_diff(observable, diff, root) -> None:
         r_type = rel_dict.get("type")
         if not target_uuid or not r_type:
             continue
+        # Resolution order: uuid (same-root replay) → self-target
+        # shortcut → (type, value, time) spec. UUIDs are per-alert, so on
+        # a cross-alert replay only the latter two can succeed. The
+        # self-target shortcut exists because Observable.__eq__ compares
+        # ``time`` whenever either side carries one — the cache key
+        # ignores observable.time, so the current observable's time can
+        # differ from the source's and a spec lookup would miss.
         target_obs = root.get_observable(target_uuid)
+        if target_obs is None and target_uuid == source_observable_uuid:
+            target_obs = observable
+        if target_obs is None and rel_dict.get("target_type"):
+            t_time = None
+            if rel_dict.get("target_time"):
+                try:
+                    t_time = parse_event_time(rel_dict["target_time"])
+                except Exception:
+                    t_time = None
+            target_obs = root.get_observable_by_spec(
+                rel_dict["target_type"], rel_dict.get("target_value"), t_time,
+            )
         if target_obs is None:
-            logging.debug(
-                "skipping relationship %s -> %s on cache replay — target not in tree",
-                r_type, target_uuid,
+            # Legacy uuid-only delta (pre target-spec capture) or an
+            # out-of-scope target from before the write-time refusal.
+            logging.warning(
+                "skipping relationship on cache replay — target unresolved "
+                "r_type=%s target_uuid=%s target_type=%s",
+                r_type, target_uuid, rel_dict.get("target_type"),
+                extra={
+                    "r_type": r_type,
+                    "target_uuid": target_uuid,
+                    "target_type": rel_dict.get("target_type"),
+                },
             )
             continue
         observable.add_relationship(r_type, target_obs)

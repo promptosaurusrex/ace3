@@ -1,3 +1,4 @@
+import json
 import pytest
 from datetime import datetime, timezone
 
@@ -10,7 +11,13 @@ from whoisit.errors import (
 )
 
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_RDAP_ANALYZER, F_FQDN, AnalysisExecutionResult
+from saq.constants import (
+    ANALYSIS_MODULE_RDAP_ANALYZER,
+    F_FQDN,
+    F_IP,
+    AnalysisExecutionResult,
+)
+from saq.json_encoding import _JSONEncoder
 from saq.modules.rdap import RdapAnalysis, RdapAnalyzer, _registrable_domain
 from tests.saq.helpers import create_root_analysis
 
@@ -25,6 +32,13 @@ def _patch_rdap(monkeypatch, fn):
     monkeypatch.setattr("saq.modules.rdap.whoisit.is_bootstrapped", lambda: True)
     monkeypatch.setattr("saq.modules.rdap.whoisit.bootstrap", lambda: True)
     monkeypatch.setattr("saq.modules.rdap.whoisit.domain", fn)
+
+
+def _patch_rdap_ip(monkeypatch, fn):
+    """Patch ``whoisit.ip`` and short-circuit the bootstrap check."""
+    monkeypatch.setattr("saq.modules.rdap.whoisit.is_bootstrapped", lambda: True)
+    monkeypatch.setattr("saq.modules.rdap.whoisit.bootstrap", lambda: True)
+    monkeypatch.setattr("saq.modules.rdap.whoisit.ip", fn)
 
 
 def _patch_whois(monkeypatch, fn):
@@ -73,6 +87,44 @@ def _make_rdap_result(**overrides):
     return result
 
 
+def _make_rdap_ip_result(**overrides):
+    """Build a realistic whoisit.ip() return dict.
+
+    Mirrors the flat-dict shape ``whoisit.ip()`` produces: network
+    identity/CIDR/country fields plus the shared date/entity/url fields.
+    For IPs the entity roles are typically ``registrant``/``abuse``
+    (no ``registrar`` role), so ``registrar`` extraction yields None.
+    """
+    from ipaddress import IPv4Network
+
+    result = {
+        "name": "GOGL",
+        "handle": "GOGL",
+        "parent_handle": "NET8",
+        "type": "ip network",
+        "country": "US",
+        "ip_version": 4,
+        "assignment_type": "direct allocation",
+        "network": IPv4Network("8.8.8.0/24"),
+        "url": "https://rdap.arin.net/registry/ip/8.8.8.0",
+        "rir": "arin",
+        "registration_date": datetime(2009, 3, 30, tzinfo=timezone.utc),
+        "last_changed_date": datetime(2012, 2, 24, tzinfo=timezone.utc),
+        "expiration_date": None,
+        "entities": {
+            "registrant": [
+                {"name": "Google LLC", "email": "arin-contact@google.test"},
+            ],
+            "abuse": [
+                {"name": "Abuse", "email": "network-abuse@google.test"},
+            ],
+        },
+        "raw": {"objectClassName": "ip network", "handle": "NET-8-8-8-0-1"},
+    }
+    result.update(overrides)
+    return result
+
+
 def _make_analyzer(test_context):
     return RdapAnalyzer(
         context=test_context,
@@ -104,6 +156,11 @@ def test_rdap_analysis_properties():
     assert analysis.rdap_service_url is None
     assert analysis.name_servers is None
     assert analysis.emails is None
+    assert analysis.network_cidr is None
+    assert analysis.network_name is None
+    assert analysis.country is None
+    assert analysis.ip_version is None
+    assert analysis.assignment_type is None
     assert analysis.rdap_data is None
     assert analysis.rdap_raw_json is None
     assert analysis.whois_data is None
@@ -223,7 +280,83 @@ def test_rdap_analyzer_properties():
         config=get_analysis_module_config(ANALYSIS_MODULE_RDAP_ANALYZER)
     )
     assert analyzer.generated_analysis_type == RdapAnalysis
-    assert analyzer.valid_observable_types == F_FQDN
+    assert analyzer.valid_observable_types == [F_FQDN, F_IP]
+
+
+# ---------------------------------------------------------------------------
+# custom_requirement (non-routable IP skip)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "value",
+    [
+        "10.1.2.3",        # RFC1918
+        "172.16.5.5",      # RFC1918
+        "192.168.1.1",     # RFC1918
+        "127.0.0.1",       # loopback
+        "169.254.10.10",   # link-local
+        "100.64.0.1",      # CGNAT shared address space
+        "::1",             # IPv6 loopback
+        "fe80::1",         # IPv6 link-local
+    ],
+)
+def test_rdap_analyzer_skips_non_routable_ip(value):
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_IP, value)
+
+    analyzer = RdapAnalyzer(
+        config=get_analysis_module_config(ANALYSIS_MODULE_RDAP_ANALYZER)
+    )
+    assert analyzer.custom_requirement(observable) is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "value",
+    [
+        "8.8.8.8",
+        "1.1.1.1",
+        "2606:4700:4700::1111",
+    ],
+)
+def test_rdap_analyzer_accepts_routable_ip(value):
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_IP, value)
+
+    analyzer = RdapAnalyzer(
+        config=get_analysis_module_config(ANALYSIS_MODULE_RDAP_ANALYZER)
+    )
+    assert analyzer.custom_requirement(observable) is True
+
+
+@pytest.mark.unit
+def test_rdap_analyzer_custom_requirement_ignores_fqdn():
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_FQDN, "intranet.example.com")
+
+    analyzer = RdapAnalyzer(
+        config=get_analysis_module_config(ANALYSIS_MODULE_RDAP_ANALYZER)
+    )
+    assert analyzer.custom_requirement(observable) is True
+
+
+@pytest.mark.unit
+def test_rdap_analyzer_custom_requirement_unparseable_ip():
+    # IPObservable validates its value, so this can't happen through the
+    # normal observable path — defensive branch only.
+    class _FakeObservable:
+        type = F_IP
+        value = "not-an-ip"
+
+    analyzer = RdapAnalyzer(
+        config=get_analysis_module_config(ANALYSIS_MODULE_RDAP_ANALYZER)
+    )
+    assert analyzer.custom_requirement(_FakeObservable()) is True
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +434,152 @@ def test_rdap_analyzer_extracts_expiration(test_context, monkeypatch):
     analyzer.execute_analysis(observable)
     analysis = observable.get_analysis(RdapAnalysis)
     assert analysis.datetime_expiration == "2030-01-01 00:00:00+00:00"
+
+
+# ---------------------------------------------------------------------------
+# Happy-path RDAP for IP observables
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_rdap_analyzer_ip_success(test_context, monkeypatch):
+    """An IP observable is queried via ``whoisit.ip`` and the
+    IP-specific fields (network CIDR/name/country/version) are
+    populated alongside the shared registration data."""
+    ip_result = _make_rdap_ip_result()
+    _patch_rdap_ip(monkeypatch, lambda _ip, **_kw: ip_result)
+    _patch_whois_must_not_be_called(monkeypatch)
+    # domain() must not be used for an IP observable.
+    monkeypatch.setattr(
+        "saq.modules.rdap.whoisit.domain",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            AssertionError("whoisit.domain must not be called for an IP")
+        ),
+    )
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_IP, "8.8.8.8")
+
+    analyzer = _make_analyzer(test_context)
+    analyzer.root = root
+
+    result = analyzer.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_analysis(RdapAnalysis)
+    assert analysis is not None
+    assert analysis.error is None
+    assert analysis.lookup_protocol == "rdap"
+
+    assert analysis.network_cidr == "8.8.8.0/24"
+    assert analysis.network_name == "GOGL"
+    assert analysis.country == "US"
+    assert analysis.ip_version == 4
+    assert analysis.assignment_type == "direct allocation"
+    assert analysis.rdap_service_url == "https://rdap.arin.net/registry/ip/8.8.8.0"
+
+    # Shared fields still populate from the IP response.
+    assert analysis.emails == ["arin-contact@google.test", "network-abuse@google.test"]
+    assert analysis.datetime_created is not None
+    assert analysis.age_created_in_days.isdigit()
+    assert analysis.datetime_of_last_update is not None
+    # IP allocations have no expiration.
+    assert analysis.datetime_expiration is None
+    # No registrar role on IP responses.
+    assert analysis.registrar is None
+    assert analysis.name_servers == []
+
+    # network_cidr is a plain string for display/summary use.
+    assert analysis.network_cidr == "8.8.8.0/24"
+    # rdap_data keeps the raw ipaddress network object; the details must still
+    # serialize via ACE's analysis JSON encoder (regression guard — saving the
+    # analysis would otherwise fail with "unsupported type ... IPv4Network").
+    serialized = json.dumps(analysis.details, cls=_JSONEncoder)
+    assert "8.8.8.0/24" in serialized
+
+    summary = analysis.generate_summary()
+    assert "network: 8.8.8.0/24 (GOGL)" in summary
+    assert "country: US" in summary
+
+
+@pytest.mark.unit
+def test_rdap_analyzer_ip_queried_verbatim(test_context, monkeypatch):
+    """IP observables must be passed to ``whoisit.ip`` unchanged — the
+    eTLD+1 reduction applied to domains must NOT touch an IP."""
+    seen = {}
+
+    def _capture(ip, **_kw):
+        seen["query"] = ip
+        return _make_rdap_ip_result()
+
+    _patch_rdap_ip(monkeypatch, _capture)
+    _patch_whois_must_not_be_called(monkeypatch)
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_IP, "8.8.8.8")
+
+    analyzer = _make_analyzer(test_context)
+    analyzer.root = root
+
+    analyzer.execute_analysis(observable)
+    assert seen["query"] == "8.8.8.8"
+
+
+@pytest.mark.unit
+def test_rdap_analyzer_ip_resource_does_not_exist(test_context, monkeypatch):
+    """Authoritative ``does not exist`` for an IP is final — no fallback."""
+    def _raise(_ip, **_kw):
+        raise ResourceDoesNotExist("Object does not exist in registry")
+
+    _patch_rdap_ip(monkeypatch, _raise)
+    _patch_whois_must_not_be_called(monkeypatch)
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_IP, "203.0.113.5")
+
+    analyzer = _make_analyzer(test_context)
+    analyzer.root = root
+
+    analyzer.execute_analysis(observable)
+    analysis = observable.get_analysis(RdapAnalysis)
+    assert analysis.lookup_protocol is None
+    assert analysis.error is not None
+    assert "not found" in analysis.error
+    assert analysis.network_cidr is None
+
+
+@pytest.mark.unit
+def test_rdap_analyzer_ip_falls_back_to_whois(test_context, monkeypatch):
+    """When RDAP errors for an IP, the generic WHOIS fallback still runs
+    against the raw IP."""
+    def _rdap(_ip, **_kw):
+        raise QueryError("RDAP service errored")
+
+    _patch_rdap_ip(monkeypatch, _rdap)
+    whois_calls = {}
+
+    def _whois(target):
+        whois_calls["target"] = target
+        return _MockWhoisResult({"text": "mock arin whois"})
+
+    _patch_whois(monkeypatch, _whois)
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_IP, "8.8.8.8")
+
+    analyzer = _make_analyzer(test_context)
+    analyzer.root = root
+
+    analyzer.execute_analysis(observable)
+    analysis = observable.get_analysis(RdapAnalysis)
+    assert analysis.lookup_protocol == "whois"
+    assert analysis.rdap_attempt_error is not None
+    # The raw IP (not an eTLD+1 reduction) is what WHOIS is queried with.
+    assert whois_calls["target"] == "8.8.8.8"
 
 
 # ---------------------------------------------------------------------------

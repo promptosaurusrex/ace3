@@ -13,7 +13,7 @@ import urllib3
 from ace_api import upload
 from saq.analysis.root import RootAnalysis, Submission
 from saq.configuration.config import get_config, get_engine_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, DB_COLLECTION, NO_NODES_AVAILABLE, NO_WORK_AVAILABLE, NO_WORK_SUBMITTED, WORK_SUBMITTED
+from saq.constants import ANALYSIS_MODE_CORRELATION, DB_COLLECTION, NO_NODES_AVAILABLE, NO_WORK_AVAILABLE, NO_WORK_SUBMITTED, NODE_STATUS_RUNNING, WORK_SUBMITTED
 from saq.database import ALERT, execute_with_retry, get_db, get_db_connection, remove_all_sessions
 from saq.database.pool import execute_with_db_cursor
 from saq.engine.node_manager.distributed_node_manager import translate_node
@@ -31,9 +31,10 @@ class RemoteNode:
             location: str, 
             any_mode: int, 
             last_update: datetime, 
-            analysis_mode: Union[str, None], 
-            workload_count: int, 
-            company_id: Optional[int]=None):
+            analysis_mode: Union[str, None],
+            workload_count: int,
+            company_id: Optional[int]=None,
+            status: str=NODE_STATUS_RUNNING):
 
         assert isinstance(id, int)
         assert isinstance(name, str)
@@ -42,6 +43,7 @@ class RemoteNode:
         assert isinstance(last_update, datetime)
         assert analysis_mode is None or isinstance(analysis_mode, str)
         assert isinstance(workload_count, int)
+        assert isinstance(status, str)
 
         self.id: int = id
         self.name: str = name
@@ -51,6 +53,7 @@ class RemoteNode:
         self.analysis_mode: str = analysis_mode
         self.workload_count: int = workload_count
         self.company_id: Optional[int] = company_id
+        self.status: str = status
 
         # the directory that contains any files that to be transfered along with submissions
         self.incoming_dir = os.path.join(get_data_dir(), get_config().collection.incoming_dir)
@@ -315,6 +318,7 @@ SELECT
     nodes.location, 
     nodes.any_mode,
     nodes.last_update,
+    nodes.status,
     node_modes.analysis_mode,
     COUNT(workload.id) AS 'WORKLOAD_COUNT'
 FROM
@@ -329,6 +333,7 @@ GROUP BY
     nodes.location,
     nodes.any_mode,
     nodes.last_update,
+    nodes.status,
     node_modes.analysis_mode,
     node_modes_excluded.analysis_mode
 ORDER BY
@@ -348,6 +353,12 @@ ORDER BY
 
             where_clause.append("TIMESTAMPDIFF(SECOND, nodes.last_update, NOW()) <= %s")
             where_clause_params.append(self.node_status_update_frequency * 2)
+
+            # running nodes and nodes still flushing their collectors can receive new work
+            # a node in draining_collectors still accepts work so that collectors whose
+            # only eligible target is that node can flush their backlog
+            # draining, drained and stopped nodes are excluded
+            where_clause.append("nodes.status IN ( 'running', 'draining_collectors' )")
 
             param_str = ','.join(['%s' for _ in available_modes])
             where_clause.append(f""" 
@@ -389,8 +400,8 @@ ORDER BY
         analysis_mode_mapping = {} # key = analysis_mode, value = [ RemoteNode ]
         any_mode_nodes = [] # list of nodes with any_mode set to True
         
-        for node_id, name, location, any_mode, last_update, analysis_mode, workload_count in node_status:
-            remote_node = RemoteNode(node_id, name, location, any_mode, last_update, analysis_mode, workload_count, company_id=self.company_id)
+        for node_id, name, location, any_mode, last_update, node_status_value, analysis_mode, workload_count in node_status:
+            remote_node = RemoteNode(node_id, name, location, any_mode, last_update, analysis_mode, workload_count, company_id=self.company_id, status=node_status_value)
             if any_mode:
                 any_mode_nodes.append(remote_node)
 
@@ -515,11 +526,12 @@ ORDER BY
                 self.coverage_counter -= 100
 
                 # sort the list of RemoteNode objects by the workload_count
+                # running nodes are preferred over nodes that are starting to drain
                 available_targets = any_mode_nodes[:]
                 if analysis_mode in analysis_mode_mapping:
                     available_targets.extend(analysis_mode_mapping[analysis_mode])
-            
-                target = sorted(available_targets, key=lambda n: n.workload_count)
+
+                target = sorted(available_targets, key=lambda n: (0 if n.status == NODE_STATUS_RUNNING else 1, n.workload_count))
                 target = target[0] 
 
                 # attempt the send

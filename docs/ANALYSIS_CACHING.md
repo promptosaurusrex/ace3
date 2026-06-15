@@ -1,6 +1,7 @@
 # Per-Module Analysis Diff Tracking & Caching
 
-Status: Phases 1–3 and the Phase 2.5 write-only bake have shipped; Phase 3.5
+Status: Phases 1–3 and the Phase 2.5 write-only bake have shipped, plus a
+capture/replay hardening pass (2026-06-10 — see Part II); Phase 3.5
 (single-flight dedup) and Phase 4 (file-observable caching) are designed but not
 yet implemented.
 Origin: design sessions starting 2026-04-09. This document merges the original
@@ -17,6 +18,28 @@ This document has two parts:
 ---
 
 # Part I — Design
+
+## Current state at a glance (2026-06-10)
+
+This document grew as a running log across four PRs and two hardening
+passes; several sections below describe earlier states with "superseded
+by" callouts. This table is the current truth — each row links to the
+section with the full design.
+
+| Aspect | Current state | Detail |
+|--------|---------------|--------|
+| **Cache key** | v2: sha256 over `label:length:bytes` fields — format constant, observable type+value, module name+version, **config hash** (module YAML config minus operational/eligibility fields), sorted `ext:<k>=<v>` extended_version pairs. `observable.time` excluded. | §8 |
+| **Storage** | Append-only `analysis_result_cache` in the dedicated `analysis-result-cache` DB; PK `(cache_key, created_at)`; daily `RANGE COLUMNS(created_at)` partitions; zstd-compressed delta payload; `details` > 16 KiB spill to the blob store (`blob_refs` table alongside). | §4, §A3, §A8 |
+| **Read path** | `WHERE cache_key=? AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1` — freshest *data* wins (not longest-lived). Legacy-shape, blob-missing, decode errors → miss; replay errors fall through to a live run. | §5, §A8 |
+| **Write refusals** | empty delta; removals (incl. **root-level**); still-delayed analysis; **non-COMPLETED module result**; file observables; **out-of-scope relationships** (target neither the analyzed observable nor delta-created); compressed size > 1 MiB. | §A4 |
+| **What replays** | Analysis object (summary, summary_details, details, **tags**), new observables + initial state, observable diff additions + scalar transitions, relationships (resolved by uuid → self-target → (type,value,time) spec), root-level additions. NOT: analysis detection points / pivot_links (uncaptured), wide-diff structures. | §5 |
+| **root.json attribution** | Every non-empty delta recorded per module execution, **details-stripped** (cache row keeps details); cache hits recorded as `from_cache_hit=True` copies with `cached_at`. | §3, Part II hardening notes |
+| **Delayed modules** | Cacheable: final-cycle delta is merged with prior cycles' recorded deltas at write time; mid-delay cycles never cached (COMPLETED gate). | open question 3 |
+| **Config guards** | `cache_ttl` mutually exclusive with `wide_diff` and with `is_grouped_by_time` (pydantic validators); CI contract lint per opt-in (removals / file observables / relationship scope). | §A6, §A1 |
+| **Lifecycle** | Daily partition maintenance (drop > `partition_retention_days`=35, reorganize catchall, provision ahead); read-time `expires_at` filter owns precision; blob GC is a separate grace-period sweep. No row DELETEs anywhere. | §A8 |
+| **Opt-ins (core)** | `rdap_analyzer` 7d; `nrd_analyzer` 24h + DB-file `extended_version`; `site_tagger` 30d + CSV `extended_version`. | Phase 3 notes |
+| **Metrics** | Per-(root, module) fields on the per-root summary event: hit/miss/write counts, lookup latency (**hits + misses**), write latency/bytes. `cache_stats` heartbeat (15 min) from partition statistics. | PR #242 notes |
+| **Not implemented** | Phase 3.5 single-flight dedup (redesigned 2026-06-10: non-blocking, delayed-analysis requeue, `single_flight` opt-in — §A9); Phase 4 file-observable caching + `materialize()`; tool-version `extended_version` helper. | §A9, Phase 4 |
 
 ## Problem
 
@@ -161,7 +184,7 @@ the following fields:
 | `root_uuid` | `str` | root provenance; rewritten to the current alert on cache-hit replay (`with_cache_hit_metadata`). |
 | `created_at` | `str` (ISO) | when the delta was recorded; rewritten to the replay time on a cache hit. |
 | `execution_time_ms` | `int` | metric (lookup + replay time on a cache hit). |
-| `analysis` | `dict \| None` | serialized Analysis object produced, or `None` if the module returned INCOMPLETE / added no analysis. Includes summary, `details` (inlined since Phase 3 Step 3.1), completed/delayed flags. |
+| `analysis` | `dict \| None` | serialized Analysis object produced, or `None` if the module returned INCOMPLETE / added no analysis. Includes summary, `details` (inlined since Phase 3 Step 3.1), analysis-object tags, completed/delayed flags. **The copy recorded into root.json is details-stripped** (`without_analysis_details()`, 2026-06-10) — only the cache row carries `details`; see the capture/replay hardening notes in Part II. Analysis-object detection points / pivot_links / llm_context_documents are NOT captured (deferred — a cacheable module must not rely on them). |
 | `target_observable_diff` | `ObservableDiff` | what changed on the analyzed observable (see below). |
 | `new_observables` | `list[ObservableSpec]` | observables this module added to the root (type, value, time, initial tags, detections, directives). |
 | `root_diff` | `RootDiff` | root-level tag/detection additions (rare but possible). |
@@ -243,8 +266,11 @@ unique key, and the table is partitioned daily on `created_at` (§A8), so
 `cache_key` can no longer be unique on its own. The practical consequence is
 that **the cache is append-only**: a repeat analysis of the same observable
 inserts another row rather than upserting, several non-expired rows can share
-a `cache_key`, and the read path picks the freshest one
-(`ORDER BY expires_at DESC LIMIT 1`). See revised §open-question 5.
+a `cache_key`, and the read path picks the most recently created one
+(`ORDER BY created_at DESC LIMIT 1`; changed from `expires_at DESC` on
+2026-06-10 — ordering by expiry let rows written under a longer,
+since-reduced `cache_ttl` shadow fresher data until they expired). See
+revised §open-question 5.
 
 Migration: the cache database has its own Alembic environment,
 `alembic/analysis_cache` (config `alembic/analysis_cache.ini`), separate from
@@ -315,7 +341,11 @@ module) cache-hit / lookup-latency counters (§Phase 3 metrics).
    then apply the spec's initial tags/detections/directives.
 3. Add the target observable's tags/detections/directives/relationships and
    scalar transitions from `delta.target_observable_diff` — all additive, all
-   idempotent.
+   idempotent. Relationship targets resolve by uuid (same-root), then a
+   self-target shortcut, then `(target_type, target_value, target_time)` spec
+   lookup — uuids are per-alert, so cross-alert replay relies on the spec
+   fields the snapshot captures alongside each relationship (2026-06-10).
+   Unresolvable targets (legacy uuid-only rows) log a WARNING and skip.
 4. Apply `delta.root_diff` to root-level tags/detections.
 
 `apply_delta` refuses (read-time) any delta with file observables — that is
@@ -373,21 +403,51 @@ def extended_version(self) -> dict[str, str]: ...
 
 ### 8. Cache key
 
+> **Format v2 (2026-06-10).** The original (v1) key concatenated raw field
+> bytes with no delimiters and hashed only extended_version *values* — so
+> `{"tool_a": "1.0"}` and `{"tool_b": "1.0"}` collided, and field boundaries
+> were ambiguous in principle. v2 hashes each component as
+> `label:length:bytes` under a format-version prefix, and adds a **module
+> config hash**. Bumping the format constant orphans all existing rows
+> (their keys are never generated again); they age out with their daily
+> partitions — a key-format change never needs a migration.
+
 ```python
+CACHE_KEY_FORMAT = "ace-analysis-cache-key-v2"
+
 def generate_cache_key(observable, module):
     if module.cache_ttl is None:
         return None
     h = hashlib.sha256()
-    h.update(observable.type.encode("utf-8", "ignore"))
-    h.update(observable.value.encode("utf-8", "ignore"))
-    h.update(module.config.name.encode("utf-8", "ignore"))
-    h.update(str(module.version).encode("utf-8", "ignore"))
+    _update(h, "format", CACHE_KEY_FORMAT)      # each field: label:length:bytes
+    _update(h, "type", observable.type)
+    _update(h, "value", observable.value)
+    _update(h, "module", module.config.name)
+    _update(h, "version", str(module.version))
+    _update(h, "config", _config_hash(module))  # see below
     for key in sorted(module.extended_version):
-        h.update(module.extended_version[key].encode("utf-8", "ignore"))
+        _update(h, f"ext:{key}", module.extended_version[key])
     return h.hexdigest()
 ```
 
 Lives in `saq/analysis/cache.py`.
+
+**The config hash** closes an invalidation gap: a module's YAML config can
+change its output (thresholds, endpoints, any module-specific
+`get_config_class()` field) without `version` being bumped — silently
+serving stale results until TTL. `_config_hash` is sha256 over the module's
+resolved pydantic config `model_dump`, minus an explicit exclusion set
+(`CONFIG_HASH_EXCLUDED_FIELDS`): operational knobs (`priority`,
+`maximum_analysis_time`, `semaphore_name`, `cache_ttl` itself — a TTL
+change must not orphan live entries — etc.) and eligibility filters that
+gate *whether* the module runs rather than what it produces
+(`valid_observable_types`, `required_directives`, queue filters, etc. —
+the executor applies these before any cache lookup). Everything else
+participates, including `python_module`/`python_class` and all
+subclass-specific fields, so an analyst config edit invalidates that
+module's cache automatically. Over-invalidation from an
+unnecessarily-included field costs only cache misses; under-invalidation
+is the bug the hash exists to prevent.
 
 **`observable.time` is deliberately excluded** (ace2-core's formula included
 it; ACE3 dropped it — it was hashed into the key in an early build and
@@ -485,8 +545,8 @@ confidence criteria.
   accumulators aggregated onto the existing per-root summary event, **not**
   per-event log lines (reworked in PR #242 — see Part II).
 - CI lint: `tests/saq/modules/test_cacheable_modules_contract.py` asserts every
-  YAML-shipped `cache_ttl` module is registered and produces no removals / no
-  file observables.
+  YAML-shipped `cache_ttl` module is registered and produces no removals, no
+  file observables, and no out-of-scope relationships (2026-06-10).
 - Modules opted in (current shipped state, `etc/saq.default.yaml`):
   `rdap_analyzer` (7d), `nrd_analyzer` (24h), `site_tagger` (30d) — all small,
   deterministic, additive, and each driving cache invalidation through
@@ -538,6 +598,18 @@ confidence criteria.
    `delayed: True→False` transition, and `put_cached_delta` refuses any delta
    still flagged `delayed`, so only the final post-delay result is cached.
 
+   *Hardened 2026-06-10 (capture/replay hardening, Part II):* two gaps in
+   that resolution were fixed. (a) The still-delayed refusal inspects the
+   analysis dict, but a module that delays **2+ times** produces intermediate
+   deltas with `analysis=None` (slot already present, no transition) which
+   slipped past it — partial mid-delay results were cached. The executor
+   cache write is now gated on the module returning COMPLETED. (b) The final
+   cycle's diff only covers the final cycle, so pre-delay tree mutations
+   (tags, child observables) were missing from the cached delta. On a delayed
+   resume the executor now merges the prior cycles' recorded deltas (from
+   `root.module_executions`, persisted across restarts) into the cached delta
+   via `merge_module_execution_deltas()`.
+
 4. **Modules that mutate other observables:** Rare but possible — a module
    analyzing observable A might `root.add_tag` or tag observable B. The
    snapshot focuses on the *analyzed* observable; cross-observable mutations
@@ -553,9 +625,10 @@ confidence criteria.
    unique — §4), so there is no key conflict to resolve: both engines simply
    `INSERT` and both rows coexist. Both results are valid by construction;
    the read path picks the freshest non-expired one
-   (`ORDER BY expires_at DESC LIMIT 1`) and the daily partition drop reclaims
-   the rest. Last-write-wins is preserved, just realized by read ordering
-   instead of by upsert.
+   (`ORDER BY created_at DESC LIMIT 1` since 2026-06-10; originally
+   `expires_at DESC`) and the daily partition drop reclaims the rest.
+   Last-write-wins is preserved, just realized by read ordering instead
+   of by upsert.
    *Note:* this addresses DB integrity only, not duplicate *work*. See §A9
    for the single-flight dedup design that prevents thundering-herd
    re-execution of expensive modules.
@@ -602,6 +675,14 @@ Modules whose output depends on *other observables*, *other analyses*,
 *global mutable state* are not cacheable, full stop. (`observable.time` is
 not part of the key — see §8. A module whose result depends on it is, by
 this contract, uncacheable.)
+
+Two further consequences of this contract are enforced mechanically:
+relationships must stay within the module's own output (§A4's
+`relationship_out_of_scope` refusal), and `is_grouped_by_time` cannot be
+combined with `cache_ttl` (config-load validator, 2026-06-10 — a cache
+hit bypasses `analyze()` and therefore `analysis_covered()`, so
+time-grouping and caching are incoherent together, same argument as the
+`wide_diff` exclusion in §A6).
 
 Crucially, the Phase 1 attribution machinery still records deltas for
 these modules — we just don't cache them. Seeing "ObservableModifier:my_rule
@@ -771,6 +852,24 @@ the target root X may not exist at all, may exist for a different reason
 for a module that hadn't run yet when the cache was populated. Removing
 it is a correctness hazard that we cannot verify from the delta alone.
 The safer default is: cacheable modules must be monotonic.
+
+Since 2026-06-10 `has_removals` also counts **root-level** removals
+(`root_diff.removed_tags/removed_detections`) — replay only ever applies
+root *additions*, so a root-level removal was previously cacheable but
+silently unreplayable.
+
+**Relationships have their own write-time scope refusal**
+(`refusal_reason=relationship_out_of_scope`, 2026-06-10): a cacheable
+module's relationships must target either the analyzed observable itself
+or an observable the same delta created. Anything else points at
+surrounding tree context a replay onto a different root cannot guarantee
+to reproduce. In-scope relationships ARE replayable — the snapshot
+captures each relationship target's `(type, value, time)` spec alongside
+the uuid, and replay re-resolves through it (§5). Known limitation: a
+relationship hung on a *new* observable (`child.add_relationship(...)`)
+is invisible to the narrow diff (`ObservableSpec` carries no
+`initial_relationships`) — a module doing that must stay uncached until
+the spec grows that field.
 
 Scalar-change handling is similar but laxer: a scalar change is
 effectively "set to new value", and replay sets it. If two modules both
@@ -1334,8 +1433,12 @@ expiry. The read-time filter (below) makes that lingering invisible to callers
 a partition drop never reclaims a row that is still live.
 
 **Secondary — read-time check.** On cache read, the SELECT still filters with
-`WHERE cache_key = ? AND expires_at > NOW()` and takes the freshest match
-(`ORDER BY expires_at DESC LIMIT 1`). This is what makes the coarse,
+`WHERE cache_key = ? AND expires_at > NOW()` and takes the most recently
+created match (`ORDER BY created_at DESC LIMIT 1` since 2026-06-10 — the
+original `expires_at DESC` ordering preferred the longest-lived row, which
+after a `cache_ttl` reduction is the *oldest* data; the clustered PK
+`(cache_key, created_at)` serves the new ordering in index order). This is
+what makes the coarse,
 once-a-day partition granularity correct: a row that has passed `expires_at`
 but whose partition hasn't been dropped yet is simply never returned. Expiry
 precision is owned by the read filter; the partition drop only reclaims space.
@@ -1470,8 +1573,20 @@ the triggering batch (it only helps the 11th-and-later alerts).
 This addendum expands the design to close that gap with a
 **pending-marker** protocol: before a cacheable module runs, workers
 race a claim on a dedicated coordination table. Exactly one worker
-wins and does the work; the others wait for it to populate the cache,
-then apply the cached delta.
+wins and does the work; the others **requeue themselves through the
+engine's existing delayed-analysis machinery** and re-check the cache
+when they resume.
+
+> **Redesigned 2026-06-10 (still unimplemented).** The original draft of
+> this addendum had deferred workers *block* in a sleep-poll loop
+> (`wait_for_cache`) for up to `maximum_analysis_time`. That design is
+> rejected — see "Why not blocking-wait?" below — in favor of the
+> non-blocking requeue described here. Single-flight is also now a
+> separate per-module opt-in (`single_flight: true`) rather than implied
+> by `cache_ttl`: the claim/release adds two DB writes to every cache
+> miss, which is pure overhead for cheap modules where concurrent
+> duplication doesn't matter. Only expensive, herd-prone modules
+> (phishkit-style crawlers, sandbox detonations) should opt in.
 
 #### Schema
 
@@ -1507,27 +1622,68 @@ if cached is not None:
     apply_delta(root, observable, cached)
     return  # cache hit
 
-# Phase 3.5: claim-or-wait
+# Phase 3.5: claim-or-defer (modules with single_flight: true only)
 claim_result = claim_pending(cache_key, module, worker_id)
 if claim_result == "owned":
     try:
         analysis_module.analyze(...)
-        # existing Phase 2 put_cached_delta runs after delta is recorded
+        # existing put_cached_delta runs after the delta is recorded
     finally:
         release_pending(cache_key)
 elif claim_result == "deferred":
-    waited = wait_for_cache(
-        cache_key,
-        timeout_seconds=module.maximum_analysis_time + PENDING_BUFFER_SECONDS,
-    )
-    if waited.result == "hit":
-        apply_delta(root, observable, waited.delta)
-        return
-    # timeout or other failure — fall back to running the module
-    # ourselves. The owner probably crashed; our run will populate
-    # the cache for future waiters.
-    analysis_module.analyze(...)
+    # NON-BLOCKING: create the module's Analysis slot as a flagged
+    # single-flight placeholder (delayed=True), register a delayed-
+    # analysis request for a short interval, and RETURN — the worker
+    # is free to do other work. No sleep, no poll loop.
+    analysis = create_placeholder_analysis(observable, module)
+    analysis.single_flight_deferred = True   # distinguishes from a real module delay
+    delay_analysis(observable, analysis, seconds=RECHECK_INTERVAL_SECONDS)
+    return AnalysisExecutionResult.INCOMPLETE
 ```
+
+On resume (the delayed-analysis request fires, possibly on a different
+worker or node), the executor — *not* the module, the placeholder has no
+module logic to continue — runs the re-check:
+
+```python
+# resume path for a single_flight_deferred placeholder
+cached = get_cached_delta(observable, module)
+if cached is not None:
+    remove_placeholder(observable, module)   # before apply_delta — the
+    apply_delta(root, observable, cached)    # slot-collision skip would
+    return                                   # otherwise keep the placeholder
+if not pending_exists(cache_key):
+    # owner finished without caching (refused delta) or crashed:
+    # run live ourselves via execute_analysis() (NOT continue_analysis —
+    # this module never started).
+    remove_placeholder(observable, module)
+    analysis_module.analyze(...)             # fresh run; populates cache
+elif now() >= claim.expires_at:
+    # owner exceeded its claim: treat as crashed, same as above
+    remove_placeholder(observable, module)
+    analysis_module.analyze(...)
+else:
+    # owner still working: re-delay until min(next interval, claim expiry)
+    delay_analysis(observable, analysis, seconds=RECHECK_INTERVAL_SECONDS)
+```
+
+`RECHECK_INTERVAL_SECONDS` should be coarse (~30–60s): the deferred
+alert's total latency only matters against the owner's multi-minute
+module run, and each re-check costs one cache SELECT + one pending
+SELECT. Open mechanics to resolve at implementation time:
+
+- the acceptance-check carve-out — `_check_module_acceptance` skips
+  delayed slots, so the resume path must recognize the
+  `single_flight_deferred` flag and route to the re-check above instead
+  of skipping (the existing `is_resuming_delayed_module` machinery is
+  the model, but the *executor* owns this resume, not the module's
+  `continue_analysis`);
+- placeholder cleanup — `apply_delta`'s slot-collision skip would
+  preserve the placeholder, so it must be removed before replay (or the
+  rehydration taught to replace flagged placeholders);
+- the placeholder must never be cached or counted as module output
+  (it is `delayed=True` and empty, so the existing refusal gates already
+  cover it — verify in tests).
 
 #### Claim mechanics
 
@@ -1553,30 +1709,27 @@ def claim_pending(cache_key, module, worker_id) -> "owned" | "deferred":
 The `INSERT IGNORE` + `rowcount` check is the atomic claim. No locks,
 no transactions beyond the single insert, no risk of deadlock.
 
-#### Wait mechanics
+#### Why not blocking-wait?
 
-```python
-def wait_for_cache(cache_key, timeout_seconds) -> WaitResult:
-    deadline = time.monotonic() + timeout_seconds
-    backoff = 0.1  # 100 ms
-    while time.monotonic() < deadline:
-        cached = get_cached_delta_by_key(cache_key)
-        if cached is not None:
-            return WaitResult(result="hit", delta=cached)
-        # Short-circuit: if the pending row is gone but no cache row
-        # exists, the owner crashed mid-run. Exit immediately so the
-        # waiter can fall back to running the module itself.
-        if not _pending_exists(cache_key):
-            return WaitResult(result="owner_abandoned", delta=None)
-        time.sleep(min(backoff, 2.0, deadline - time.monotonic()))
-        backoff *= 1.5
-    return WaitResult(result="timeout", delta=None)
-```
+The original draft had deferred workers sleep-poll until the owner
+populated the cache (exponential backoff, timeout at
+`maximum_analysis_time + buffer`). Rejected for three reasons:
 
-Exponential backoff capped at 2 seconds keeps poll traffic modest
-while staying responsive to fast modules. The `owner_abandoned`
-fast-path matters: if a waiter detected that the owner crashed, it
-shouldn't wait the full `maximum_analysis_time` before falling back.
+1. **It burns the resource it's protecting.** In the motivating
+   thundering-herd (10 identical phishing URLs, one multi-minute crawl),
+   blocking-wait parks 9 engine workers in `time.sleep` loops for the
+   crawl's full duration. Workers are precisely the scarce capacity the
+   dedup exists to save — the design would trade 9 redundant crawls for
+   9 idle workers, a wash at best.
+2. **The wait counts against the root's analysis budget.** The executor's
+   cumulative-time check (`_check_for_analysis_timeout`) sees wall time;
+   a long blocked wait inside one module execution pushes otherwise-fast
+   roots toward their analysis-mode timeout.
+3. **The engine already has the right primitive.** Delayed analysis is
+   purpose-built "come back later" machinery: persistent
+   (`delayed_analysis` table), node-aware, resumable in another process,
+   and already integrated with the work-stack and acceptance checks.
+   A bespoke poll loop duplicates that infrastructure poorly.
 
 #### Stale-pending reaping
 
@@ -1598,9 +1751,10 @@ if reaped > 0:
     logging.info("reaped %d stale analysis_cache_pending rows", reaped)
 ```
 
-Stale entries come from crashed workers. The waiters' `owner_abandoned`
-fast-path handles in-flight cases; this sweep cleans up lingering rows
-that no one is waiting on.
+Stale entries come from crashed workers. Deferred workers already
+handle the in-flight case themselves — the resume re-check treats a
+missing or expired claim as "owner gone, run live" — so this sweep only
+cleans up lingering rows that no deferred work item will ever revisit.
 
 #### Worker identity
 
@@ -1615,8 +1769,10 @@ Three new Splunk log lines:
 
 - `cache_claim result=owned|deferred cache_key=… module=… observable_type=…`
   — who won the race.
-- `cache_wait cache_key=… module=… waited_ms=… result=hit|timeout|owner_abandoned`
-  — how long deferred waiters blocked and what they got.
+- `cache_defer_resume cache_key=… module=… deferred_ms=… recheck_count=…
+  result=hit|owner_gone_ran_live|claim_expired_ran_live|redeferred`
+  — emitted on each resume re-check; `deferred_ms` is time since the
+  original claim race, `recheck_count` the number of re-delays so far.
 - `stale_pending_reaped rows=N` — cron sweep count.
 
 Splunk queries worth having:
@@ -1628,9 +1784,10 @@ index=<ace_index> "cache_claim"
 # → if result=owned is 1 and result=deferred is 9 on the same cache_key
 # within a few seconds, single-flight is working
 
-# wait latency distribution per module
-index=<ace_index> "cache_wait"
-  | stats perc50(waited_ms), perc99(waited_ms), max(waited_ms) by module
+# deferred-resolution latency and outcome mix per module
+index=<ace_index> "cache_defer_resume" result!=redeferred
+  | stats perc50(deferred_ms), perc99(deferred_ms), max(deferred_ms),
+          count by module, result
 
 # workers that abandoned claims (crash diagnostic)
 index=<ace_index> "stale_pending_reaped" | timechart max(rows)
@@ -1638,10 +1795,12 @@ index=<ace_index> "stale_pending_reaped" | timechart max(rows)
 
 #### Interaction with the cacheability contract
 
-Single-flight only runs for modules where `cache_ttl is not None`.
-Wide-diff modules, file-emitting modules, and anything else currently
-uncacheable remain unaffected — they always run, as today. This keeps
-the dedup surface aligned with the contract from §A1.
+Single-flight runs only for modules with `single_flight: true`, which
+itself requires `cache_ttl` (config validator: `single_flight` without
+`cache_ttl` is rejected — the protocol's whole resolution path is the
+cache). Wide-diff modules, file-emitting modules, and anything else
+currently uncacheable remain unaffected — they always run, as today.
+This keeps the dedup surface aligned with the contract from §A1.
 
 #### Why not a network semaphore?
 
@@ -2348,35 +2507,55 @@ result is reused within a process.
 
 ## Phase 3.5: Single-Flight Dedup (outline)
 
-Background: see `analysis_diff_tracking.md` §A9. Phase 3's read/replay
-short-circuits subsequent analyses but doesn't help simultaneous
-arrivals of the same observable — a thundering-herd of 10 identical
-phishing emails still produces 10 full module runs. Phase 3.5 adds a
-pending-marker protocol so exactly one worker runs the module and the
-rest wait for the cache to fill.
+> **Redesigned 2026-06-10** to be non-blocking: deferred workers requeue
+> through the delayed-analysis machinery instead of sleep-polling (the
+> original `wait_for_cache` loop parked a worker for the owner's full
+> module runtime — see §A9 "Why not blocking-wait?"). Single-flight is a
+> per-module `single_flight: true` opt-in (requires `cache_ttl`), not
+> implied by it.
+
+Background: see §A9. Phase 3's read/replay short-circuits subsequent
+analyses but doesn't help simultaneous arrivals of the same observable —
+a thundering-herd of 10 identical phishing emails still produces 10 full
+module runs. Phase 3.5 adds a pending-marker protocol: exactly one worker
+runs the module; the rest record a flagged placeholder analysis, register
+a delayed-analysis request, and re-check the cache when they resume.
 
 ### Step 3.5.1 — Schema + Alembic migration
-- `analysis_cache_pending` table (§A9)
-- Alembic autogenerate: `make db-revision MESSAGE="add analysis_cache_pending table"`
-- ORM class `AnalysisCachePending` in `saq/database/model.py`
+- `analysis_cache_pending` table (§A9) — in the cache DB, so
+  `make cache-db-revision MESSAGE="add analysis_cache_pending table"`.
+  NOT partitioned (small, short-lived rows; needs a real DELETE reaper)
+- ORM class `AnalysisCachePending` on `CacheBase`
 
-### Step 3.5.2 — Claim/release/wait helpers
+### Step 3.5.2 — Config + claim helpers
+- `single_flight: bool = False` on `AnalysisModuleConfig`, with a
+  validator requiring `cache_ttl` when set
 - In `saq/analysis/cache.py`:
   - `claim_pending(cache_key, module, worker_id) -> "owned" | "deferred"`
     via `INSERT IGNORE` and `rowcount` check
   - `release_pending(cache_key)` — single DELETE
-  - `wait_for_cache(cache_key, timeout_seconds)` — exponential backoff
-    polling, short-circuit on `owner_abandoned`
+  - `pending_claim(cache_key)` — fetch the live claim row (for the
+    resume re-check's expiry decision)
   - `reap_stale_pending()` — single DELETE WHERE `expires_at < NOW()`
 - Worker identity helper: `f"{socket.gethostname()}:{os.getpid()}"`
 
-### Step 3.5.3 — Executor integration
+### Step 3.5.3 — Executor integration (non-blocking, §A9 flow)
 - Inside `_execute_module_analysis` between the Phase 3 cache-read
-  miss path and the live `module.analyze()` call
+  miss path and the live `module.analyze()` call, gated on
+  `config.single_flight`
 - Owned branch: wrap `analyze()` in `try/finally` that always calls
   `release_pending()`
-- Deferred branch: `wait_for_cache` then `apply_delta`; fall through
-  to live run on timeout / owner_abandoned
+- Deferred branch: create a `single_flight_deferred` placeholder
+  analysis (delayed=True), `delay_analysis(seconds=RECHECK_INTERVAL)`,
+  return INCOMPLETE — the worker is released
+- Resume branch (executor-owned, not `continue_analysis`): re-check
+  cache → replace placeholder + `apply_delta` on hit; run live via
+  `execute_analysis` when the claim is gone or expired; re-delay
+  otherwise. Open mechanics flagged in §A9: acceptance-check carve-out
+  for the placeholder resume, placeholder removal vs `apply_delta`'s
+  slot-collision skip, and keeping placeholders out of the cache (the
+  existing delayed/empty refusal gates should already cover that —
+  verify in tests)
 
 ### Step 3.5.4 — Stale-pending reaper
 - `analysis_cache_pending` is small and short-lived, so it is NOT a partition
@@ -2388,30 +2567,35 @@ rest wait for the cache to fill.
 
 ### Step 3.5.5 — Splunk signals
 - New INFO lines: `cache_claim result=owned|deferred ...`,
-  `cache_wait ... result=hit|timeout|owner_abandoned waited_ms=...`
-- Extend §existing Phase 2 Splunk reference doc with these signals
-  and the "thundering-herd reduction ratio" query from §A9
+  `cache_defer_resume ... result=hit|owner_gone_ran_live|claim_expired_ran_live|redeferred deferred_ms=... recheck_count=...`
+- Extend the Splunk reference doc with these signals and the
+  "thundering-herd reduction ratio" query from §A9
 
 ### Step 3.5.6 — Tests
 - `tests/saq/analysis/test_cache_pending.py` (new):
   - Claim race: two concurrent `claim_pending` for same cache_key →
     exactly one `owned`, one `deferred`
   - `release_pending` deletes the row
-  - `wait_for_cache` returns `hit` when the row materializes
-  - `wait_for_cache` returns `owner_abandoned` when the pending row
-    vanishes without a cache row
-  - `wait_for_cache` returns `timeout` when nothing happens
   - `reap_stale_pending` removes expired rows and leaves fresh ones
-- Integration test for the executor path: mock module with
-  `cache_ttl`, two simulated concurrent executions, assert only one
-  actually ran `analyze()` and both got the same delta
+- Executor resume re-check tests:
+  - cache row present on resume → placeholder replaced, delta applied,
+    nothing run live
+  - claim gone + no cache row → live `execute_analysis` (not
+    `continue_analysis`), placeholder removed
+  - claim live and unexpired → re-delayed, no module run
+  - placeholder is never cached (delayed/empty refusal gates)
+- Integration test: mock module with `cache_ttl` + `single_flight`, two
+  simulated concurrent executions → exactly one `analyze()` call, both
+  roots end with the same delta
 
 ### Phase 3.5 Bake-in Monitoring
 - Ratio of `cache_claim result=owned` vs `result=deferred` per module
   — higher deferred count on simultaneous arrivals = single-flight
   is doing its job
-- `cache_wait` p99 latency per module — must be comfortably below
-  `maximum_analysis_time`
+- `cache_defer_resume` p99 `deferred_ms` per module — bounded by the
+  owner's module runtime + one re-check interval; and the
+  `recheck_count` distribution (should be small for well-chosen
+  intervals)
 - `stale_pending_reaped` rows per sweep — baseline should be near
   zero; spikes correlate with worker crashes
 - Correctness: the delta applied to deferred alerts must equal the
@@ -2460,11 +2644,11 @@ Phase 3 (after Phase 2.5 confidence criteria met):
 
 Phase 3.5 (after Phase 3 hit rate validated):
   3.5.1 analysis_cache_pending schema + migration
-  3.5.2 claim / release / wait / reap helpers
-  3.5.3 Executor integration (claim-or-wait)
+  3.5.2 single_flight config flag + claim / release / reap helpers
+  3.5.3 Executor integration (claim-or-defer via delayed analysis)
   3.5.4 Stale-pending reaper on a frequent primary-node cron (the 5-min
         prune cron it originally targeted was removed in PR #279)
-  3.5.5 Splunk signals: cache_claim, cache_wait, stale_pending_reaped
+  3.5.5 Splunk signals: cache_claim, cache_defer_resume, stale_pending_reaped
   3.5.6 Tests
   --- ship & bake ---
 
@@ -2866,7 +3050,15 @@ the existing per-root summary event** (`record_execution_statistics` in
 `cache_write_bytes_compressed_sum`, plus `alert_type`, `is_alert`, `queue`.
 
 Cache fields are only attached when the (root, module) actually had cache
-activity, so non-cacheable modules pay no byte cost. The aggregation is held on
+activity, so non-cacheable modules pay no byte cost.
+
+> **Semantics change (2026-06-10):** `cache_lookup_ms_sum`/`_max` now
+> accumulate on **misses as well as hits** (and are emitted whenever there
+> were lookups, not only hits). A miss's lookup time is the cache's pure
+> overhead on top of the live run — exactly what the per-module
+> lookup-cost-vs-live-cost payoff comparison needs. Divide by
+> `(cache_hit_count + cache_miss_count)`, not hits, for a per-lookup
+> average. The aggregation is held on
 `AnalysisExecutionContext` counters and flushed at end-of-root. PR #242 also
 fixed the per-root `count`/latency semantics (it was counting
 `(root, context)` pairs, not individual `analyze()` invocations). Note
@@ -2944,8 +3136,9 @@ key, so the primary key became the composite `(cache_key, created_at)` —
 `INSERT ... ON DUPLICATE KEY UPDATE` upsert is gone. A repeat analysis of the
 same observable appends another row, several non-expired rows can share a
 `cache_key`, and the read path resolves the winner with
-`WHERE cache_key=? AND expires_at > NOW() ORDER BY expires_at DESC LIMIT 1`
-(`get_cached_delta`). `blob_refs` likewise gained `created_at` in its PK
+`WHERE cache_key=? AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1`
+(`get_cached_delta`; the ordering column changed from `expires_at` to
+`created_at` on 2026-06-10 — see the key-v2 notes at the end of Part II). `blob_refs` likewise gained `created_at` in its PK
 (`(sha256, referrer_kind, referrer_id, created_at)`) and is partitioned the same
 way. Open-question 5's "last-write-wins on concurrent fills" still holds —
 realized now by read ordering + partition drop rather than by upsert.
@@ -2998,3 +3191,101 @@ gating, the cacheability contract, and `observable.time` exclusion from the key.
 volumes for dev, or create the `analysis-result-cache` database in place, grant
 `ace-user`, and add the `database_analysis_result_cache` password). They are not
 reproduced here — see the PR description.
+
+## Capture/replay hardening (2026-06-10)
+
+A fresh-eyes design review of this document against the shipped code found
+three latent correctness gaps, one live bug, and a size regression in the
+delta capture/replay layer. All five were fixed in one pass (branch
+`mw/analysis-cache-replay-fixes`); none changed the cache schema.
+
+**1. root.json no longer duplicates `analysis.details` (size).** Step 3.1's
+details inlining flowed into *both* serializations of a delta — the cache row
+(intended) and the `module_executions` attribution log in root.json
+(unintended duplication: the analysis tree already persists details once).
+Measured before the fix on real dev alerts, `module_executions` had grown to
+**43–62% of data.json** (vs the 29% recorded after Phase 1), with the
+duplicated details accounting for 14–39% of the whole file. The executor now
+records a details-stripped copy (`ModuleExecutionDelta.without_analysis_details()`)
+for both live runs and cache-hit attribution; the cache write keeps the full
+delta. Post-strip, the same alerts measure 22–30% — back to the Phase 1
+envelope. The cache key is computed *before* recording so the stripped copy
+still carries it. No reader breaks: the GUI badge map only consumes
+identity/timing fields.
+
+**2. Analysis-object tags are captured and replayed.** `analysis.add_tag(...)`
+was invisible to the capture (the observable-level tag diff doesn't see it;
+`_serialize_analysis` omitted it), so replays silently dropped analysis tags.
+Now captured as a copied list in the analysis dict; replay restores them with
+no code change through the existing `analysis.json` setter path. Analysis
+detection points / pivot_links / llm_context_documents remain uncaptured —
+deferred until a cacheable module needs them (detections require
+DetectionPoint handling in `set_json_data`).
+
+**3. Relationships replay across alerts.** Relationships were cached as
+`{type, target-uuid}`, but uuids are per-alert — cross-alert replay could
+never resolve the target and silently dropped every relationship (debug log).
+The snapshot now records each target's `(type, value, time)` spec; replay
+resolves uuid → self-target shortcut → spec (the shortcut exists because
+`Observable.__eq__` compares `time` while the cache key ignores it).
+`put_cached_delta` refuses out-of-scope relationship targets (§A4) and the
+Step 3.8 contract lint asserts the same per opt-in.
+
+**4. Delayed-analysis caching: live bug + completeness (open question 3).**
+(a) *Bug:* a module delaying 2+ times produces intermediate deltas with
+`analysis=None`, which slipped past the still-delayed write refusal (it
+inspects the analysis dict) — partial mid-delay results were being cached.
+The executor cache write (now `_maybe_write_cache_delta`) is gated on the
+module returning COMPLETED. (b) *Completeness:* the final cycle's diff only
+covers the final cycle, so pre-delay tags/observables were missing from the
+cached delta. On a delayed resume the prior cycles' recorded deltas are
+merged in (`merge_module_execution_deltas`), with removals merged too so a
+cycle-1 removal refuses the whole write. Prior deltas come from
+`root.module_executions`, which persists through root.json — so the merge
+works even when the resume happens in a different process.
+
+**5. `is_grouped_by_time` + `cache_ttl` rejected at config load** — a cache
+hit bypasses `analysis_covered()`, making the combination incoherent (§A1).
+
+**Verification.** 60+ new/extended unit+integration tests across
+`test_module_execution_delta.py` (merge semantics, strip), `test_snapshot.py`
+(tag/relationship-spec capture), `test_apply_delta.py` (spec resolution,
+tag rehydration), `test_cache.py` (scope refusal), `test_executor_cache_hit.py`
+(COMPLETED gate, merge wiring, stripped attribution). End-to-end in dev:
+`ace correlate` of a site_tagger-matching FQDN twice — first run recorded a
+details-stripped delta in root.json while the cache row carried details;
+second run replayed from cache (`from_cache_hit=True`) with the tag and
+analysis slot intact.
+
+## Cache key v2 + read ordering + payoff metrics (2026-06-10)
+
+The second half of the same review pass, shipped separately so the key
+rotation isn't entangled with the replay-behavior changes above.
+
+**Key format v2** (§8): delimited `label:length:bytes` hashing under a
+format-version constant, extended_version *keys* now participate (v1
+collided `{"tool_a": "1.0"}` with `{"tool_b": "1.0"}`), and the module's
+resolved config is hashed in (minus `CONFIG_HASH_EXCLUDED_FIELDS`) so a
+YAML config edit invalidates without a `version` bump. All v1 rows became
+unreachable on deploy and age out with their partitions — by design, the
+key-format bump *is* the migration.
+
+**Read ordering** (§5/§A8): `ORDER BY created_at DESC` replaces
+`expires_at DESC`. The old ordering preferred the longest-lived row, which
+after a `cache_ttl` reduction is the *oldest* data — old long-TTL rows
+shadowed fresher results until they expired. Freshest-created now wins;
+the clustered PK `(cache_key, created_at)` serves it in index order.
+
+**Payoff metrics**: `cache_lookup_ms_sum`/`_max` accumulate on misses too
+(see the PR #242 note), and the Splunk dashboard gained a "Cache Payoff:
+Lookup Cost vs Live Cost by Module" panel comparing per-lookup cost
+against per-execution live cost, with
+`est_net_saved_s = hits*avg_live_ms − total_lookup_ms`. Purpose: decide
+empirically whether microsecond-cheap opt-ins (nrd_analyzer, site_tagger
+— chosen as low-risk bake vehicles for `extended_version`, not for
+payoff) cost more in lookups than they save, and de-opt them if so.
+rdap_analyzer (network-bound) is expected to be strongly positive.
+
+**Not in this pass**: §A9/Phase 3.5 remain design-only — rewritten here to
+the non-blocking delayed-analysis requeue shape with a `single_flight`
+opt-in flag, replacing the original blocking `wait_for_cache` poll loop.

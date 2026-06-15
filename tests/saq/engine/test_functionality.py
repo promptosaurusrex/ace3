@@ -1821,6 +1821,8 @@ def test_per_root_cache_write_byte_aggregation(tmpdir):
     context.total_analysis_time["module_a"] = 1.0
     context.total_exec_count["module_a"] = 2
     context.cache_miss_count["module_a"] = 2
+    context.cache_lookup_ms_sum["module_a"] = 6
+    context.cache_lookup_ms_max["module_a"] = 4
     context.cache_write_count_insert["module_a"] = 1
     context.cache_write_ms_sum["module_a"] = 15
     context.cache_write_ms_max["module_a"] = 10
@@ -1840,9 +1842,10 @@ def test_per_root_cache_write_byte_aggregation(tmpdir):
     assert payload["cache_write_ms_max"] == 10
     assert payload["cache_write_bytes_uncompressed_sum"] == 4000
     assert payload["cache_write_bytes_compressed_sum"] == 800
-    # No hits → lookup fields stay absent.
-    assert "cache_lookup_ms_sum" not in payload
-    assert "cache_lookup_ms_max" not in payload
+    # Lookup latency is emitted for misses too — a miss's lookup time is
+    # the cache's pure overhead and feeds the lookup-vs-live payoff query.
+    assert payload["cache_lookup_ms_sum"] == 6
+    assert payload["cache_lookup_ms_max"] == 4
 
 
 @pytest.mark.integration

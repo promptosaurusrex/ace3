@@ -1295,11 +1295,14 @@ def test_validate_hunt_response_includes_original_events(test_client, auth_heade
 
 
 @pytest.mark.integration
-def test_validate_hunt_response_original_events_none_when_no_correlate(test_client, auth_headers):
-    """When the hunt did not capture original_query_results (no correlate block),
-    original_events on the response should be None — not an empty list, not missing."""
+def test_validate_hunt_response_original_events_non_correlate(test_client, auth_headers):
+    """A non-correlate hunt run through the validate API (a manual run) snapshots the raw
+    query results, so original_events is exposed at the top level. The per-root details are
+    NOT bloated with a copy — those events already live in details["events"]."""
     from saq.collectors.hunter.query_hunter import QueryHunt
     from saq.analysis.root import Submission, RootAnalysis
+
+    captured = [{"src": "1.2.3.4"}, {"src": "5.6.7.8"}]
 
     with patch("aceapi.hunt.HunterService") as mock_hunter_service:
         mock_manager = Mock()
@@ -1307,12 +1310,13 @@ def test_validate_hunt_response_original_events_none_when_no_correlate(test_clie
 
         mock_root = Mock(spec=RootAnalysis)
         mock_root.json = {"uuid": "test-uuid-123"}
-        mock_root.details = {"query": "q", "events": []}
+        # non-correlate root carries its own event in details["events"], not original_events
+        mock_root.details = {"query": "q", "events": [{"src": "1.2.3.4"}]}
         mock_submission = Mock(spec=Submission)
         mock_submission.root = mock_root
 
         mock_hunt.execute.return_value = [mock_submission]
-        mock_hunt.original_query_results = None
+        mock_hunt.original_query_results = captured
         mock_manager.load_hunt_from_config.return_value = mock_hunt
         mock_instance = mock_hunter_service.return_value
         mock_instance.hunt_managers = {"test": mock_manager}
@@ -1329,8 +1333,8 @@ def test_validate_hunt_response_original_events_none_when_no_correlate(test_clie
         assert result.status_code == 200
         data = result.get_json()
         assert data["valid"] is True
-        assert "original_events" in data
-        assert data["original_events"] is None
+        assert data["original_events"] == captured
+        assert "original_events" not in data["roots"][0]["details"]
 
 
 # =============================================================================

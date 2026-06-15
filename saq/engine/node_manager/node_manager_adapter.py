@@ -70,7 +70,11 @@ class NodeManagerAdapter(NodeManagerInterface):
     def initialize_node(self) -> None:
         """Initialize this node in the database and configure analysis modes."""
         return self._node_manager.initialize_node()
-    
+
+    def set_status(self, status: str) -> None:
+        """Sets the status of this node in the database."""
+        return self._node_manager.set_status(status)
+
     def execute_primary_node_routines(self) -> None:
         """Executes primary node routines and may become the primary node if no other node has done so."""
         return self._node_manager.execute_primary_node_routines()
