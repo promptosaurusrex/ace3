@@ -51,7 +51,6 @@ hunt_type_splunk:
   python_class: SplunkHunt
   rule_dirs:
     - rule_dir: signatures/hunts/splunk
-      git_dir: signatures
   update_frequency: 60
 
 config:
