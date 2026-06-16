@@ -12,9 +12,12 @@ class UserObservable(CaselessObservable):
     def value(self, new_value):
         self._value = new_value.strip()
 
-        # Drop the domain/host portion of the username if it's there
+        # Drop the domain/host portion of the username if it's there. Take the
+        # segment after the *last* backslash so multi-segment (host\DOMAIN\user)
+        # and double-backslash (DOMAIN\\user) separators still resolve to the
+        # bare account name instead of an empty inter-backslash segment.
         if '\\' in self._value:
-            self._value = self._value.split('\\')[1]
+            self._value = self._value.split('\\')[-1]
 
     @property
     def jinja_template_path(self):
