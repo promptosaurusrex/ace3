@@ -6,6 +6,7 @@ from typing import Type, override
 from pydantic import Field
 from html2text import html2text
 from saq.analysis.analysis import Analysis
+from saq.signatures import EMAIL_ENCRYPTED_DECRYPTED
 from saq.analysis.search import search_down
 from saq.constants import DIRECTIVE_EXTRACT_URLS, F_FILE, AnalysisExecutionResult
 from saq.cracking import crack_password, generate_wordlist
@@ -253,7 +254,7 @@ class RarEncryptionAnalyzer(AnalysisModule):
                 full_path = os.path.join(dirpath, file_name)
                 _file = analysis.add_file_observable(full_path)
                 if _file:
-                    _file.add_detection_point("Was able to decrypt based on contents of email.")
+                    _file.add_detection_point("Was able to decrypt based on contents of email.", signature_uuid=EMAIL_ENCRYPTED_DECRYPTED.uuid)
                     _file.add_directive(DIRECTIVE_EXTRACT_URLS)
 
         return AnalysisExecutionResult.COMPLETED

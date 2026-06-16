@@ -2,6 +2,7 @@ import logging
 from typing import Any, Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
+from saq.signatures import URL_GOOGLE_SAFE_BROWSING
 from saq.constants import F_URL, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -84,7 +85,7 @@ class GoogleSafeBrowsingAnalyzer(AnalysisModule):
             matches = result['matches']
             if matches:
                 logging.info("Matches found for '{}' in gglsbl. Adding analysis.".format(observable.value))
-                observable.add_detection_point("URL has matches on Google Safe Browsing List")
+                observable.add_detection_point("URL has matches on Google Safe Browsing List", signature_uuid=URL_GOOGLE_SAFE_BROWSING.uuid)
 
                 analysis = self.create_analysis(observable)
                 assert isinstance(analysis, GoogleSafeBrowsingAnalysis)
@@ -93,7 +94,7 @@ class GoogleSafeBrowsingAnalyzer(AnalysisModule):
                 observable.add_tag('gglsbl match')
                 for tag in analysis.details['match_tags']:
                     observable.add_tag(tag.replace('_',' ').lower())
-                observable.add_detection_point("URL has matches on Google Safe Browsing List")
+                observable.add_detection_point("URL has matches on Google Safe Browsing List", signature_uuid=URL_GOOGLE_SAFE_BROWSING.uuid)
                 return AnalysisExecutionResult.COMPLETED
             else:
                 return AnalysisExecutionResult.COMPLETED

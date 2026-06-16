@@ -4,6 +4,7 @@ import os.path
 from typing import Optional, override
 
 from saq.analysis import Analysis
+from saq.signatures import DHASH_IMAGE_MATCH
 from saq.constants import F_FILE, DIRECTIVE_DHASH, AnalysisExecutionResult
 from saq.environment import get_global_runtime_settings
 from saq.modules import AnalysisModule
@@ -124,6 +125,6 @@ class DHashImageAnalyzer(AnalysisModule):
             analysis.add_score(image_file_name, percent_similar, score_threshold)
 
             if percent_similar >= score_threshold:
-                _file.add_detection_point(f"matches {image_file_name} {percent_similar:.2f}% (threshold {score_threshold:.2f}%)")
+                _file.add_detection_point(f"matches {image_file_name} {percent_similar:.2f}% (threshold {score_threshold:.2f}%)", signature_uuid=DHASH_IMAGE_MATCH.uuid)
 
         return AnalysisExecutionResult.COMPLETED

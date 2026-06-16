@@ -6,6 +6,7 @@ from saq.database.model import Campaign
 from saq.database.model import Company, CompanyMapping
 from saq.database.model import Config
 from saq.database.model import DelayedAnalysis
+from saq.database.model import DetectionPoint as db_DetectionPoint
 from saq.database.model import Event, EventStatus, EventType, EventPreventionTool, EventRemediation, EventRiskLevel, EventVector
 from saq.database.model import Lock, LockedException
 from saq.database.model import Malware, ThreatType, Threat

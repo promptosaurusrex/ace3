@@ -5,6 +5,7 @@ from subprocess import PIPE, Popen, TimeoutExpired
 from typing import Type
 from pydantic import Field
 from saq.analysis.analysis import Analysis
+from saq.signatures import XLM_MACRO_URL
 from saq.analysis.observable import Observable
 from saq.analysis.search import recurse_tree
 from saq.constants import DIRECTIVE_CRAWL, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, F_FILE, F_URL, AnalysisExecutionResult
@@ -193,7 +194,7 @@ class XLMMacroDeobfuscatorAnalyzer(AnalysisModule):
 
                     if 'http' in params.lower():
                         target_url = params[params.lower().index('http'):]
-                        _file.add_detection_point('A url was found in an Excel 4.0 macro.')
+                        _file.add_detection_point('A url was found in an Excel 4.0 macro.', signature_uuid=XLM_MACRO_URL.uuid)
                         url = analysis.add_observable_by_spec(F_URL, target_url)
                         if url:
                             url.add_directive(DIRECTIVE_CRAWL)
@@ -264,7 +265,7 @@ class XLMMacroDeobfuscatorAnalyzer(AnalysisModule):
 
                     if 'http' in params.lower():
                         target_url = params[params.lower().index('http'):]
-                        _file.add_detection_point('A url was found in an Excel 4.0 macro.')
+                        _file.add_detection_point('A url was found in an Excel 4.0 macro.', signature_uuid=XLM_MACRO_URL.uuid)
                         url = analysis.add_observable_by_spec(F_URL, target_url)
                         if url:
                             url.add_directive(DIRECTIVE_CRAWL)

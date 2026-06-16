@@ -132,7 +132,7 @@ def setup(rules_dir):
             name='test_query',
             python_module='tests.saq.collectors.hunter.test_query_hunter',
             python_class='TestQueryHunt',
-            rule_dirs=[rules_dir],
+            rule_dirs=[{"rule_dir": rules_dir}],
             update_frequency=60
         )
     )
@@ -4901,3 +4901,86 @@ def test_process_query_results_correlate_capture_and_replay(monkeypatch):
         assert submissions is not None and len(submissions) == 1
     finally:
         clear_query_sources()
+
+
+# ============================================================
+# signature attribution (hunt-emitted detection point + git commit) tests
+# ============================================================
+
+import subprocess as _subprocess
+from saq.configuration.schema import HuntRuleDirConfig
+from saq.signatures import SIGNATURE_VERSION_UNKNOWN
+
+
+def _init_hunt_git_repo(path):
+    """init a git repo at path with one commit, returns the HEAD sha"""
+    env = dict(os.environ)
+    env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "test"
+    env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "test@example.com"
+    _subprocess.run(["git", "init", str(path)], check=True, capture_output=True)
+    with open(os.path.join(str(path), ".keep"), "w") as fp:
+        fp.write("x")
+    _subprocess.run(["git", "-C", str(path), "add", "."], check=True, capture_output=True, env=env)
+    _subprocess.run(["git", "-C", str(path), "commit", "-m", "init"], check=True, capture_output=True, env=env)
+    out = _subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
+    return out.stdout.strip()
+
+
+@pytest.mark.unit
+def test_hunt_rule_dirs_schema_accepts_dict_and_rejects_string():
+    from pydantic import ValidationError
+    # dict form parses, git_dir optional
+    cfg = HuntTypeConfig(name="t", python_module="m", python_class="c",
+                         rule_dirs=[{"rule_dir": "x", "git_dir": "y"}], update_frequency=60)
+    assert cfg.rule_dirs[0].rule_dir == "x"
+    assert cfg.rule_dirs[0].git_dir == "y"
+    cfg = HuntTypeConfig(name="t", python_module="m", python_class="c",
+                         rule_dirs=[{"rule_dir": "x"}], update_frequency=60)
+    assert cfg.rule_dirs[0].git_dir is None
+    # bare string is rejected (no back-compat)
+    with pytest.raises(ValidationError):
+        HuntTypeConfig(name="t", python_module="m", python_class="c",
+                       rule_dirs=["x"], update_frequency=60)
+
+
+@pytest.mark.unit
+def test_hunt_create_root_analysis_emits_detection_point():
+    hunt = default_hunt()
+    hunt.signature_version = "abc123commit"
+    root = hunt.create_root_analysis({"field1": "v"})
+    dps = root.all_detection_points
+    assert len(dps) == 1
+    assert dps[0].signature_uuid == hunt.uuid
+    assert dps[0].signature_version == "abc123commit"
+
+
+@pytest.mark.unit
+def test_hunt_create_root_analysis_unknown_version_by_default():
+    hunt = default_hunt()
+    # signature_version defaults to SIGNATURE_VERSION_UNKNOWN until the manager stamps it
+    root = hunt.create_root_analysis({"field1": "v"})
+    dps = root.all_detection_points
+    assert len(dps) == 1
+    assert dps[0].signature_version == SIGNATURE_VERSION_UNKNOWN
+
+
+@pytest.mark.integration
+def test_hunt_manager_stamps_signature_version_from_git_dir(manager_kwargs, rules_dir):
+    # the rules_dir IS inside a git repo whose git_dir we configure
+    sha = _init_hunt_git_repo(rules_dir)
+    manager_kwargs["rule_dirs"] = [HuntRuleDirConfig(rule_dir=rules_dir, git_dir=rules_dir)]
+    manager = HuntManager(**manager_kwargs)
+    manager.load_hunts_from_config()
+    assert len(manager.hunts) > 0
+    for hunt in manager.hunts:
+        assert hunt.signature_version == sha
+
+
+@pytest.mark.integration
+def test_hunt_manager_unknown_version_without_git_dir(manager_kwargs, rules_dir):
+    manager_kwargs["rule_dirs"] = [HuntRuleDirConfig(rule_dir=rules_dir)]
+    manager = HuntManager(**manager_kwargs)
+    manager.load_hunts_from_config()
+    assert len(manager.hunts) > 0
+    for hunt in manager.hunts:
+        assert hunt.signature_version == SIGNATURE_VERSION_UNKNOWN
