@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.66] - 2026-06-16
+
+- [Fixes double backslash bug with user observables](https://github.com/ACE-Collective/ace3/pull/324)
+- [added yara and observable modifier rule docs](https://github.com/ACE-Collective/ace3/pull/323)
+- [added hunting documentation](https://github.com/ACE-Collective/ace3/pull/322)
+- [detection point refactoring](https://github.com/ACE-Collective/ace3/pull/299)
+
 ## [3.0.65] - 2026-06-12
 
 - [Add 'draining_collectors' node status and update draining logic](https://github.com/ACE-Collective/ace3/pull/318)
