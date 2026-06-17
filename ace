@@ -2242,7 +2242,7 @@ def update_for_detection_observable_cache(args):
 
     redis_connection_b = get_redis_connection(
         database=REDIS_DB_FOR_DETECTION_B,
-        config_section="redis-local"
+        config_name="local"
     )
 
     # Get the for_detection observables and store their IDs in the Redis cache
