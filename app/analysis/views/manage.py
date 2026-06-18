@@ -66,6 +66,9 @@ def manage():
     query = query.options(selectinload(GUIAlert.event_mapping))
     #query = query.options(selectinload('tag_mapping'))
     query = query.options(selectinload(GUIAlert.tag_mapping))
+    # eager-load detection points so the detection_count hybrid property does not
+    # issue a separate query per alert when the template renders the count
+    query = query.options(selectinload(GUIAlert.detection_points))
 
     # apply filters
     for filter_dict in session["filters"]:

@@ -20,6 +20,7 @@ from saq.configuration.config import get_config
 from saq.configuration.schema import HuntTypeConfig
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
+    ANALYSIS_MODE_HTTP,
     F_COMMAND_LINE,
     F_HOSTNAME,
     F_IPV4,
@@ -4952,6 +4953,15 @@ def test_hunt_create_root_analysis_emits_detection_point():
     assert len(dps) == 1
     assert dps[0].signature_uuid == hunt.uuid
     assert dps[0].signature_version == "abc123commit"
+
+
+@pytest.mark.unit
+def test_hunt_create_root_analysis_no_detection_point_in_non_correlation_mode():
+    hunt = default_hunt(analysis_mode=ANALYSIS_MODE_HTTP)
+    root = hunt.create_root_analysis({"field1": "v"})
+    assert len(root.all_detection_points) == 0
+    # the submission still has the configured mode and is not promoted to an alert
+    assert root.analysis_mode == ANALYSIS_MODE_HTTP
 
 
 @pytest.mark.unit

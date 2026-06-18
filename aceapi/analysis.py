@@ -371,14 +371,14 @@ WHERE
         # is this an alert?
         c.execute("""
 SELECT 
-    id, 
+    id,
     uuid,
     location,
     insert_date,
     storage_dir,
     disposition,
     disposition_time,
-    detection_count
+    (SELECT COUNT(*) FROM detection_points WHERE detection_points.alert_id = alerts.id)
 FROM
     alerts
 WHERE

@@ -1,4 +1,5 @@
 import base64
+import json
 import logging
 import uuid
 import warnings
@@ -27,9 +28,12 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     desc,
+    func,
+    select,
     text,
 )
 from sqlalchemy.dialects.mysql import DATETIME as MYSQL_DATETIME, LONGBLOB, MEDIUMTEXT
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import (
     Mapped,
     aliased,
@@ -477,10 +481,17 @@ class Alert(Base):
         #TIMESTAMP, 
         #nullable=True)
 
-    detection_count: Mapped[Optional[int]] = mapped_column(
-        Integer,
-        default=0,
-        server_default=text('0'))
+    @hybrid_property
+    def detection_count(self):
+        return len(self.detection_points)
+
+    @detection_count.expression
+    def detection_count(cls):
+        return (
+            select(func.count(DetectionPoint.id))
+            .where(DetectionPoint.alert_id == cls.id)
+            .correlate_except(DetectionPoint)
+            .scalar_subquery())
 
     @property
     def status(self):
@@ -703,9 +714,6 @@ class Alert(Base):
                     #logging.debug("found company_id {} for company_name {}".format(self.company_id, self.company_name))
                     #self.company_id = row[0]
 
-        # compute number of detection points
-        self.detection_count = len(self.root_analysis.all_detection_points)
-
         # mirror the icon configuration from the root analysis extensions into the
         # icon_* columns so the management screen can render it without load()
         from saq.gui.icon import IconConfiguration, KEY_ICON_CONFIGURATION
@@ -897,8 +905,51 @@ class Alert(Base):
             sql += ','.join(sql_clause)
             c.execute(sql, tuple(parameters))
 
+        self._sync_detection_points(db, c)
+
         db.commit()
-        
+
+    def _sync_detection_points(self, db, c):
+        """idempotently upserts this alert's detection points into the detection_points
+        table. keyed on the (alert_id, content_hash) unique constraint so repeated syncs
+        do not create duplicate rows and preserve the original insert_date. shares the
+        transaction with _rebuild_index (the caller commits)."""
+        # all_detection_points already includes the root analysis's own detections
+        # (all_analysis includes the root), so do NOT also add root.detections here.
+        # de-dup by content_hash so a single INSERT never lists the same key twice.
+        detection_points = {}
+        for dp in self.root_analysis.all_detection_points:
+            detection_points[dp.content_hash] = dp
+
+        if not detection_points:
+            return
+
+        sql = """INSERT INTO detection_points
+                    ( alert_id, description, details, queue, signature_uuid, signature_version, content_hash )
+                 VALUES {}
+                 ON DUPLICATE KEY UPDATE
+                    description = VALUES(description),
+                    details = VALUES(details),
+                    queue = VALUES(queue),
+                    signature_uuid = VALUES(signature_uuid),
+                    signature_version = VALUES(signature_version)""".format(
+                    ','.join(['(%s, %s, %s, %s, %s, %s, %s)' for dp in detection_points]))
+
+        parameters = []
+        for content_hash, dp in detection_points.items():
+            # the column is nullable JSON-as-text; falsy details -> NULL (not "").
+            # default=str tolerates non-JSON-native objects (datetimes, etc.)
+            details = json.dumps(dp.details, sort_keys=True, default=str) if dp.details else None
+            parameters.append(self.id)
+            parameters.append(dp.description)
+            parameters.append(details)
+            parameters.append(dp.queue)
+            parameters.append(dp.signature_uuid)
+            parameters.append(dp.signature_version)
+            parameters.append(content_hash)
+
+        c.execute(sql, tuple(parameters))
+
     @track_execution_time
     def rebuild_index_old(self):
         """Rebuilds the data for this Alert in the observables, tags, observable_mapping and tag_mapping tables."""
