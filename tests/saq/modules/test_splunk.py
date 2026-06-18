@@ -159,6 +159,7 @@ def test_splunk_api_analyzer_fill_timespec(test_context):
         assert analyzer.target_query == 'hello _index_earliest = 11/11/2017:07:36:01 _index_latest = 11/11/2017:07:36:01 world'
         # the MockSplunk appends ' world' to the query, and the query passed is 'hello  ' (with <O_TIMESPEC> removed)
         assert analyzer.analysis.details['gui_link'] == 'hello  world world'
+        assert analyzer.analysis.details['gui_link_label'] == 'Open in Splunk'
 
 
 @pytest.mark.unit

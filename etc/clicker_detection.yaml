@@ -1,0 +1,88 @@
+# Clicker detection search configuration
+# =======================================
+# Answers the analyst question "did anyone click this URL or visit this domain?".
+#
+# This is the committed DEFAULT and ships effectively empty: no source is enabled, so
+# the clicker detection module is a clean no-op until a deployment provides real
+# searches. Deployments point the module's `config_path` (see
+# analysis_module_clicker_detection_splunk in saq config) at their own copy of this
+# file, typically signatures/analyst_data/clicker_detection.yaml, which ACE pulls and
+# live-reloads (watch_file) without a production release.
+#
+# Structure
+# ---------
+# Top level is keyed by SOURCE (the log backend, e.g. splunk). Each source has:
+#   enabled:  must be true for the source's module to run
+#   searches: keyed by SEARCH NAME. Every search whose observable_types include the
+#             observable's type runs; all their hits land in the one "URL Clicks" panel
+#             (the Source column shows which search found each row, e.g. splunk:safelinks).
+#             Run sequentially, so you can add as many as you like.
+#
+# Search definition fields
+# ------------------------
+#   observable_types: which observable types this search applies to, e.g. [url, fqdn].
+#   query:            the source query. Tokens substituted at run time:
+#                       <O_VALUE>   -> all match values, formatted for the source: Splunk a quoted
+#                                      OR-group ("url1" OR "url2"); Logscale a regex alternation
+#                                      (?:url1|url2) for a `field=~/<O_VALUE>/` match. For a url
+#                                      observable this is the original URL plus every urlfinderlib
+#                                      child-URL permutation; for other types it's just the value.
+#                                      Use it BARE (not inside your own quotes / not Url="...").
+#                       <O_TYPE>    -> the observable type
+#                       <TIMESPEC>  -> a time window built from time_ranges (event-time anchored)
+#   time_ranges:      named time windows for the <TIMESPEC> token. Each entry has
+#                     duration_before / duration_after in DD:HH:MM:SS. (Logscale passes the window
+#                     to the API rather than inline, so the token is optional there.)
+#   use_index_time:   search over index/ingest time instead of event time. Default false.
+#   api_name:         (optional) which source API config to use. Default "default".
+#   repository:       (Logscale, optional) the repo to query; falls back to the module config.
+#   match_url_encoded: (optional) also match the percent-encoded form of each URL value
+#                      (urllib.parse.quote). Needed where an emailed URL is stored SafeLinks-wrapped
+#                      and percent-encoded, e.g. CrowdStrike Logscale CommandLine.
+#   observable_mapping: result fields to turn into ACE observables (for pivoting). Each entry:
+#                       field, type, and optionally display_type / directives / tags.
+#                       e.g. extract the clicking user as an email_address shown as "Clicker".
+#   event_mapping:    maps result fields onto the unified "URL Clicks" table / ClickerEvent:
+#                       timestamp, user, action_type, url, network_message_id.
+#                     action_type is the real allowed/blocked signal (e.g. ClickAllowed).
+#   on_hit:           active response when a real click is found:
+#                       escalate_action_types: which action_type values count as a hit
+#                       escalate_on_any:       treat ANY returned row as a hit (for sources
+#                                              with no allowed/blocked signal, e.g. proxy logs)
+#                       add_detection_point:   add a detection point to escalate the alert
+#                       crawl_clicked_url:     crawl + Phishkit-analyze the clicked URL
+#
+# Example (copy into your analyst_data file and fill in real index/sourcetype):
+#
+# splunk:
+#   enabled: true
+#   searches:
+#     safelinks:
+#       observable_types: [url, fqdn]
+#       query: |
+#         index=<your_url_click_index> sourcetype="<your_url_click_sourcetype>" <O_VALUE> <TIMESPEC>
+#         | sort Timestamp ASC
+#         | table Timestamp AccountUpn ActionType Url NetworkMessageId IPAddress
+#       time_ranges: { TIMESPEC: { duration_before: "07:00:00:00", duration_after: "00:01:00:00" } }
+#       use_index_time: false
+#       observable_mapping:
+#         - { field: AccountUpn, type: email_address, display_type: Clicker }
+#         - { field: IPAddress,  type: ipv4 }
+#       event_mapping: { timestamp: Timestamp, user: AccountUpn, action_type: ActionType, url: Url, network_message_id: NetworkMessageId }
+#       on_hit: { escalate_action_types: [ClickAllowed], add_detection_point: true, crawl_clicked_url: true }
+#     proxy:                       # an additional source-of-truth for "did they reach it"
+#       observable_types: [url, fqdn]
+#       query: |
+#         index=<your_proxy_index> sourcetype="<your_proxy_sourcetype>" <O_VALUE> <TIMESPEC>
+#         | sort _time ASC
+#         | table _time user url action
+#       time_ranges: { TIMESPEC: { duration_before: "07:00:00:00", duration_after: "00:01:00:00" } }
+#       observable_mapping:
+#         - { field: user, type: email_address, display_type: Clicker }
+#       event_mapping: { timestamp: _time, user: user, action_type: action, url: url }
+#       on_hit: { escalate_on_any: true, add_detection_point: true, crawl_clicked_url: true }
+
+# No sources enabled by default.
+splunk:
+  enabled: false
+  searches: {}

@@ -254,6 +254,46 @@
 </div>
 {% endif %}
 
+{% if url_clicks_events %}
+<div class="row">
+    <div class="col">
+        <div class="card mb-3">
+            <div class="card-header">
+                <h5>URL Clicks <small class="text-muted">({{ url_clicks_events | length }} event{{ '' if url_clicks_events|length == 1 else 's' }})</small> <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_url_clicks" aria-expanded="true" aria-controls="collapse_url_clicks">(hide/show)</a></h5>
+            </div>
+            <div class="card-body">
+                <div class="card-text collapse show" id="collapse_url_clicks">
+                    <table class="table table-hover table-sm">
+                        <thead>
+                            <tr>
+                                <th>Time (UTC)</th>
+                                <th>User</th>
+                                <th>Action</th>
+                                <th>URL</th>
+                                <th>Source</th>
+                                <th>Link</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for event in url_clicks_events %}
+                            <tr{% if event.action_type and 'Allowed' in event.action_type %} class="table-danger"{% endif %}>
+                                <td>{% if event.timestamp %}{{ event.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}{% endif %}</td>
+                                <td>{{ event.user or '' }}</td>
+                                <td>{{ event.action_type or '' }}</td>
+                                <td class="text-break">{{ event.searched_value or event.url or '' }}</td>
+                                <td>{{ event.source[:1]|upper }}{{ event.source[1:] }}</td>
+                                <td>{% if event.portal_url %}<a href="{{ event.portal_url }}" target="_blank" rel="noopener">open</a>{% endif %}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 {% block alert_details_panel %}
 <div class="row">
     <div class="col">

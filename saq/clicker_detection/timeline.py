@@ -1,0 +1,151 @@
+# vim: sw=4:ts=4:et:cc=120
+
+"""URL-click timeline aggregation.
+
+A small, source-agnostic mechanism that lets any Analysis subclass publish "click
+events" (a user reaching a URL / visiting a domain, as seen in some log source) and
+lets the alert UI render them as a single unified table regardless of which source
+(Splunk, Logscale, ...) produced them.
+
+Three pieces, mirroring ``saq.remediation.timeline``:
+- ``ClickerEvent``: a source-agnostic record of one observed click.
+- ``ClickerEventProvider``: the duck-typed protocol an Analysis implements.
+- ``gather_clicker_events()``: walks an alert's analysis tree and returns all events
+  from all registered providers, sorted by timestamp ascending.
+
+The aggregator is intentionally tolerant: any provider exception or unparseable event
+is logged and skipped so a misbehaving source cannot prevent the alert page from
+rendering.
+"""
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import logging
+from typing import TYPE_CHECKING, Optional, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from saq.analysis.root import RootAnalysis
+
+
+@dataclass
+class ClickerEvent:
+    """One observed click on a URL / visit to a domain."""
+
+    source: str
+    """Log source that produced the event (e.g. ``"splunk"``)."""
+
+    timestamp: Optional[datetime]
+    """When the click occurred (UTC). May be None if the source omits a time."""
+
+    user: Optional[str] = None
+    """The user who clicked (e.g. the mailbox / UPN)."""
+
+    action_type: Optional[str] = None
+    """Source action label — the real allowed/blocked signal (e.g. ``ClickAllowed`` /
+    ``ClickBlocked`` for MS Defender). Drives display emphasis and escalation."""
+
+    url: Optional[str] = None
+    """The per-row matched/clicked value as seen in the source log (e.g. the decoded clicked URL, or
+    the full process CommandLine). Drives the fqdn crawl path; not what the URL column shows."""
+
+    searched_value: Optional[str] = None
+    """The observable value that was searched (the url/fqdn that received the clicker_detection
+    directive). Shown in the URL column for analyst clarity, regardless of source."""
+
+    network_message_id: Optional[str] = None
+    """Optional id tying the click back to the originating email."""
+
+    portal_url: Optional[str] = None
+    """Optional link that opens the underlying search in the source's UI."""
+
+    metadata: dict = field(default_factory=dict)
+    """Optional source-specific extras the UI does not rely on."""
+
+    def __post_init__(self):
+        # Normalize to tz-aware UTC so sorting/formatting never mixes naive/aware.
+        if self.timestamp is not None and self.timestamp.tzinfo is None:
+            self.timestamp = self.timestamp.replace(tzinfo=timezone.utc)
+
+
+@runtime_checkable
+class ClickerEventProvider(Protocol):
+    """Protocol an Analysis implements to publish events into the URL Clicks view.
+
+    Provider classes call ``register_clicker_event_provider()`` once at import time.
+    The aggregator looks them up by class type via ``RootAnalysis.get_analysis_by_type()``,
+    which is bounded by the number of registered providers (a handful) rather than the
+    size of the alert tree.
+    """
+
+    def get_clicker_events(self) -> list["ClickerEvent"]: ...
+
+
+# Registered Analysis subclasses that publish ClickerEvents. Modules call
+# ``register_clicker_event_provider(cls)`` at import time. The aggregator only inspects
+# (and only loads details for) instances of these classes.
+REGISTERED_CLICKER_PROVIDERS: list[type] = []
+
+
+def register_clicker_event_provider(analysis_class: type) -> None:
+    """Register an Analysis subclass that produces ``ClickerEvent`` objects.
+
+    Idempotent: calling twice with the same class is a no-op.
+    """
+    if analysis_class not in REGISTERED_CLICKER_PROVIDERS:
+        REGISTERED_CLICKER_PROVIDERS.append(analysis_class)
+
+
+def gather_clicker_events(root: "RootAnalysis") -> list[ClickerEvent]:
+    """Collect every ClickerEvent for an alert, from all registered providers.
+
+    Returns events sorted by ``timestamp`` ascending; events lacking a timestamp sort
+    to the end.
+
+    Cost model: ``load_details()`` reads the analysis details JSON from disk. The
+    aggregator only calls it for instances of classes in
+    ``REGISTERED_CLICKER_PROVIDERS`` — so an alert with 200 analyses but one clicker
+    analysis pays for one disk read, not 200.
+    """
+    events: list[ClickerEvent] = []
+
+    for provider_class in REGISTERED_CLICKER_PROVIDERS:
+        for analysis in root.get_analysis_by_type(provider_class):
+            loader = getattr(analysis, "load_details", None)
+            if callable(loader):
+                try:
+                    loader()
+                except Exception:
+                    logging.exception(
+                        "load_details() failed for clicker event provider %s; skipping",
+                        provider_class.__name__,
+                    )
+                    continue
+
+            try:
+                produced = analysis.get_clicker_events() or []
+            except Exception:
+                logging.exception(
+                    "clicker event provider %s raised; skipping",
+                    provider_class.__name__,
+                )
+                continue
+
+            for event in produced:
+                if isinstance(event, ClickerEvent):
+                    events.append(event)
+                else:
+                    logging.warning(
+                        "clicker event provider %s returned non-ClickerEvent %r; skipping",
+                        provider_class.__name__, type(event).__name__,
+                    )
+
+    # Sort by click time ascending; events without a timestamp slot to the bottom.
+    _MAX = datetime.max.replace(tzinfo=timezone.utc)
+
+    def _sort_key(e: ClickerEvent):
+        if e.timestamp is None:
+            return (1, _MAX)
+        return (0, e.timestamp)
+
+    events.sort(key=_sort_key)
+    return events

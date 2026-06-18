@@ -1,7 +1,8 @@
 import validators
-from saq.analysis.presenter.observable_presenter import ObservablePresenter, register_observable_presenter
+from saq.analysis.presenter.observable_presenter import ObservablePresenter, register_observable_action, register_observable_presenter
 from saq.configuration.config import get_config
 from saq.constants import F_FQDN
+from saq.gui import ObservableActionCheckForClickers, ObservableActionOpenSplunkClickerSearch
 from saq.observables.base import CaselessObservable, ObservableValueError
 from saq.observables.generator import register_observable_type
 from saq.util import is_subdomain
@@ -59,3 +60,7 @@ class FQDNObservablePresenter(ObservablePresenter):
 register_observable_presenter(FQDNObservable, FQDNObservablePresenter)
 
 register_observable_type(F_FQDN, FQDNObservable)
+
+# "Check for clickers" (generic) and "Open clicker search in Splunk" (source-specific)
+register_observable_action(F_FQDN, ObservableActionCheckForClickers)
+register_observable_action(F_FQDN, ObservableActionOpenSplunkClickerSearch)

@@ -111,6 +111,73 @@ def extract_event_timestamp(event:dict) -> datetime:
     return local_time()
 
 
+def splunk_gui_path(app: Optional[str] = None) -> str:
+    """Returns the Splunk web search path for the given app context (None/'-' -> default search app)."""
+    return 'en-US/app/search/search' if app is None or app == '-' else f'en-US/app/{app}/search'
+
+
+def encode_splunk_query_link(host: str, gui_path: str, query: str, start_time: Optional[datetime] = None,
+                             end_time: Optional[datetime] = None, use_index_time: bool = False) -> str:
+    """Builds a Splunk web search URL for the given query and time range without needing a live connection.
+
+    Args:
+        host (str): the Splunk web host
+        gui_path (str): the search app path (see splunk_gui_path)
+        query (str): the SPL query
+        start_time (datetime, optional): the start time of the query (default None -> no start time)
+        end_time (datetime, optional): the end time of the query (default None -> no end time)
+        use_index_time (bool, optional): set true to search over index time (default False)
+
+    Returns:
+        str: the gui link to the query over the given time range
+    """
+    is_generating_command = query.lstrip().startswith("|")
+
+    # add search to start of query if missing (skip for generating commands starting with |)
+    if not is_generating_command and not query.lstrip().lower().startswith("search"):
+        query = "search " + query
+
+    # add index time filter if index time is being used (only for search commands)
+    if use_index_time and not is_generating_command:
+        index_end_time_str = ""
+        if end_time is not None:
+            index_end_time_str = end_time.strftime("%m/%d/%Y:%H:%M:%S")
+
+        index_start_time_str = ""
+        if start_time is not None:
+            index_start_time_str = start_time.strftime("%m/%d/%Y:%H:%M:%S")
+
+        replacement = f"search _index_earliest={index_start_time_str} _index_latest={index_end_time_str} "
+        query = re.sub(r'^\s*search\s+', replacement, query, flags=re.IGNORECASE)
+
+    # build params
+    params = {'q': query}
+    if start_time:
+        # if we're using index time then the event time ranges needs to completely overlap with the index time range
+        if use_index_time:
+            params['earliest'] = int(time.mktime((start_time - timedelta(days=30)).timetuple())) # hardcoded to 30 days before the start time
+        else:
+            params['earliest'] = int(time.mktime(start_time.timetuple()))
+
+    if end_time:
+        if use_index_time:
+            params['latest'] = int(time.mktime((end_time + timedelta(days=30)).timetuple())) # hardcoded to 30 days after the end time
+        else:
+            params['latest'] = int(time.mktime(end_time.timetuple()))
+
+    # build link
+    uri = (
+        "https",
+        # NOTE we don't specify the port here (API calls are on a different port than the UI)
+        f"{host}",
+        gui_path,
+        '',
+        urllib.parse.urlencode(params),
+        '',
+    )
+    return urllib.parse.urlunparse(uri)
+
+
 class SplunkQueryObject:
     """This is a wrapper around whatever Splunk API library we are using.
     This will eventually be replaced with direct Splunk SDK usage.
@@ -181,7 +248,7 @@ class SplunkQueryObject:
         self.client = client.connect(**connect_kwargs)
 
         # determine gui search path from namespace app
-        self.gui_path = 'en-US/app/search/search' if app is None or app == '-' else f'en-US/app/{app}/search'
+        self.gui_path = splunk_gui_path(app)
 
         self.performance_logging_directory = performance_logging_directory
 
@@ -274,52 +341,7 @@ class SplunkQueryObject:
         Returns:
             str: the gui link to the query over the given time range
         """
-        is_generating_command = query.lstrip().startswith("|")
-
-        # add search to start of query if missing (skip for generating commands starting with |)
-        if not is_generating_command and not query.lstrip().lower().startswith("search"):
-            query = "search " + query
-
-        # add index time filter if index time is being used (only for search commands)
-        if use_index_time and not is_generating_command:
-            index_end_time_str = ""
-            if end_time is not None:
-                index_end_time_str = end_time.strftime("%m/%d/%Y:%H:%M:%S")
-
-            index_start_time_str = ""
-            if start_time is not None:
-                index_start_time_str = start_time.strftime("%m/%d/%Y:%H:%M:%S")
-
-            replacement = f"search _index_earliest={index_start_time_str} _index_latest={index_end_time_str} "
-            query = re.sub(r'^\s*search\s+', replacement, query, flags=re.IGNORECASE)
-
-
-        # build params
-        params = {'q': query}
-        if start_time:
-            # if we're using index time then the event time ranges needs to completely overlap with the index time range
-            if use_index_time:
-                params['earliest'] = int(time.mktime((start_time - timedelta(days=30)).timetuple())) # hardcoded to 30 days before the start time
-            else:
-                params['earliest'] = int(time.mktime(start_time.timetuple()))
-
-        if end_time:
-            if use_index_time:
-                params['latest'] = int(time.mktime((end_time + timedelta(days=30)).timetuple())) # hardcoded to 30 days after the end time
-            else:
-                params['latest'] = int(time.mktime(end_time.timetuple()))
-
-        # build link
-        uri = (
-            "https",
-            # NOTE we don't specify the port here (API calls are on a different port than the UI)
-            f"{self.host}",
-            self.gui_path,
-            '',
-            urllib.parse.urlencode(params),
-            '',
-        )
-        return urllib.parse.urlunparse(uri)
+        return encode_splunk_query_link(self.host, self.gui_path, query, start_time, end_time, use_index_time)
 
     def query(
         self,
