@@ -685,6 +685,55 @@ def test_validate_hunt_execution_success_no_analyze_no_alerts(test_client, auth_
 
 
 @pytest.mark.integration
+def test_validate_hunt_execution_serializes_detection_points(test_client, auth_headers):
+    """A submitted root carries DetectionPoint objects in its json (correlation-mode
+    hunts always attach one). The endpoint must serialize them via the ACE encoder
+    rather than failing with 'Object of type DetectionPoint is not JSON serializable'."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+    from saq.analysis.root import Submission, RootAnalysis
+    from saq.analysis.detection_point import DetectionPoint
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_hunt = Mock(spec=QueryHunt)
+
+        mock_root = Mock(spec=RootAnalysis)
+        # detection points are stored as live DetectionPoint objects under "detections"
+        # in root.json - the same shape RootAnalysis.json produces
+        mock_root.json = {
+            "uuid": "test-uuid-123",
+            "detections": [DetectionPoint("hunt matched")],
+        }
+        mock_root.details = {"query": "test query", "events": []}
+        mock_submission = Mock(spec=Submission)
+        mock_submission.root = mock_root
+
+        mock_hunt.execute.return_value = [mock_submission]
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        payload = _make_compiled_payload(VALID_HUNT_YAML)
+        payload["execution_arguments"] = {
+            "start_time": "01/15/2025:10:00:00",
+            "end_time": "01/15/2025:12:00:00"
+        }
+
+        result = test_client.post(
+            HUNT_VALIDATE_URL,
+            json=payload,
+            headers=auth_headers
+        )
+
+        assert result.status_code == 200
+        data = result.get_json()
+        assert data["valid"] is True
+        assert len(data["roots"]) == 1
+        assert data["roots"][0]["detections"][0]["description"] == "hunt matched"
+
+
+@pytest.mark.integration
 def test_validate_hunt_execution_sets_manual_hunt(test_client, auth_headers):
     """The validate endpoint must set manual_hunt=True on the hunt before executing it.
        manual_hunt causes suppression to be ignored so the analyst sees the hunt's true
