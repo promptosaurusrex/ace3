@@ -217,18 +217,22 @@ def test_url_value_expands_to_child_permutations(test_context):
 
 
 @pytest.mark.unit
-def test_fqdn_hit_extracts_clicked_url_with_crawl(test_context):
+def test_fqdn_hit_extracts_clicked_url_without_crawl(test_context):
     splunk = MockMultiSplunk({"app_defender_hunting": [ROW_ALLOWED]})
     with patch("saq.modules.splunk.SplunkClient", return_value=splunk):
         analyzer = _make_analyzer(test_context, URL_CONFIG)
         observable = RootAnalysis().add_observable_by_spec(F_FQDN, "evil.example")
         analysis = _run(analyzer, observable)
 
+        # the clicked URL is still surfaced as an observable for visibility/pivoting...
         urls = [o for o in analysis.observables if o.type == F_URL]
         assert len(urls) == 1
         assert urls[0].value == "https://evil.example/landing"
-        assert urls[0].has_directive(DIRECTIVE_CRAWL)
+        # ...but it is NOT crawled (no flood of Phishkit scans on a busy domain), nor is the fqdn
+        assert not urls[0].has_directive(DIRECTIVE_CRAWL)
         assert not observable.has_directive(DIRECTIVE_CRAWL)
+        # the clicker is still escalated
+        assert analysis.has_detection_points()
 
 
 @pytest.mark.unit

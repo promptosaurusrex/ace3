@@ -339,28 +339,23 @@ class ClickerDetectionMixin:
             self._escalate_crawl(analysis, observable, hits)
 
     def _escalate_crawl(self, analysis, observable, hits) -> None:
-        """Crawl + Phishkit-analyze the clicked URL(s). For a url observable that's the observable
-        itself; for an fqdn observable we extract the exact clicked URLs."""
+        """url observable: crawl + Phishkit-analyze the observable itself. fqdn observable: surface the
+        distinct clicked URLs as url observables for visibility/pivoting, but do NOT add the crawl
+        directive — a busy domain could surface many clicked URLs and flood Phishkit."""
         from saq.modules.phishkit import PhishkitAnalysis
 
-        if observable.type == F_URL:
-            targets = [observable]
-        else:
-            targets = []
+        if observable.type != F_URL:
             seen = set()
             for e in hits:
                 url = e.get("url")
                 if not url or url in seen:
                     continue
                 seen.add(url)
-                new_obs = analysis.add_observable_by_spec(F_URL, url)
-                if new_obs:
-                    targets.append(new_obs)
+                analysis.add_observable_by_spec(F_URL, url)  # extracted for visibility, but NOT crawled
+            return
 
-        phishkit_key = MODULE_PATH(PhishkitAnalysis)
-        for target in targets:
-            target.add_directive(DIRECTIVE_CRAWL)
-            # If Phishkit was previously skipped on this URL (because it lacked the crawl directive),
-            # clear the "skipped" sentinel so it runs now. If it already ran, leave it.
-            if target.get_analysis(PhishkitAnalysis) is False:
-                target._analysis.pop(phishkit_key, None)
+        observable.add_directive(DIRECTIVE_CRAWL)
+        # If Phishkit was previously skipped on this URL (because it lacked the crawl directive),
+        # clear the "skipped" sentinel so it runs now. If it already ran, leave it.
+        if observable.get_analysis(PhishkitAnalysis) is False:
+            observable._analysis.pop(MODULE_PATH(PhishkitAnalysis), None)
