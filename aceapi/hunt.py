@@ -8,10 +8,11 @@ from typing import List, Optional
 
 import pytz
 import yaml
-from flask import jsonify, request
+from flask import request
 from pydantic import BaseModel, ValidationError
 
 from aceapi.auth import api_auth_check
+from aceapi.json import json_result
 from aceapi.blueprints import hunt_bp
 from hunt_compiler import CompiledHunt, load_compiled_hunt
 from saq.analysis.root import RootAnalysis
@@ -95,11 +96,11 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
     try:
         hunt_type = peek_hunt_type(target_file_path)
     except FileNotFoundError:
-        return jsonify({"valid": False, "error": "target file not found"}), 400
+        return json_result({"valid": False, "error": "target file not found"}), 400
     except yaml.YAMLError as e:
-        return jsonify({"valid": False, "error": f"YAML syntax error: {e}"}), 400
+        return json_result({"valid": False, "error": f"YAML syntax error: {e}"}), 400
     except ValueError as e:
-        return jsonify({"valid": False, "error": f"invalid hunt config: {e}"}), 400
+        return json_result({"valid": False, "error": f"invalid hunt config: {e}"}), 400
 
     # load it using the HuntManager
     hunter_service = HunterService()
@@ -107,23 +108,23 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
     try:
         manager = hunter_service.hunt_managers[hunt_type]
     except KeyError:
-        return jsonify({"valid": False, "error": f"invalid hunt type {hunt_type}"}), 400
+        return json_result({"valid": False, "error": f"invalid hunt type {hunt_type}"}), 400
 
     # validate the hunt config with the appropriate class
     try:
         hunt = manager.load_hunt_from_config(target_file_path)
     except ValidationError as e:
-        return jsonify({"valid": False, "error": f"invalid hunt config: {e}"}), 400
+        return json_result({"valid": False, "error": f"invalid hunt config: {e}"}), 400
 
     # are we executing the hunt?
     execution_arguments_dict = request_json.get("execution_arguments", {})
     if not execution_arguments_dict:
-        return jsonify({"valid": True}), 200
+        return json_result({"valid": True}), 200
 
     try:
         execution_arguments = ExecutionArguments.model_validate(execution_arguments_dict)
     except ValidationError as e:
-        return jsonify({"valid": False, "error": f"invalid execution_arguments: {e}"}), 400
+        return json_result({"valid": False, "error": f"invalid execution_arguments: {e}"}), 400
 
     exec_kwargs = {}
     use_query_results_override = execution_arguments.query_results is not None
@@ -136,26 +137,26 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
 
     if isinstance(hunt, QueryHunt) and not use_query_results_override:
         if execution_arguments.start_time is None:
-            return jsonify({"valid": False, "error": "start_time is required for query hunts"}), 400
+            return json_result({"valid": False, "error": "start_time is required for query hunts"}), 400
 
         if execution_arguments.end_time is None:
-            return jsonify({"valid": False, "error": "end_time is required for query hunts"}), 400
+            return json_result({"valid": False, "error": "end_time is required for query hunts"}), 400
 
         try:
             start_time = datetime.strptime(execution_arguments.start_time, '%m/%d/%Y:%H:%M:%S')
         except ValueError:
-            return jsonify({"valid": False, "error": "invalid start_time format: expected MM/DD/YYYY:HH:MM:SS"}), 400
+            return json_result({"valid": False, "error": "invalid start_time format: expected MM/DD/YYYY:HH:MM:SS"}), 400
 
         try:
             end_time = datetime.strptime(execution_arguments.end_time, '%m/%d/%Y:%H:%M:%S')
         except ValueError:
-            return jsonify({"valid": False, "error": "invalid end_time format: expected MM/DD/YYYY:HH:MM:SS"}), 400
+            return json_result({"valid": False, "error": "invalid end_time format: expected MM/DD/YYYY:HH:MM:SS"}), 400
 
         if execution_arguments.timezone is not None:
             try:
                 tz = pytz.timezone(execution_arguments.timezone)
             except pytz.exceptions.UnknownTimeZoneError:
-                return jsonify({"valid": False, "error": f"invalid timezone: '{execution_arguments.timezone}'"}), 400
+                return json_result({"valid": False, "error": f"invalid timezone: '{execution_arguments.timezone}'"}), 400
             start_time = tz.localize(start_time)
             end_time = tz.localize(end_time)
         else:
@@ -183,9 +184,9 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
             else:
                 submissions = hunt.execute(**exec_kwargs)
         except RemoteApiError as e:
-            return jsonify({"valid": False, "error": e.message, "remote_status_code": e.status_code}), 400
+            return json_result({"valid": False, "error": e.message, "remote_status_code": e.status_code}), 400
         except Exception as e:
-            return jsonify({"valid": False, "error": f"error executing hunt: {e}"}), 400
+            return json_result({"valid": False, "error": f"error executing hunt: {e}"}), 400
 
         if submissions is None:
             submissions = []
@@ -234,7 +235,7 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
         if getattr(hunt, "original_query_results", None) is not None:
             original_events = hunt.original_query_results
 
-        return jsonify({
+        return json_result({
             "valid": True,
             "roots": root_json_results,
             "logs": formatted_logs,
@@ -251,15 +252,15 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
 def validate_hunt():
     with suppress_external_logging():
         if not request.json:
-            return jsonify({"valid": False, "error": "request body must be JSON"}), 400
+            return json_result({"valid": False, "error": "request body must be JSON"}), 400
 
         if "compiled_hunt" not in request.json:
-            return jsonify({"valid": False, "error": "missing 'compiled_hunt' field"}), 400
+            return json_result({"valid": False, "error": "missing 'compiled_hunt' field"}), 400
 
         try:
             compiled = CompiledHunt.model_validate(request.json["compiled_hunt"])
         except ValidationError as e:
-            return jsonify({"valid": False, "error": f"invalid compiled_hunt: {e}"}), 400
+            return json_result({"valid": False, "error": f"invalid compiled_hunt: {e}"}), 400
 
         temp_dir = tempfile.mkdtemp(dir=get_compiled_hunt_dir())
 
@@ -273,7 +274,7 @@ def validate_hunt():
                 )
                 target_file_path = load_compiled_hunt(compiled, temp_dir)
             except Exception as e:
-                return jsonify({"valid": False, "error": f"error loading compiled hunt: {e}"}), 400
+                return json_result({"valid": False, "error": f"error loading compiled hunt: {e}"}), 400
 
             return _validate_and_execute(target_file_path, request.json)
         finally:
