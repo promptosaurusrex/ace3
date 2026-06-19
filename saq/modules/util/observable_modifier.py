@@ -13,7 +13,9 @@ from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.constants import DIRECTIVE_EXCLUDE_ALL, DIRECTIVE_YARA_META_PREFIX, F_SIGNATURE_ID, AnalysisExecutionResult
 from saq.environment import get_base_dir
+from saq.git import get_commit_hash, git_dir_contains
 from saq.modules import AnalysisModule
+from saq.signatures import SIGNATURE_VERSION_UNKNOWN
 from saq.modules.config import AnalysisModuleConfig
 from saq.observables.type_hierarchy import get_type_hierarchy
 
@@ -23,6 +25,10 @@ class ObservableModifierConfig(AnalysisModuleConfig):
     rules_config_path: str = Field(
         default="etc/observable_modifier_rules.yaml",
         description="Path to YAML rules config file, relative to SAQ_HOME",
+    )
+    git_dir: Optional[str] = Field(
+        default=None,
+        description="git checkout used to stamp the loaded rules' signature_version (must equal or contain the directory of rules_config_path); omit when git is not used",
     )
 
 
@@ -409,7 +415,7 @@ class RuleActions:
     set_display_value: Optional[str] = None
     ignore: bool = False
 
-    def apply(self, observable: Observable) -> dict:
+    def apply(self, observable: Observable, signature_uuid=None, signature_version=None) -> dict:
         applied = {}
         # Clear any "no_analysis" sentinels FIRST so that the subsequent
         # add_directives below can trigger a re-dispatch (via
@@ -437,7 +443,8 @@ class RuleActions:
 
         if self.add_detection_points:
             for desc in self.add_detection_points:
-                observable.add_detection_point(desc)
+                observable.add_detection_point(
+                    desc, signature_uuid=signature_uuid, signature_version=signature_version)
             applied["add_detection_points"] = self.add_detection_points
 
         if self.exclude_analysis:
@@ -480,6 +487,9 @@ class ObservableModifierAnalyzer(AnalysisModule):
         super().__init__(*args, **kwargs)
         self._initialized = False
         self._rules: list[Rule] = []
+        # git commit hash of the rules' git_dir (or SIGNATURE_VERSION_UNKNOWN), tracked
+        # alongside the loaded rule set and re-resolved on every _load_config (rule-file change)
+        self._rules_signature_version: str = SIGNATURE_VERSION_UNKNOWN
         # per-root, per-rule evaluation cost accumulator
         # outer key = root.uuid, inner key = rule.uuid, value =
         # {"name": str, "count": int, "total_seconds": float, "max_seconds": float}
@@ -504,6 +514,18 @@ class ObservableModifierAnalyzer(AnalysisModule):
             get_base_dir(),
             self.config.rules_config_path,
         )
+
+        # resolve + track the rules' signature_version (the rule repo's commit hash)
+        # alongside the rule set. git_dir is optional; when set it must equal or
+        # contain the rules file, otherwise we log an error and fall back to unknown.
+        if self.config.git_dir:
+            if git_dir_contains(self.config.git_dir, yaml_path):
+                self._rules_signature_version = get_commit_hash(self.config.git_dir) or SIGNATURE_VERSION_UNKNOWN
+            else:
+                logging.error("observable_modifier git_dir %s does not contain rules file %s", self.config.git_dir, yaml_path)
+                self._rules_signature_version = SIGNATURE_VERSION_UNKNOWN
+        else:
+            self._rules_signature_version = SIGNATURE_VERSION_UNKNOWN
 
         try:
             with open(yaml_path, "r") as f:
@@ -786,7 +808,8 @@ class ObservableModifierAnalyzer(AnalysisModule):
                 continue
 
             if self._evaluate_rule(rule, observable, root):
-                applied = rule.actions.apply(observable)
+                applied = rule.actions.apply(
+                    observable, signature_uuid=rule.uuid, signature_version=self._rules_signature_version)
                 matched_rules.append({
                     "name": rule.name,
                     "uuid": rule.uuid,
@@ -860,7 +883,8 @@ class ObservableModifierAnalyzer(AnalysisModule):
                 continue
 
             if self._evaluate_rule(rule, observable, root):
-                applied = rule.actions.apply(observable)
+                applied = rule.actions.apply(
+                    observable, signature_uuid=rule.uuid, signature_version=self._rules_signature_version)
                 matched_rules.append({
                     "name": rule.name,
                     "uuid": rule.uuid,

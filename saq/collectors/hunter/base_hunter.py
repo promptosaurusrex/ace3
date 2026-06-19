@@ -44,6 +44,7 @@ from saq.error import report_exception
 from saq.error.remote import RemoteApiError
 from saq.gui.icon import IconConfiguration
 from saq.query.config import SummaryDetailConfig
+from saq.signatures import SIGNATURE_VERSION_UNKNOWN
 from saq.util import create_timedelta, local_time
 from saq.util.time import is_timedelta_string
 
@@ -141,6 +142,11 @@ class Hunt:
         # will be set by load_hunt if loading from file
         self.file_path = None
         self.last_mtime = None
+
+        # signature_version (git commit hash of this hunt's rule_dir git_dir, or
+        # SIGNATURE_VERSION_UNKNOWN) used when emitting the hunt's detection point.
+        # set by the HuntManager after load from the rule_dir's resolved commit.
+        self.signature_version: str = SIGNATURE_VERSION_UNKNOWN
         
         # track all files that make up this hunt configuration (main file + included files)
         # maps file path -> modification time (None if we couldn't get the mtime)

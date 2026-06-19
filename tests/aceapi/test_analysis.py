@@ -531,6 +531,26 @@ def test_api_analysis_invalid_status(test_client):
     assert result.data.decode() == 'invalid uuid {}'.format(test_uuid)
 
 @pytest.mark.integration
+def test_api_analysis_status_detection_count(test_client):
+    # detection_count is computed on the fly from the detection_points table
+    from tests.saq.helpers import create_root_analysis
+    from saq.database.util.alert import ALERT
+
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    root.add_detection_point("real detection")
+    o = root.add_observable_by_spec(F_USER, "test_user")
+    o.add_detection_point("another detection")
+    root.save()
+    ALERT(root)
+
+    result = test_client.get(url_for('analysis.get_status', uuid=root.uuid), headers={'x-ace-auth': get_config().api.api_key})
+    assert result.status_code == 200
+    result = result.get_json()['result']
+    assert result['alert'] is not None
+    assert result['alert']['detection_count'] == 2
+
+@pytest.mark.integration
 def test_api_analysis_submission_tuning(test_client):
 
     tuning_rule_dir = os.path.join(get_data_dir(), 'tuning_rules')

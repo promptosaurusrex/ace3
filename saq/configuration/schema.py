@@ -371,11 +371,15 @@ class AnalysisModeConfig(BaseModel):
     maximum_cumulative_analysis_fail_time: Optional[int] = Field(default=None, description="the maximum cumulative analysis fail time (in seconds)")
     maximum_analysis_time: Optional[int] = Field(default=None, description="the maximum analysis time (in seconds)")
 
+class HuntRuleDirConfig(BaseModel):
+    rule_dir: str = Field(..., description="directory ACE loads hunt yaml from")
+    git_dir: Optional[str] = Field(default=None, description="git checkout used to stamp the hunt's signature_version (must equal or contain rule_dir); omit when git is not used")
+
 class HuntTypeConfig(BaseModel):
     name: str = Field(..., description="The name of the hunt type.")
     python_module: str = Field(..., description="The module of the hunt type.")
     python_class: str = Field(..., description="The class of the hunt type.")
-    rule_dirs: list[str] = Field(..., description="The directories that contain the hunt rules.")
+    rule_dirs: list[HuntRuleDirConfig] = Field(..., description="The directories that contain the hunt rules. Each entry is a {rule_dir, git_dir?} mapping; bare strings are no longer accepted.")
     update_frequency: int = Field(..., description="The frequency of the hunt type.")
     concurrency_limit: Optional[int] = Field(default=None, description="The concurrency limit for the hunt type.")
 

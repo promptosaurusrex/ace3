@@ -7,6 +7,7 @@ from pydantic import Field
 from urllib.parse import urlparse
 
 from saq.analysis.analysis import Analysis
+from saq.signatures import OFFICE_EXTERNAL_OLEOBJECT
 from saq.constants import DIRECTIVE_FORCE_DOWNLOAD, F_FILE, F_URL, AnalysisExecutionResult
 from saq.crypto import encrypt
 from saq.environment import get_data_dir
@@ -122,7 +123,7 @@ class OfficeXMLRelationshipExternalURLAnalyzer(AnalysisModule):
         for url in parser_target.urls:
             url = analysis.add_observable_by_spec(F_URL, url)
             url.add_directive(DIRECTIVE_FORCE_DOWNLOAD)
-            _file.add_detection_point('{} contains a link to an external oleobject'.format(_file))
+            _file.add_detection_point('{} contains a link to an external oleobject'.format(_file), signature_uuid=OFFICE_EXTERNAL_OLEOBJECT.uuid)
 
         analysis.urls = parser_target.urls
 

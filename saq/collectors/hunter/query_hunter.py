@@ -21,7 +21,7 @@ from saq.collectors.hunter import Hunt, read_persistence_data, write_persistence
 from saq.collectors.hunter.base_hunter import HuntConfig
 from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration.config import get_config
-from saq.constants import F_SIGNATURE_ID, SUMMARY_DETAIL_FORMAT_JINJA, TIMESPEC_TOKEN
+from saq.constants import ANALYSIS_MODE_CORRELATION, F_SIGNATURE_ID, SUMMARY_DETAIL_FORMAT_JINJA, TIMESPEC_TOKEN
 from saq.environment import get_temp_dir
 from saq.gui.alert import KEY_ALERT_TEMPLATE, KEY_ICON_CONFIGURATION
 from saq.observables.generator import create_observable
@@ -467,6 +467,18 @@ class QueryHunt(Hunt):
             extensions=extensions)
 
         root.initialize_storage()
+
+        # only hunts running in the default correlation mode alert on submission; hunts
+        # in other analysis modes are not alerts until analysis adds a detection point,
+        # so attaching one here would incorrectly promote them to alerts immediately
+        if self.analysis_mode == ANALYSIS_MODE_CORRELATION:
+            # attribute this hunt-originated alert to the hunt signature (the hunt's uuid)
+            # and its tracked repo commit (signature_version). passed explicitly so it is
+            # not resolved to the built-in ACE_VERSION default.
+            root.add_detection_point(
+                "hunt {} ({}) matched".format(self.name, self.type),
+                signature_uuid=self.uuid,
+                signature_version=self.signature_version)
 
         for tag in self.tags:
             try:

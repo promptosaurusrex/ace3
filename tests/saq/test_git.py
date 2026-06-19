@@ -1069,3 +1069,51 @@ class TestRunLoop:
 
         assert len(wait_calls) == 1
         assert wait_calls[0] == 0
+
+
+def _init_repo_with_commit(path):
+    """init a git repo at path with one commit, returns the HEAD sha"""
+    env = dict(os.environ)
+    env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "test"
+    env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "test@example.com"
+    subprocess.run(["git", "init", str(path)], check=True, capture_output=True)
+    (Path(path) / "rule.yaml").write_text("name: x\n")
+    subprocess.run(["git", "-C", str(path), "add", "."], check=True, capture_output=True, env=env)
+    subprocess.run(["git", "-C", str(path), "commit", "-m", "init"], check=True, capture_output=True, env=env)
+    out = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
+    return out.stdout.strip()
+
+
+@pytest.mark.unit
+class TestGitCommitHelpers:
+    def test_get_commit_hash_returns_head(self, tmpdir):
+        sha = _init_repo_with_commit(tmpdir)
+        from saq.git import get_commit_hash
+        assert get_commit_hash(str(tmpdir)) == sha
+        assert len(sha) == 40
+
+    def test_get_commit_hash_none_for_non_repo(self, tmpdir):
+        from saq.git import get_commit_hash
+        # a directory that is not a git repo
+        assert get_commit_hash(str(tmpdir)) is None
+
+    def test_get_commit_hash_none_for_falsy_or_bogus(self):
+        from saq.git import get_commit_hash
+        assert get_commit_hash("") is None
+        assert get_commit_hash(None) is None
+        assert get_commit_hash("/nonexistent/path/does/not/exist") is None
+
+    def test_git_dir_contains(self, tmpdir):
+        from saq.git import git_dir_contains
+        git_dir = str(tmpdir)
+        rule_dir = os.path.join(git_dir, "hunts", "splunk")
+        os.makedirs(rule_dir)
+        # equal
+        assert git_dir_contains(git_dir, git_dir)
+        # ancestor
+        assert git_dir_contains(git_dir, rule_dir)
+        # descendant is NOT contained (repo must contain the rules, not vice versa)
+        assert not git_dir_contains(rule_dir, git_dir)
+        # unrelated
+        other = str(tmpdir.mkdir("other_root"))
+        assert not git_dir_contains(rule_dir, other)

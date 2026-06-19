@@ -1,4 +1,4 @@
-"""Probe external CLI tool versions for cache-key ``extended_version`` use.
+"""Probe external inputs for cache-key ``extended_version`` use.
 
 Many analysis modules shell out to CLI tools whose version participates in
 output correctness (OCR uses ``tesseract``; QR decoding uses ``zbarimg``,
@@ -13,8 +13,13 @@ resolved path's ``(st_mtime_ns, st_size)`` — so the subprocess runs at most
 once per installed binary, and an upgrade (which replaces the file and moves
 its mtime) triggers a fresh probe. See docs/ANALYSIS_CACHING.md ("tool-version
 helper").
+
+``file_content_version`` covers the other extended_version flavor: a small
+backing file (e.g. the QR URL filter) whose *contents* change module output.
+It returns a content sha256 — deterministic across hosts, unlike mtime.
 """
 
+import hashlib
 import logging
 import os
 import shutil
@@ -79,6 +84,31 @@ def probe_binary_version(name: str, args: Optional[list[str]] = None) -> Optiona
 
     _probe_cache[cache_key] = version
     return version
+
+
+def file_content_version(path: str) -> Optional[str]:
+    """sha256 hex of a (small) file's contents, for ``extended_version`` use.
+
+    Deterministic across hosts for identical content — unlike a file's mtime,
+    which a git checkout/pull sets per host (so an mtime fingerprint diverges
+    per system for the same content). Any edit — committed or an uncommitted
+    working-tree edit — shifts the digest.
+
+    Returns None if the file is missing or unreadable, so the caller omits the
+    key: staleness over poisoning the key with a transient read failure. Never
+    raises.
+
+    Intended for small files read on every cache-key computation; unlike
+    ``probe_binary_version`` it does not memoize. Reading + hashing a tiny
+    config file is microseconds, and a memo keyed on ``(mtime, size)`` would
+    reintroduce the very per-host mtime dependence this helper removes.
+    """
+    try:
+        with open(path, "rb") as fp:
+            return hashlib.sha256(fp.read()).hexdigest()
+    except OSError as e:
+        logging.warning("file_content_version: unable to read %s: %s", path, e)
+        return None
 
 
 def _reset_probe_cache_for_tests() -> None:

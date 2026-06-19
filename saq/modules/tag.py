@@ -10,6 +10,7 @@ from typing import Optional, Type, Union
 from pydantic import Field, ConfigDict
 
 from saq.analysis import Analysis
+from saq.signatures import ALERTABLE_TAG, CORRELATED_TAG_MATCH
 from saq.configuration.config import get_config
 from saq.constants import CONFIG_TAGS
 from saq.database.model import Observable
@@ -65,7 +66,7 @@ class ConfigurationDefinedTaggingAnalyzer(AnalysisModule):
         for obj in self.get_root().all:
             for tag in obj.tags:
                 if self.is_alertable_tag(tag) and tag not in alerted_tags:
-                    self.get_root().add_detection_point(f"tag {tag} is configured to be alertable")
+                    self.get_root().add_detection_point(f"tag {tag} is configured to be alertable", signature_uuid=ALERTABLE_TAG.uuid)
                     alerted_tags.add(tag)
 
         return AnalysisExecutionResult.COMPLETED
@@ -387,7 +388,7 @@ class CorrelatedTagAnalyzer(AnalysisModule):
 
                 tag_map[id(obj)].add(t)
                 if tag_map[id(obj)] == d.tags:
-                    o.add_detection_point("Correlated Tag Match: {}".format(d.text))
+                    o.add_detection_point("Correlated Tag Match: {}".format(d.text), signature_uuid=CORRELATED_TAG_MATCH.uuid)
 
             for t in d.tags:
                 for o in self.get_root().all:

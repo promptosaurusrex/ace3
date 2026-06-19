@@ -40,7 +40,7 @@ section with the full design.
 | **Delayed modules** | Cacheable: final-cycle delta is merged with prior cycles' recorded deltas at write time; mid-delay cycles never cached (COMPLETED gate). | open question 3 |
 | **Config guards** | `cache_ttl` mutually exclusive with `wide_diff` and with `is_grouped_by_time` (pydantic validators); CI contract lint per opt-in (removals / relationship scope / file specs blob-backable for `file_capable` modules, no files otherwise). | §A6, §A1 |
 | **Lifecycle** | Daily partition maintenance (drop > `partition_retention_days`=35, reorganize catchall, provision ahead); read-time `expires_at` filter owns precision; blob GC is a separate grace-period sweep. No row DELETEs anywhere. File blobs ride the same `blob_refs`/GC mechanism as spilled details. | §A8 |
-| **Opt-ins (core)** | `rdap_analyzer` 7d; `nrd_analyzer` 24h + DB-file `extended_version`; `site_tagger` 30d + CSV `extended_version`; **`ocr` 7d + tesseract-version `extended_version`; `qrcode` 7d + zbarimg/gs/pdfinfo versions + filter-file fingerprint** (Phase 4). OCR/QR also cache **negative results** (clean scan, nothing found → summary-less analysis recorded; scan *failures* record nothing and are never cached). | Phase 3/4 notes, §A4 |
+| **Opt-ins (core)** | `rdap_analyzer` 7d; `nrd_analyzer` 24h + DB-file `extended_version`; `site_tagger` 30d + CSV `extended_version`; **`ocr` 7d + tesseract-version `extended_version`; `qrcode` 7d + zbarimg/gs/pdfinfo versions + filter-file content sha256** (Phase 4). OCR/QR also cache **negative results** (clean scan, nothing found → summary-less analysis recorded; scan *failures* record nothing and are never cached). | Phase 3/4 notes, §A4 |
 | **Metrics** | Per-(root, module) fields on the per-root summary event: hit/miss/write counts, lookup latency (**hits + misses**), write latency/bytes. `cache_stats` heartbeat (15 min) from partition statistics. | PR #242 notes |
 | **Not implemented** | Phase 3.5 single-flight dedup (redesigned 2026-06-10: non-blocking, delayed-analysis requeue, `single_flight` opt-in — §A9). Deliberately re-sequenced after Phase 4; it has no dependents. Yara opt-in deferred — not for version reasons (the ruleset under `signature_dir` IS fingerprintable, nrd-style): its filtered output depends on file name and observable meta-tags, which sit outside the content-keyed cache; its SANDBOX directive lands on the *redirection target* (cross-observable, unreplayable); and a local yss socket scan is cheaper than a cache hit anyway. | §A9, Phase 4 notes |
 
@@ -596,9 +596,12 @@ confidence criteria.
   missing blob = lookup-time `blob_missing` miss (or a clean replay abort →
   live-run fall-through). See §5/§6.
 - Tool-version helper (`saq/modules/tool_version.py`,
-  `probe_binary_version`) shipped alongside (former Step 3.6).
+  `probe_binary_version`) shipped alongside (former Step 3.6). The same module
+  carries `file_content_version` (sha256 of a small backing file) for the QR
+  filter — a content hash, not mtime+size, so the key is stable across hosts
+  (the filter ships from a git repo, whose checkout sets mtime per host).
 - Opt-ins: `ocr` (7d, tesseract version in `extended_version`) and `qrcode`
-  (7d, zbarimg/gs/pdfinfo versions + filter-file mtime+size fingerprint).
+  (7d, zbarimg/gs/pdfinfo versions + filter-file content sha256).
   **Yara deferred** — not for version reasons (the module exposes
   `signature_dir` and the ruleset is fingerprintable nrd-style): its output
   depends on the file's *name* and the observable's *meta-tags*, which are
@@ -952,12 +955,18 @@ the same INFO-level logging in Phase 1 so we can spot surprises.
 
 > **Implemented and in use.** `extended_version` ships as a property on
 > `AnalysisModule` (`saq/modules/base_module.py`, delegated through
-> `saq/modules/adapter.py`) and the file-hash pattern below is now live, not
-> hypothetical: `nrd_analyzer` (`saq/modules/nrd.py`) and `site_tagger`
-> (`saq/modules/tag.py`) both mix a file mtime+size signature into the cache
-> key so an analyst edit to the backing data invalidates the key without a
-> redeploy. The tool-version flavor (hashing a CLI tool's `--version`) remains
-> deferred to Phase 4 alongside the OCR/QR opt-ins.
+> `saq/modules/adapter.py`) and the file-fingerprint pattern below is live, not
+> hypothetical. The current cacheable user is `qrcode`
+> (`saq/modules/file_analysis/qrcode.py`), which mixes a **content sha256** of
+> its URL filter file (via `file_content_version` in `saq/modules/tool_version.py`)
+> into the cache key, so an analyst edit invalidates the key without a redeploy.
+> A content hash — not the mtime+size signature shown in the example below —
+> keeps the key deterministic across hosts: the filter ships from a git repo,
+> whose checkout/pull sets mtime per host, so an mtime fingerprint would diverge
+> per system for identical content. (`nrd_analyzer` and `site_tagger` carried
+> an mtime+size signature when they were cacheable, but were since removed from
+> the cache.) The tool-version flavor (hashing a CLI tool's `--version`) ships
+> in the same module as `probe_binary_version`.
 
 The ace2-core shape of `extended_version` (a static dict on the AMT
 dataclass) doesn't fit ACE3's watch-file pattern. Change it from a

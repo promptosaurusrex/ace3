@@ -1,4 +1,5 @@
 """Unit tests for probe_binary_version (cache-key tool fingerprinting)."""
+import hashlib
 import os
 import pathlib
 import shutil
@@ -7,7 +8,11 @@ import tempfile
 
 import pytest
 
-from saq.modules.tool_version import _reset_probe_cache_for_tests, probe_binary_version
+from saq.modules.tool_version import (
+    _reset_probe_cache_for_tests,
+    file_content_version,
+    probe_binary_version,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -83,3 +88,34 @@ class TestProbeBinaryVersion:
         st = tool.stat()
         os.utime(tool, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
         assert probe_binary_version("fake_tool") == "v2 with more text"
+
+
+class TestFileContentVersion:
+
+    @pytest.mark.unit
+    def test_returns_content_sha256(self, tmp_path):
+        f = tmp_path / "rules.filter"
+        f.write_bytes(b"example\\.com\n")
+        assert file_content_version(str(f)) == hashlib.sha256(b"example\\.com\n").hexdigest()
+
+    @pytest.mark.unit
+    def test_identical_content_same_hash_across_mtime(self, tmp_path):
+        """Determinism across hosts: same bytes, different mtime → same hash."""
+        a, b = tmp_path / "a", tmp_path / "b"
+        a.write_bytes(b"same content")
+        b.write_bytes(b"same content")
+        os.utime(a, (1000, 1000))
+        os.utime(b, (2000, 2000))
+        assert file_content_version(str(a)) == file_content_version(str(b))
+
+    @pytest.mark.unit
+    def test_content_change_changes_hash(self, tmp_path):
+        f = tmp_path / "rules.filter"
+        f.write_bytes(b"one")
+        first = file_content_version(str(f))
+        f.write_bytes(b"two")
+        assert first != file_content_version(str(f))
+
+    @pytest.mark.unit
+    def test_missing_file_returns_none(self, tmp_path):
+        assert file_content_version(str(tmp_path / "nope")) is None
