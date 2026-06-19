@@ -65,7 +65,6 @@ def observable_action_check_for_clickers():
         return jsonify({"status": "ok", "message": "Clicker detection requested."}), 200
 
     except Exception as e:
-        traceback.print_exc()
         logging.error("clicker detection request failed for alert %s: %s", alert.uuid, e)
         report_exception()
         return jsonify({"status": "error", "message": f"clicker detection request failed: {e}"}), 500
@@ -115,7 +114,6 @@ def observable_action_open_clicker_search_splunk():
         return jsonify({"status": "ok", "urls": urls}), 200
 
     except Exception as e:
-        traceback.print_exc()
         logging.error("failed to build Splunk clicker search for alert %s: %s", alert.uuid, e)
         report_exception()
         return jsonify({"status": "error", "message": f"failed to build Splunk clicker search: {e}"}), 500

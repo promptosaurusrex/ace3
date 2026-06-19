@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 import logging
 from typing import TYPE_CHECKING, Optional, Protocol, runtime_checkable
 
+from saq.error.reporting import report_exception
+
 if TYPE_CHECKING:
     from saq.analysis.root import RootAnalysis
 
@@ -100,11 +102,6 @@ def gather_clicker_events(root: "RootAnalysis") -> list[ClickerEvent]:
 
     Returns events sorted by ``timestamp`` ascending; events lacking a timestamp sort
     to the end.
-
-    Cost model: ``load_details()`` reads the analysis details JSON from disk. The
-    aggregator only calls it for instances of classes in
-    ``REGISTERED_CLICKER_PROVIDERS`` — so an alert with 200 analyses but one clicker
-    analysis pays for one disk read, not 200.
     """
     events: list[ClickerEvent] = []
 
@@ -115,19 +112,21 @@ def gather_clicker_events(root: "RootAnalysis") -> list[ClickerEvent]:
                 try:
                     loader()
                 except Exception:
-                    logging.exception(
+                    logging.error(
                         "load_details() failed for clicker event provider %s; skipping",
                         provider_class.__name__,
                     )
+                    report_exception()
                     continue
 
             try:
                 produced = analysis.get_clicker_events() or []
             except Exception:
-                logging.exception(
+                logging.error(
                     "clicker event provider %s raised; skipping",
                     provider_class.__name__,
                 )
+                report_exception()
                 continue
 
             for event in produced:
