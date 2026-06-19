@@ -30,6 +30,9 @@ import hashlib
 import importlib
 import json
 import logging
+import os
+import shutil
+import tempfile
 import time
 from typing import TYPE_CHECKING, NamedTuple, Optional
 
@@ -42,11 +45,12 @@ from saq.analysis.blob_store import (
     REFERRER_KIND_CACHE_ROW,
     BlobNotFound,
     BlobStore,
+    get_blob_store,
 )
-from saq.analysis.module_execution_delta import ModuleExecutionDelta
+from saq.analysis.module_execution_delta import ModuleExecutionDelta, ObservableSpec
 from saq.analysis.module_path import SPLIT_MODULE_PATH
 from saq.configuration.config import get_config
-from saq.constants import DB_ANALYSIS_RESULT_CACHE
+from saq.constants import DB_ANALYSIS_RESULT_CACHE, F_FILE, FILE_SUBDIR
 from saq.database.model import AnalysisResultCache
 from saq.database.pool import get_db
 from saq.util import parse_event_time
@@ -187,11 +191,18 @@ def put_cached_delta(
     delta: "ModuleExecutionDelta",
     module,
     blob_store: BlobStore,
+    root: Optional["RootAnalysis"] = None,
 ) -> Optional[CacheWriteResult]:
     """Persist a successful module execution's delta.
 
     Returns a :class:`CacheWriteResult` if a cache row was written, ``None``
     otherwise.
+
+    ``root`` is the source alert the module ran against. Required when the
+    delta spawns file observables (Phase 4): the produced files' bytes are
+    read from the root's file dir and stored in the blob store so replay
+    can materialize them into a different alert. A file-bearing delta with
+    no ``root`` is refused.
 
     All DB failures are caught and logged — this function must never raise
     into the executor.
@@ -263,21 +274,24 @@ def put_cached_delta(
             )
             return None
 
-        # Step 3.3: refuse to cache deltas that would spawn file
-        # observables on replay. File-byte materialization is Phase 4
-        # territory; until that lands, replaying a file-spawning delta
-        # against a different alert would yield observables whose backing
-        # bytes don't exist in the target storage_dir.
-        if delta.has_file_observables:
+        # Phase 4: deltas that spawn file observables are cacheable — their
+        # content goes into the blob store (keyed by spec.value, which IS
+        # the file's sha256) and is materialized into the target root on
+        # replay. Validate that every file spec is blob-backable before
+        # touching the store; any failure refuses the whole delta.
+        file_specs = delta.file_observable_specs()
+        refusal_reason = _validate_file_specs(file_specs, root) if file_specs else None
+        if refusal_reason is not None:
             logging.warning(
                 "refusing to cache delta module_name=%s observable_type=%s "
-                "observable_value=%s refusal_reason=file_observables",
+                "observable_value=%s refusal_reason=%s",
                 module.config.name, delta.observable_type, delta.observable_value,
+                refusal_reason,
                 extra={
                     "module_name": module.config.name,
                     "observable_type": delta.observable_type,
                     "observable_value": delta.observable_value,
-                    "refusal_reason": "file_observables",
+                    "refusal_reason": refusal_reason,
                 },
             )
             return None
@@ -298,6 +312,38 @@ def put_cached_delta(
 
         delta_dict = delta.to_dict()
         has_blob_refs = _maybe_spill_details(delta_dict, blob_store, cache_key)
+
+        # Phase 4: store each produced file's bytes in the blob store.
+        # exists() short-circuits re-uploading content the store already
+        # holds (deterministic modules produce identical bytes; the spec
+        # value is the content sha256). put() re-hashes — a mismatch means
+        # the file changed on disk after the observable hashed it, and the
+        # delta can no longer be trusted.
+        for spec in file_specs:
+            full_path = _file_spec_source_path(root, spec)
+            if not blob_store.exists(spec.value):
+                with open(full_path, "rb") as fp:
+                    stored_sha = blob_store.put(fp)
+                if stored_sha != spec.value:
+                    logging.warning(
+                        "refusing to cache delta module_name=%s observable_type=%s "
+                        "observable_value=%s refusal_reason=file_hash_mismatch "
+                        "file_path=%s expected_sha256=%s actual_sha256=%s",
+                        module.config.name, delta.observable_type,
+                        delta.observable_value, spec.file_path,
+                        spec.value, stored_sha,
+                        extra={
+                            "module_name": module.config.name,
+                            "observable_type": delta.observable_type,
+                            "observable_value": delta.observable_value,
+                            "refusal_reason": "file_hash_mismatch",
+                            "file_path": spec.file_path,
+                        },
+                    )
+                    _unreference_blob_refs(delta_dict, blob_store, cache_key)
+                    return None
+            blob_store.reference(spec.value, REFERRER_KIND_CACHE_ROW, cache_key)
+            has_blob_refs = True
 
         analysis_cache = get_config().analysis_cache
         zstd_level = analysis_cache.zstd_level
@@ -325,17 +371,10 @@ def put_cached_delta(
                 },
             )
 
-            # If we spilled details but are bailing out, unreference the blob
+            # If we took blob references (spilled details / file content)
+            # but are bailing out, drop them.
             if has_blob_refs:
-                for sha in _extract_blob_refs(delta_dict):
-                    try:
-                        blob_store.unreference(sha, REFERRER_KIND_CACHE_ROW, cache_key)
-                    except Exception:
-                        logging.warning(
-                            "failed to unreference blob sha256=%s after size-cap bailout",
-                            sha, exc_info=True,
-                            extra={"sha256": sha},
-                        )
+                _unreference_blob_refs(delta_dict, blob_store, cache_key)
             return None
 
         ttl_seconds = int(module.cache_ttl.total_seconds())
@@ -430,11 +469,44 @@ class _ObservableShim:
         self.value = delta.observable_value
 
 
-def _extract_blob_refs(delta_dict: dict) -> list[str]:
-    """Pull every ``__blob_ref__`` sha out of a serialized delta.
+def _file_spec_source_path(root: "RootAnalysis", spec: ObservableSpec) -> str:
+    """Full path to a file spec's backing bytes in the source alert."""
+    return os.path.join(root.storage_dir, FILE_SUBDIR, spec.file_path)
 
-    Only used for cleanup when we abort a cache write after spilling. Keeps
-    the shape shallow: we only spill ``analysis.details`` today.
+
+def _validate_file_specs(file_specs: list[ObservableSpec], root) -> Optional[str]:
+    """Returns a refusal reason when a file-bearing delta can't be
+    blob-backed, None when all specs check out.
+
+    Checked per spec: a captured ``file_path`` (a spec without one predates
+    Phase 4 or came from a capture bug), the backing file still existing on
+    disk (a module or cleanup job may have removed it between capture and
+    cache write), and the per-file size cap (blob bytes are not covered by
+    the compressed-delta size cap).
+    """
+    if root is None:
+        return "file_observables_no_root"
+    max_bytes = get_config().analysis_cache.file_blob_max_bytes
+    for spec in file_specs:
+        if not spec.file_path:
+            return "file_spec_missing_path"
+        full_path = _file_spec_source_path(root, spec)
+        try:
+            size = os.path.getsize(full_path)
+        except OSError:
+            return "file_missing"
+        if max_bytes and size > max_bytes:
+            return "file_too_large"
+    return None
+
+
+def _extract_blob_refs(delta_dict: dict) -> list[str]:
+    """Pull every blob sha a serialized delta references — spilled
+    ``analysis.details`` (``__blob_ref__`` pointers) and Phase 4 file
+    observable specs (whose ``value`` is the content sha256).
+
+    Only used for cleanup when a cache write is aborted after blobs were
+    referenced.
     """
     refs = []
     analysis = delta_dict.get("analysis")
@@ -444,7 +516,29 @@ def _extract_blob_refs(delta_dict: dict) -> list[str]:
             sha = details.get("__blob_ref__")
             if sha:
                 refs.append(sha)
+    for spec_dict in delta_dict.get("new_observables", []):
+        if spec_dict.get("type") == F_FILE and spec_dict.get("file_path"):
+            refs.append(spec_dict["value"])
     return refs
+
+
+def _unreference_blob_refs(delta_dict: dict, blob_store: BlobStore, cache_key: str) -> None:
+    """Drop the blob references a delta took, after an aborted cache write.
+
+    ``unreference`` is safe to call for refs that were never taken, so this
+    can run regardless of how far the write got. Failures are logged — a
+    leaked reference only delays blob GC until the blob_refs partition ages
+    out.
+    """
+    for sha in _extract_blob_refs(delta_dict):
+        try:
+            blob_store.unreference(sha, REFERRER_KIND_CACHE_ROW, cache_key)
+        except Exception:
+            logging.warning(
+                "failed to unreference blob sha256=%s after cache-write bailout",
+                sha, exc_info=True,
+                extra={"sha256": sha},
+            )
 
 
 def _inline_blob_refs(delta_dict: dict, blob_store: BlobStore) -> None:
@@ -601,6 +695,38 @@ def get_cached_delta(
             )
             return CacheLookupResult(None, "decode_error", _elapsed_ms(), cache_key_prefix)
 
+        # Phase 4: a file-bearing delta is only usable if every produced
+        # file's blob still exists (GC, deployment mismatch, or a failed
+        # remote upload can lose one). Missing blob → miss, so the
+        # executor falls through to a live run that re-populates both the
+        # row and the blob. A spec without file_path predates Phase 4 (a
+        # pre-Phase-4 build could never write one — file deltas were
+        # refused — but guard anyway) → decode_error.
+        for spec in delta.file_observable_specs():
+            if not spec.file_path:
+                logging.warning(
+                    "cached delta has file spec without file_path module_name=%s "
+                    "cache_key_prefix=%s",
+                    module_name, cache_key_prefix,
+                    extra={
+                        "module_name": module_name,
+                        "cache_key_prefix": cache_key_prefix,
+                    },
+                )
+                return CacheLookupResult(None, "decode_error", _elapsed_ms(), cache_key_prefix)
+            if not blob_store.exists(spec.value):
+                logging.warning(
+                    "cached delta references missing file blob module_name=%s "
+                    "cache_key_prefix=%s sha256=%s",
+                    module_name, cache_key_prefix, spec.value,
+                    extra={
+                        "module_name": module_name,
+                        "cache_key_prefix": cache_key_prefix,
+                        "sha256": spec.value,
+                    },
+                )
+                return CacheLookupResult(None, "blob_missing", _elapsed_ms(), cache_key_prefix)
+
         # Step 3.4 cache-key recomputation: must match by construction;
         # mismatch indicates corruption (different module identity stored
         # against this key, or a key-generation regression). Log but
@@ -639,15 +765,23 @@ def apply_delta(
     root: "RootAnalysis",
     target_observable: "Observable",
     delta: ModuleExecutionDelta,
+    blob_store: Optional[BlobStore] = None,
 ) -> None:
     """Apply a cached ``ModuleExecutionDelta`` to a target tree.
 
     Idempotent additive replay (design doc §5). Re-installs the analysis
-    object on the target observable, adds any child observables, copies
-    over tags / detections / directives / relationships / excluded_analysis
-    / limited_analysis, applies scalar transitions, and applies root-level
-    additions. All primitives used are idempotent — calling ``apply_delta``
-    twice on the same root produces the same state as calling it once.
+    object on the target observable, adds any child observables (Phase 4:
+    including file observables, whose bytes are materialized from the blob
+    store into this root's file dir), copies over tags / detections /
+    directives / relationships / excluded_analysis / limited_analysis,
+    applies scalar transitions, and applies root-level additions. All
+    primitives used are idempotent — calling ``apply_delta`` twice on the
+    same root produces the same state as calling it once.
+
+    Raises on blob-store failures (missing blob, I/O error) — the staging
+    pass runs *before* any tree mutation, so a raise leaves the tree
+    untouched and the executor's replay-failure handler falls through to a
+    live run.
 
     Does NOT process ``other_observable_diffs`` or ``analysis_children_diffs``
     — those only exist on wide-diff captures, which are uncacheable by
@@ -657,43 +791,81 @@ def apply_delta(
     # (config validation blocks the combination), but enforce explicitly.
     assert not delta.wide_diff, "wide_diff deltas are not cacheable"
 
-    if delta.has_file_observables:
-        # Read-time refusal — guards against malformed rows from a prior
-        # buggy build. Treat as a no-op rather than partially applying.
-        logging.warning(
-            "refusing to replay cached delta module_path=%s observable_uuid=%s "
-            "refusal_reason=file_observables (Phase 4 territory)",
-            delta.module_path, target_observable.uuid,
-            extra={
-                "module_path": delta.module_path,
-                "observable_uuid": target_observable.uuid,
-                "refusal_reason": "file_observables",
-            },
+    # 0. Phase 4 staging pass: materialize every produced file's bytes
+    # into a temp dir under this root's storage_dir BEFORE any tree
+    # mutation. On the local backend materialize() hardlinks, and staging
+    # inside storage_dir keeps the later store_file(move=True) a same-FS
+    # rename — the whole blob→staging→hardcopy→file_dir chain shares one
+    # inode, zero byte copies.
+    file_specs = delta.file_observable_specs()
+    staging_dir = None
+    staged_files: dict[str, str] = {}  # spec.uuid -> staged path
+    if file_specs:
+        if blob_store is None:
+            blob_store = get_blob_store()
+        staging_dir = tempfile.mkdtemp(prefix=".cache_replay_", dir=root.storage_dir)
+        for spec in file_specs:
+            staged_path = os.path.join(staging_dir, spec.uuid)
+            blob_store.materialize(spec.value, staged_path)
+            staged_files[spec.uuid] = staged_path
+
+    try:
+        # 1. Rehydrate the Analysis object first so step 2's new observables
+        # can be hung off it as children (matching the live run's structure).
+        # _rehydrate_analysis returns the freshly rehydrated analysis, the
+        # pre-existing one when the slot-collision skip fires, or None when
+        # the delta carries no analysis dict.
+        rehydrated_analysis = _rehydrate_analysis(target_observable, delta)
+
+        # 2. Spawn new observables. Parent is the rehydrated/preserved
+        # analysis when we have one (matches the live run's parent-child
+        # link), else fall back to the root. uuid_map translates
+        # source-alert uuids to the observables created in THIS tree —
+        # needed because replay-created observables get fresh uuids.
+        parent_for_new = rehydrated_analysis if rehydrated_analysis is not None else root
+        uuid_map: dict[str, "Observable"] = {delta.observable_uuid: target_observable}
+        for spec in delta.new_observables:
+            new_obs = _apply_observable_spec(
+                parent_for_new, spec, staged_file=staged_files.get(spec.uuid),
+            )
+            if new_obs is not None:
+                uuid_map[spec.uuid] = new_obs
+
+        # 2b. Second pass: relationships and redirections the module set on
+        # its new observables (Phase 4 fidelity — OCR/QR relate their output
+        # file back to the analyzed file). Done after all specs exist so a
+        # relationship between two new observables resolves either way.
+        for spec in delta.new_observables:
+            new_obs = uuid_map.get(spec.uuid)
+            if new_obs is None:
+                continue
+            for rel_dict in spec.initial_relationships:
+                _apply_relationship(new_obs, rel_dict, root, uuid_map)
+            if spec.initial_redirection is not None:
+                redirect_target = uuid_map.get(spec.initial_redirection)
+                if redirect_target is None:
+                    redirect_target = root.get_observable(spec.initial_redirection)
+                if redirect_target is not None:
+                    new_obs._redirection = redirect_target.uuid
+                else:
+                    logging.warning(
+                        "skipping redirection on cache replay — target unresolved "
+                        "source_uuid=%s",
+                        spec.initial_redirection,
+                        extra={"source_uuid": spec.initial_redirection},
+                    )
+
+        # 3. Apply mutations to the target observable.
+        _apply_observable_diff(
+            target_observable, delta.target_observable_diff, root,
+            source_observable_uuid=delta.observable_uuid,
         )
-        return
 
-    # 1. Rehydrate the Analysis object first so step 2's new observables
-    # can be hung off it as children (matching the live run's structure).
-    # _rehydrate_analysis returns the freshly rehydrated analysis, the
-    # pre-existing one when the slot-collision skip fires, or None when
-    # the delta carries no analysis dict.
-    rehydrated_analysis = _rehydrate_analysis(target_observable, delta)
-
-    # 2. Spawn new observables. Parent is the rehydrated/preserved
-    # analysis when we have one (matches the live run's parent-child
-    # link), else fall back to the root.
-    parent_for_new = rehydrated_analysis if rehydrated_analysis is not None else root
-    for spec in delta.new_observables:
-        _apply_observable_spec(parent_for_new, spec)
-
-    # 3. Apply mutations to the target observable.
-    _apply_observable_diff(
-        target_observable, delta.target_observable_diff, root,
-        source_observable_uuid=delta.observable_uuid,
-    )
-
-    # 4. Apply root-level mutations.
-    _apply_root_diff(root, delta.root_diff)
+        # 4. Apply root-level mutations.
+        _apply_root_diff(root, delta.root_diff)
+    finally:
+        if staging_dir is not None:
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
 
 def _rehydrate_analysis(
@@ -769,11 +941,18 @@ def _rehydrate_analysis(
     return analysis
 
 
-def _apply_observable_spec(parent_analysis, spec) -> None:
+def _apply_observable_spec(parent_analysis, spec, staged_file: Optional[str] = None):
     """Add a cached ObservableSpec as a child of ``parent_analysis`` and
     copy over its initial mutable state. Idempotent — the analysis tree
     manager dedupes by (type, value, time) and the add_* primitives
-    dedupe at the field level.
+    dedupe at the field level. Returns the created (or deduped) observable,
+    or None.
+
+    For F_FILE specs ``staged_file`` is the materialized blob in the replay
+    staging dir; ``add_file_observable(move=True)`` runs it through the
+    file manager's normal store_file path (hash verification, hardcopy
+    dedup, file_dir link at the captured relative path) exactly as a live
+    module would.
     """
     o_time = None
     if spec.time:
@@ -782,11 +961,26 @@ def _apply_observable_spec(parent_analysis, spec) -> None:
         except Exception:
             o_time = None
 
-    new_obs = parent_analysis.add_observable_by_spec(
-        spec.type, spec.value, o_time=o_time,
-    )
+    if spec.type == F_FILE:
+        if staged_file is None:
+            # Shouldn't happen — get_cached_delta validates file specs and
+            # apply_delta stages every one of them before this point.
+            logging.warning(
+                "skipping file spec on cache replay — no staged content "
+                "file_path=%s sha256=%s",
+                spec.file_path, spec.value,
+                extra={"file_path": spec.file_path, "sha256": spec.value},
+            )
+            return None
+        new_obs = parent_analysis.add_file_observable(
+            staged_file, target_path=spec.file_path, move=True, volatile=spec.volatile,
+        )
+    else:
+        new_obs = parent_analysis.add_observable_by_spec(
+            spec.type, spec.value, o_time=o_time, volatile=spec.volatile,
+        )
     if new_obs is None:
-        return
+        return None
     for tag in spec.initial_tags:
         new_obs.add_tag(tag)
     for directive in spec.initial_directives:
@@ -803,6 +997,54 @@ def _apply_observable_spec(parent_analysis, spec) -> None:
     for name in spec.initial_limited_analysis:
         if name not in new_obs._limited_analysis:
             new_obs._limited_analysis.append(name)
+    return new_obs
+
+
+def _apply_relationship(observable, rel_dict, root, uuid_map) -> None:
+    """Add one captured relationship to a live observable, resolving its
+    target against the current tree.
+
+    Resolution order: source-uuid map (replay-created observables get
+    fresh uuids in this tree; the map also carries the analyzed
+    observable, which subsumes the old self-target shortcut) → uuid (only
+    resolvable on a same-root replay) → (type, value, time) spec. The
+    map/shortcut exists because Observable.__eq__ compares ``time``
+    whenever either side carries one — the cache key ignores
+    observable.time, so the current observable's time can differ from the
+    source's and a spec lookup would miss.
+    """
+    target_uuid = rel_dict.get("target")
+    r_type = rel_dict.get("type")
+    if not target_uuid or not r_type:
+        return
+    target_obs = uuid_map.get(target_uuid)
+    if target_obs is None:
+        target_obs = root.get_observable(target_uuid)
+    if target_obs is None and rel_dict.get("target_type"):
+        t_time = None
+        if rel_dict.get("target_time"):
+            try:
+                t_time = parse_event_time(rel_dict["target_time"])
+            except Exception:
+                t_time = None
+        target_obs = root.get_observable_by_spec(
+            rel_dict["target_type"], rel_dict.get("target_value"), t_time,
+        )
+    if target_obs is None:
+        # Legacy uuid-only delta (pre target-spec capture) or an
+        # out-of-scope target from before the write-time refusal.
+        logging.warning(
+            "skipping relationship on cache replay — target unresolved "
+            "r_type=%s target_uuid=%s target_type=%s",
+            r_type, target_uuid, rel_dict.get("target_type"),
+            extra={
+                "r_type": r_type,
+                "target_uuid": target_uuid,
+                "target_type": rel_dict.get("target_type"),
+            },
+        )
+        return
+    observable.add_relationship(r_type, target_obs)
 
 
 def _apply_observable_diff(observable, diff, root, source_observable_uuid=None) -> None:
@@ -823,46 +1065,9 @@ def _apply_observable_diff(observable, diff, root, source_observable_uuid=None) 
                 det_dict.get("signature_uuid"), det_dict.get("signature_version"))
     for directive in diff.added_directives:
         observable.add_directive(directive)
+    uuid_map = {source_observable_uuid: observable} if source_observable_uuid else {}
     for rel_dict in diff.added_relationships:
-        target_uuid = rel_dict.get("target")
-        r_type = rel_dict.get("type")
-        if not target_uuid or not r_type:
-            continue
-        # Resolution order: uuid (same-root replay) → self-target
-        # shortcut → (type, value, time) spec. UUIDs are per-alert, so on
-        # a cross-alert replay only the latter two can succeed. The
-        # self-target shortcut exists because Observable.__eq__ compares
-        # ``time`` whenever either side carries one — the cache key
-        # ignores observable.time, so the current observable's time can
-        # differ from the source's and a spec lookup would miss.
-        target_obs = root.get_observable(target_uuid)
-        if target_obs is None and target_uuid == source_observable_uuid:
-            target_obs = observable
-        if target_obs is None and rel_dict.get("target_type"):
-            t_time = None
-            if rel_dict.get("target_time"):
-                try:
-                    t_time = parse_event_time(rel_dict["target_time"])
-                except Exception:
-                    t_time = None
-            target_obs = root.get_observable_by_spec(
-                rel_dict["target_type"], rel_dict.get("target_value"), t_time,
-            )
-        if target_obs is None:
-            # Legacy uuid-only delta (pre target-spec capture) or an
-            # out-of-scope target from before the write-time refusal.
-            logging.warning(
-                "skipping relationship on cache replay — target unresolved "
-                "r_type=%s target_uuid=%s target_type=%s",
-                r_type, target_uuid, rel_dict.get("target_type"),
-                extra={
-                    "r_type": r_type,
-                    "target_uuid": target_uuid,
-                    "target_type": rel_dict.get("target_type"),
-                },
-            )
-            continue
-        observable.add_relationship(r_type, target_obs)
+        _apply_relationship(observable, rel_dict, root, uuid_map)
     # excluded_analysis / limited_analysis are simple string lists with no
     # idempotent setter — dedupe manually.
     for name in diff.added_excluded_analysis:

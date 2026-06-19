@@ -1250,7 +1250,6 @@ analysis_module_nrd_analyzer:
   python_module: saq.modules.nrd
   python_class: NRDAnalyzer
   enabled: true
-  cache_ttl: 86400  # 24 hours - aligned with the daily refresh; extended_version drives invalidation when the DB rotates ahead of TTL
 
 analysis_module_active_directory_analyzer:
   name: active_directory_analyzer
@@ -1626,6 +1625,9 @@ analysis_module_ocr:
   # do not run ocr on internal alerts
   # control the number of threads tesseract uses
   omp_thread_limit: 1
+  # 30 days — output file content is blob-backed (Phase 4); a tesseract
+  # upgrade invalidates the key via extended_version
+  cache_ttl: 2592000
 
 analysis_module_qrcode:
   name: qrcode
@@ -1639,6 +1641,9 @@ analysis_module_qrcode:
   pdf_last_pages: 3
   # timeout in seconds for subprocess execution (gs, zbarimg, pdfinfo)
   timeout: 30
+  # 30 days — zbarimg/gs/pdfinfo upgrades and analyst edits to the filter
+  # file invalidate the key via extended_version
+  cache_ttl: 2592000
 
 analysis_module_hidden_mime:
   name: hidden_mime
@@ -1917,7 +1922,6 @@ analysis_module_site_tagger:
   # value: the value to match against
   # tags: list of tags separated by | (pipe)
   csv_file: data/etc/site_tags.csv
-  cache_ttl: 2592000  # 30 days — analyst edits to the CSV file invalidate the cache key via extended_version (mtime+size), so this TTL is just the upper bound for stable rules
 
 analysis_module_zip_encryption_analyzer:
   name: zip_encryption_analyzer

@@ -145,6 +145,16 @@ class ObservableSpec:
     initial_detections: list[dict] = field(default_factory=list)
     initial_excluded_analysis: list[str] = field(default_factory=list)
     initial_limited_analysis: list[str] = field(default_factory=list)
+    # Phase 4 fidelity fields. file_path is the file's path relative to the
+    # source root's file dir (F_FILE specs only — value carries the sha256,
+    # which is also the blob store key). initial_relationships use the same
+    # enriched dict shape as ObservableDiff.added_relationships (type/target
+    # uuid + target_type/value/time spec fields). initial_redirection is the
+    # source-root uuid of the redirection target, re-resolved on replay.
+    file_path: Optional[str] = None
+    volatile: bool = False
+    initial_relationships: list[dict] = field(default_factory=list)
+    initial_redirection: Optional[str] = None
 
     def to_dict(self) -> dict:
         result = {
@@ -164,6 +174,14 @@ class ObservableSpec:
             result["initial_excluded_analysis"] = self.initial_excluded_analysis
         if self.initial_limited_analysis:
             result["initial_limited_analysis"] = self.initial_limited_analysis
+        if self.file_path is not None:
+            result["file_path"] = self.file_path
+        if self.volatile:
+            result["volatile"] = self.volatile
+        if self.initial_relationships:
+            result["initial_relationships"] = self.initial_relationships
+        if self.initial_redirection is not None:
+            result["initial_redirection"] = self.initial_redirection
         return result
 
     @classmethod
@@ -178,6 +196,10 @@ class ObservableSpec:
             initial_detections=data.get("initial_detections", []),
             initial_excluded_analysis=data.get("initial_excluded_analysis", []),
             initial_limited_analysis=data.get("initial_limited_analysis", []),
+            file_path=data.get("file_path"),
+            volatile=data.get("volatile", False),
+            initial_relationships=data.get("initial_relationships", []),
+            initial_redirection=data.get("initial_redirection"),
         )
 
 
@@ -358,13 +380,18 @@ class ModuleExecutionDelta:
 
     @property
     def has_file_observables(self) -> bool:
-        """True if this delta would spawn file observables on replay.
+        """True if this delta spawns file observables on replay.
 
-        Phase 3 cache replay does not yet materialize file bytes (Phase 4
-        territory). Used as a write-time refusal and a read-time
-        defense-in-depth check.
+        Phase 4: file specs are replayable — their content is stored in the
+        blob store at cache-write time (keyed by ``spec.value``, which IS the
+        sha256) and materialized into the target root's file dir on replay.
+        This predicate gates the extra validation/blob work on both paths.
         """
         return any(spec.type == F_FILE for spec in self.new_observables)
+
+    def file_observable_specs(self) -> list["ObservableSpec"]:
+        """The F_FILE specs among this delta's new observables."""
+        return [spec for spec in self.new_observables if spec.type == F_FILE]
 
     def out_of_scope_relationship_targets(self) -> list[dict]:
         """Relationships added by this delta whose target lies outside the
@@ -377,12 +404,26 @@ class ModuleExecutionDelta:
         replay onto a different root cannot guarantee to reproduce —
         ``put_cached_delta`` refuses such deltas. Returns the offending
         relationship dicts (empty list = in scope / no relationships).
+
+        Covers relationships on the analyzed observable AND (Phase 4) the
+        relationships/redirections a new observable was created with.
         """
         allowed = {self.observable_uuid} | {spec.uuid for spec in self.new_observables}
-        return [
+        out_of_scope = [
             rel for rel in self.target_observable_diff.added_relationships
             if rel.get("target") not in allowed
         ]
+        for spec in self.new_observables:
+            out_of_scope.extend(
+                rel for rel in spec.initial_relationships
+                if rel.get("target") not in allowed
+            )
+            if spec.initial_redirection is not None and spec.initial_redirection not in allowed:
+                out_of_scope.append({
+                    "type": "redirection",
+                    "target": spec.initial_redirection,
+                })
+        return out_of_scope
 
     def with_cache_hit_metadata(
         self, executed_at: datetime, execution_time_ms: int,

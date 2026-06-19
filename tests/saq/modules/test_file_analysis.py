@@ -2,6 +2,7 @@
 import os
 
 import pytest
+from PIL import Image
 
 from saq.analysis import Observable
 from saq.configuration.config import get_analysis_module_config
@@ -559,18 +560,119 @@ def test_qrcode_inverted(datadir, test_context):
 
 @pytest.mark.unit
 def test_qrcode_shipping_label(datadir, test_context):
+    """A shipping label's barcodes decode cleanly but yield no URLs — that
+    is a *negative* result, now recorded as an empty (summary-less)
+    analysis so it can be cached."""
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
     observable = root.add_file_observable(datadir / "fedex.png")
-    
+
     analyzer = AnalysisModuleAdapter(QRCodeAnalyzer(
         context=create_test_context(root=root),
         config=get_analysis_module_config(ANALYSIS_MODULE_QRCODE)))
-    
+
     result = analyzer.execute_analysis(observable)
     assert result == AnalysisExecutionResult.COMPLETED
     analysis = observable.get_and_load_analysis(QRCodeAnalysis)
-    assert analysis is None
+    assert isinstance(analysis, QRCodeAnalysis)
+    assert not analysis.extracted_text
+    assert analysis.generate_summary() is None
+    assert not analysis.observables
+
+def _make_blank_png(directory) -> str:
+    """A synthesized image with no QR code and no text — the negative case."""
+    path = os.path.join(str(directory), "blank.png")
+    Image.new("RGB", (64, 64), "white").save(path)
+    return path
+
+
+@pytest.mark.unit
+def test_qrcode_negative_records_empty_analysis(tmp_path, test_context):
+    """No QR code + clean scans → an empty analysis is recorded so the
+    negative result is cacheable. Its summary must be None so the alert
+    view is not cluttered with empty QR analyses for every image."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    observable = root.add_file_observable(_make_blank_png(tmp_path))
+
+    analyzer = AnalysisModuleAdapter(QRCodeAnalyzer(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config(ANALYSIS_MODULE_QRCODE)))
+
+    result = analyzer.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(QRCodeAnalysis)
+    assert isinstance(analysis, QRCodeAnalysis)
+    assert not analysis.extracted_text
+    assert not analysis.inverted
+    assert analysis.generate_summary() is None
+    assert not analysis.observables
+
+
+@pytest.mark.unit
+def test_qrcode_scan_failure_records_no_analysis(tmp_path, test_context, monkeypatch):
+    """A failed scan (timeout / zbarimg error) means 'unknown', not 'no QR
+    code' — nothing is recorded, so the failure can never be cached as a
+    negative result."""
+    monkeypatch.setattr(QRCodeAnalyzer, "_scan_image", lambda self, path: None)
+    monkeypatch.setattr(QRCodeAnalyzer, "_scan_inverted_image", lambda self, path: None)
+
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    observable = root.add_file_observable(_make_blank_png(tmp_path))
+
+    analyzer = AnalysisModuleAdapter(QRCodeAnalyzer(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config(ANALYSIS_MODULE_QRCODE)))
+
+    result = analyzer.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert observable.get_and_load_analysis(QRCodeAnalysis) is None
+
+
+@pytest.mark.unit
+def test_ocr_negative_records_empty_analysis(tmp_path, test_context, monkeypatch):
+    """OCR passes complete with no text → an empty analysis is recorded
+    (cacheable negative), with a None summary."""
+    monkeypatch.setattr("saq.modules.file_analysis.ocr.get_image_text", lambda image: "")
+
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    observable = root.add_file_observable(_make_blank_png(tmp_path))
+
+    analyzer = AnalysisModuleAdapter(OCRAnalyzer(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config(ANALYSIS_MODULE_OCR)))
+
+    result = analyzer.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(OCRAnalysis)
+    assert isinstance(analysis, OCRAnalysis)
+    assert analysis.ocr is False
+    assert analysis.generate_summary() is None
+    assert not analysis.observables
+
+
+@pytest.mark.unit
+def test_ocr_failure_records_no_analysis(tmp_path, test_context, monkeypatch):
+    """An OCR pass raising means 'unknown' — nothing is recorded."""
+    def _raise(image):
+        raise RuntimeError("tesseract crashed")
+
+    monkeypatch.setattr("saq.modules.file_analysis.ocr.get_image_text", _raise)
+
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    observable = root.add_file_observable(_make_blank_png(tmp_path))
+
+    analyzer = AnalysisModuleAdapter(OCRAnalyzer(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config(ANALYSIS_MODULE_OCR)))
+
+    result = analyzer.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert observable.get_and_load_analysis(OCRAnalysis) is None
+
 
 @pytest.mark.unit
 def test_qrcode_pdf_with_qr_code_at_end(datadir, test_context):

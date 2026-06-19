@@ -7,7 +7,7 @@ import pytest
 from saq.analysis.analysis import Analysis, SummaryDetail
 from saq.analysis.root import RootAnalysis
 from saq.analysis.snapshot import ModuleExecutionSnapshot, _ObservableState
-from saq.constants import F_IPV4, F_FQDN, F_EMAIL_ADDRESS, R_IS_HASH_OF
+from saq.constants import F_FILE, F_IPV4, F_FQDN, F_EMAIL_ADDRESS, R_EXTRACTED_FROM, R_IS_HASH_OF
 from saq.modules.rdap import RdapAnalysis
 
 
@@ -190,6 +190,58 @@ class TestNarrowSnapshot:
         spec = delta.new_observables[0]
         assert "UserLookupAnalyzer" in spec.initial_excluded_analysis
         assert "LimitedAnalyzer" in spec.initial_limited_analysis
+
+    @pytest.mark.unit
+    def test_diff_new_file_observable_captures_phase4_fields(self, tmp_path):
+        """Phase 4: a new file observable's spec must carry its file_path
+        (for blob-backed replay), volatile flag, relationships, and
+        redirection — the state OCR/QR-style modules set on their output."""
+        root = _make_root(tmp_path)
+        source_path = tmp_path / "source.png"
+        source_path.write_bytes(b"fake image bytes")
+        analyzed = root.add_file_observable(str(source_path))
+        module = _make_mock_module()
+
+        before = ModuleExecutionSnapshot.narrow(root, analyzed, module)
+
+        output_path = tmp_path / "source.png.ocr"
+        output_path.write_text("extracted text")
+        new_file = root.add_file_observable(str(output_path), volatile=True)
+        new_file.add_relationship(R_EXTRACTED_FROM, analyzed)
+        new_file.redirection = analyzed
+
+        after = ModuleExecutionSnapshot.narrow(root, analyzed, module)
+        delta = ModuleExecutionSnapshot.diff(before, after, module, analyzed)
+
+        assert len(delta.new_observables) == 1
+        spec = delta.new_observables[0]
+        assert spec.type == F_FILE
+        assert spec.value == new_file.sha256_hash
+        assert spec.file_path == new_file.file_path
+        assert spec.volatile is True
+        assert spec.initial_redirection == analyzed.uuid
+        assert len(spec.initial_relationships) == 1
+        rel = spec.initial_relationships[0]
+        assert rel["type"] == R_EXTRACTED_FROM
+        assert rel["target"] == analyzed.uuid
+        assert rel["target_type"] == F_FILE
+        assert rel["target_value"] == analyzed.value
+
+    @pytest.mark.unit
+    def test_diff_new_non_file_observable_has_no_file_path(self, tmp_path):
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        module = _make_mock_module()
+
+        before = ModuleExecutionSnapshot.narrow(root, obs, module)
+        root.add_observable_by_spec(F_FQDN, "evil.com")
+        after = ModuleExecutionSnapshot.narrow(root, obs, module)
+        delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
+
+        assert delta.new_observables[0].file_path is None
+        assert delta.new_observables[0].volatile is False
+        assert delta.new_observables[0].initial_relationships == []
+        assert delta.new_observables[0].initial_redirection is None
 
     @pytest.mark.unit
     def test_diff_remove_tag(self, tmp_path):

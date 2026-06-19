@@ -190,3 +190,7 @@ integrations/
 workspace/
 ssh/
 local/
+
+# local docker compose overrides (auto-merged by docker compose; dev-only)
+docker-compose.override.yml
+docker-compose.override.yaml

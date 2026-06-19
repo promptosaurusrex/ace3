@@ -1,17 +1,21 @@
 """Integration tests for saq.analysis.cache (put, lookup)."""
 import json
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 import zstandard
+from PIL import Image
 
 from saq.analysis.blob_store import LocalHardlinkBlobStore, LocalHardlinkBlobStoreConfig
 from saq.analysis.cache import (
+    apply_delta,
     collect_stats,
     generate_cache_key,
+    get_cached_delta,
     put_cached_delta,
 )
 from saq.analysis.module_execution_delta import (
@@ -20,9 +24,19 @@ from saq.analysis.module_execution_delta import (
     ObservableSpec,
     RootDiff,
 )
-from saq.configuration.config import get_config
-from saq.constants import DB_ANALYSIS_RESULT_CACHE, F_FILE
+from saq.analysis.root import RootAnalysis
+from saq.analysis.snapshot import ModuleExecutionSnapshot
+from saq.configuration.config import get_analysis_module_config, get_config
+from saq.constants import (
+    ANALYSIS_MODULE_QRCODE,
+    DB_ANALYSIS_RESULT_CACHE,
+    F_FILE,
+    AnalysisExecutionResult,
+)
 from saq.database.pool import get_db_connection
+from saq.modules.file_analysis import QRCodeAnalysis, QRCodeAnalyzer
+from tests.saq.helpers import create_root_analysis
+from tests.saq.test_util import create_test_context
 
 
 @pytest.fixture
@@ -258,24 +272,27 @@ class TestPutCachedDelta:
         assert skip_logs[0].module_name == module.config.name
 
     @pytest.mark.integration
-    def test_refuses_delta_with_file_observables(self, blob_store, caplog):
-        """Step 3.3: file-observable replay is Phase 4 territory."""
+    def test_refuses_file_delta_without_root(self, blob_store, caplog):
+        """Phase 4: file deltas are cacheable, but only when the caller
+        provides the source root (the file bytes live in its file dir).
+        A file-bearing delta with root=None is refused."""
         module = _make_module()
         delta = _make_delta(module)
         delta.new_observables = [
             ObservableSpec(
                 uuid="00000000-0000-0000-0000-000000000001",
                 type=F_FILE,
-                value="some/file.txt",
+                value="0" * 64,
+                file_path="some/file.txt",
             )
         ]
         with caplog.at_level(logging.WARNING):
             assert put_cached_delta(delta, module, blob_store) is None
         assert _row_count(delta.cache_key) == 0
-        warn_logs = [r for r in caplog.records if "refusal_reason=file_observables" in r.getMessage()]
+        warn_logs = [r for r in caplog.records if "refusal_reason=file_observables_no_root" in r.getMessage()]
         assert warn_logs
         assert warn_logs[0].levelno == logging.WARNING
-        assert warn_logs[0].refusal_reason == "file_observables"
+        assert warn_logs[0].refusal_reason == "file_observables_no_root"
         assert warn_logs[0].module_name == module.config.name
 
     @pytest.mark.integration
@@ -355,6 +372,264 @@ class TestPutCachedDelta:
         delta = _make_delta(module)
         assert put_cached_delta(delta, module, blob_store) is None
         assert _row_count(delta.cache_key) == 0
+
+
+def _make_file_root(tmp_path):
+    root = RootAnalysis(storage_dir=str(tmp_path / "root"))
+    root.initialize_storage()
+    return root
+
+
+def _add_root_file(root, tmp_path, content=b"phase4 file content", name="output.txt"):
+    """Store a real file in the root and return its FileObservable."""
+    source = tmp_path / name
+    source.write_bytes(content)
+    return root.add_file_observable(str(source))
+
+
+def _make_file_delta(module, file_obs):
+    """A delta whose new_observables carries the given file observable."""
+    delta = _make_delta(module)
+    delta.new_observables = [
+        ObservableSpec(
+            uuid=file_obs.uuid,
+            type=F_FILE,
+            value=file_obs.value,
+            file_path=file_obs.file_path,
+        )
+    ]
+    return delta
+
+
+class TestPutCachedDeltaFileObservables:
+    """Phase 4 write path: file observable content goes to the blob store."""
+
+    @pytest.mark.integration
+    def test_file_delta_writes_row_and_blob(self, blob_store, tmp_path):
+        module = _make_module()
+        root = _make_file_root(tmp_path)
+        file_obs = _add_root_file(root, tmp_path)
+        delta = _make_file_delta(module, file_obs)
+        try:
+            result = put_cached_delta(delta, module, blob_store, root=root)
+            assert result is not None
+            assert _row_count(delta.cache_key) == 1
+            # Content is in the blob store, keyed by the file's sha256.
+            assert blob_store.exists(file_obs.value)
+            with blob_store.get(file_obs.value) as fp:
+                assert fp.read() == b"phase4 file content"
+            # One blob_refs row ties the blob to this cache row.
+            assert _blob_ref_count(delta.cache_key) == 1
+            with get_db_connection(DB_ANALYSIS_RESULT_CACHE) as db:
+                cursor = db.cursor()
+                cursor.execute(
+                    "SELECT has_blob_refs FROM analysis_result_cache WHERE cache_key = %s",
+                    (delta.cache_key,),
+                )
+                assert cursor.fetchone()[0] in (1, True)
+        finally:
+            _delete_cache_row(delta.cache_key)
+
+    @pytest.mark.integration
+    def test_file_delta_dedupes_existing_blob(self, blob_store, tmp_path):
+        """A second write of the same content reuses the existing blob
+        (exists() short-circuit) and just adds its own reference."""
+        module = _make_module()
+        root = _make_file_root(tmp_path)
+        file_obs = _add_root_file(root, tmp_path)
+        delta = _make_file_delta(module, file_obs)
+        try:
+            assert put_cached_delta(delta, module, blob_store, root=root) is not None
+            assert put_cached_delta(delta, module, blob_store, root=root) is not None
+            assert _row_count(delta.cache_key) == 2
+            assert blob_store.exists(file_obs.value)
+        finally:
+            _delete_cache_row(delta.cache_key)
+
+    @pytest.mark.integration
+    def test_refuses_when_backing_file_missing(self, blob_store, tmp_path, caplog):
+        module = _make_module()
+        root = _make_file_root(tmp_path)
+        file_obs = _add_root_file(root, tmp_path)
+        delta = _make_file_delta(module, file_obs)
+        os.unlink(file_obs.full_path)
+        with caplog.at_level(logging.WARNING):
+            assert put_cached_delta(delta, module, blob_store, root=root) is None
+        assert _row_count(delta.cache_key) == 0
+        assert any("refusal_reason=file_missing" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.integration
+    def test_refuses_when_file_too_large(self, blob_store, tmp_path, caplog, monkeypatch):
+        monkeypatch.setattr(get_config().analysis_cache, "file_blob_max_bytes", 4)
+        module = _make_module()
+        root = _make_file_root(tmp_path)
+        file_obs = _add_root_file(root, tmp_path)
+        delta = _make_file_delta(module, file_obs)
+        with caplog.at_level(logging.WARNING):
+            assert put_cached_delta(delta, module, blob_store, root=root) is None
+        assert _row_count(delta.cache_key) == 0
+        assert any("refusal_reason=file_too_large" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.integration
+    def test_does_not_refuse_when_size_cap_disabled(self, blob_store, tmp_path, monkeypatch):
+        # a cap of 0 disables the per-file size check entirely
+        monkeypatch.setattr(get_config().analysis_cache, "file_blob_max_bytes", 0)
+        module = _make_module()
+        root = _make_file_root(tmp_path)
+        file_obs = _add_root_file(root, tmp_path)
+        delta = _make_file_delta(module, file_obs)
+        try:
+            assert put_cached_delta(delta, module, blob_store, root=root) is not None
+            assert _row_count(delta.cache_key) == 1
+        finally:
+            _delete_cache_row(delta.cache_key)
+
+    @pytest.mark.integration
+    def test_refuses_when_spec_missing_file_path(self, blob_store, tmp_path, caplog):
+        module = _make_module()
+        root = _make_file_root(tmp_path)
+        file_obs = _add_root_file(root, tmp_path)
+        delta = _make_file_delta(module, file_obs)
+        delta.new_observables[0].file_path = None
+        with caplog.at_level(logging.WARNING):
+            assert put_cached_delta(delta, module, blob_store, root=root) is None
+        assert _row_count(delta.cache_key) == 0
+        assert any("refusal_reason=file_spec_missing_path" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.integration
+    def test_refuses_on_hash_mismatch(self, blob_store, tmp_path, caplog):
+        """The file changed on disk after the observable hashed it — the
+        delta can't be trusted. No row, and the (correctly-keyed) blob the
+        put() created is unreferenced."""
+        module = _make_module()
+        root = _make_file_root(tmp_path)
+        file_obs = _add_root_file(root, tmp_path)
+        delta = _make_file_delta(module, file_obs)
+        # file_dir entries are hardlinks into the hardcopy dir — replace
+        # the link rather than writing through it.
+        os.unlink(file_obs.full_path)
+        with open(file_obs.full_path, "wb") as fp:
+            fp.write(b"different bytes than were hashed")
+        with caplog.at_level(logging.WARNING):
+            assert put_cached_delta(delta, module, blob_store, root=root) is None
+        assert _row_count(delta.cache_key) == 0
+        assert any("refusal_reason=file_hash_mismatch" in r.getMessage() for r in caplog.records)
+        # The expected sha never landed in the store.
+        assert not blob_store.exists(file_obs.value)
+
+    @pytest.mark.integration
+    def test_size_cap_bailout_unreferences_file_blob(self, blob_store, tmp_path, monkeypatch):
+        """If the compressed-delta size cap fires after file blobs were
+        referenced, their references are dropped."""
+        monkeypatch.setattr(get_config().analysis_cache, "max_compressed_bytes", 50)
+        module = _make_module()
+        root = _make_file_root(tmp_path)
+        file_obs = _add_root_file(root, tmp_path)
+        delta = _make_file_delta(module, file_obs)
+        assert put_cached_delta(delta, module, blob_store, root=root) is None
+        assert _row_count(delta.cache_key) == 0
+        assert _blob_ref_count(delta.cache_key) == 0
+
+
+class TestFileObservableRoundTrip:
+    """Phase 4 end-to-end: write a file-bearing delta from one alert,
+    look it up, replay onto a *different* alert, and verify byte-identical
+    content lands in the target's file dir."""
+
+    @pytest.mark.integration
+    def test_write_lookup_replay_onto_fresh_root(self, blob_store, tmp_path):
+        module = _make_module()
+        content = b"round trip file payload"
+
+        # Source alert: module "produced" a file.
+        source_root = _make_file_root(tmp_path)
+        file_obs = _add_root_file(source_root, tmp_path, content=content)
+        delta = _make_file_delta(module, file_obs)
+        delta.new_observables[0].initial_tags = ["extracted"]
+        try:
+            assert put_cached_delta(delta, module, blob_store, root=source_root) is not None
+
+            # Lookup keyed off a fresh observable with the same identity.
+            obs_shim = SimpleNamespace(
+                type=delta.observable_type, value=delta.observable_value, time=None,
+            )
+            lookup = get_cached_delta(obs_shim, module, blob_store)
+            assert lookup.delta is not None
+
+            # Replay onto a brand-new alert.
+            target_root = RootAnalysis(storage_dir=str(tmp_path / "target_root"))
+            target_root.initialize_storage()
+            target = target_root.add_observable_by_spec(
+                delta.observable_type, delta.observable_value,
+            )
+            apply_delta(target_root, target, lookup.delta, blob_store=blob_store)
+
+            replayed = [o for o in target_root.all_observables if o.type == F_FILE]
+            assert len(replayed) == 1
+            assert replayed[0].value == file_obs.value
+            assert replayed[0].file_path == file_obs.file_path
+            assert "extracted" in replayed[0].tags
+            with open(replayed[0].full_path, "rb") as fp:
+                assert fp.read() == content
+        finally:
+            _delete_cache_row(delta.cache_key)
+
+
+class TestNegativeResultRoundTrip:
+    """A module that records a summary-less negative analysis ('scanned,
+    found nothing') produces a non-empty, cacheable delta — the mechanism
+    that makes QR/OCR negative results skip re-scanning on recurrence."""
+
+    @pytest.mark.integration
+    def test_qrcode_negative_write_and_replay(self, blob_store, tmp_path, test_context):
+        png_path = tmp_path / "blank.png"
+        Image.new("RGB", (64, 64), "white").save(png_path)
+
+        # Live run against a blank image — clean scans, no QR code.
+        source_root = create_root_analysis(analysis_mode="test_single")
+        source_root.initialize_storage()
+        source_obs = source_root.add_file_observable(str(png_path))
+        analyzer = QRCodeAnalyzer(
+            context=create_test_context(root=source_root),
+            config=get_analysis_module_config(ANALYSIS_MODULE_QRCODE),
+        )
+        analyzer.root = source_root
+
+        before = ModuleExecutionSnapshot.narrow(source_root, source_obs, analyzer)
+        result = analyzer.execute_analysis(source_obs)
+        after = ModuleExecutionSnapshot.narrow(source_root, source_obs, analyzer)
+        assert result == AnalysisExecutionResult.COMPLETED
+
+        delta = ModuleExecutionSnapshot.diff(before, after, analyzer, source_obs)
+        # The negative analysis makes the delta non-empty — without it the
+        # empty-delta refusal would block the cache write.
+        assert not delta.is_empty
+        assert delta.analysis is not None
+        assert not delta.has_file_observables
+
+        # Cache it. Caching identity comes from a test module shim with a
+        # cache_ttl (the unittest YAML doesn't opt qrcode in).
+        module = _make_module()
+        delta.cache_key = None
+        write_result = put_cached_delta(delta, module, blob_store)
+        try:
+            assert write_result is not None
+            assert _row_count(delta.cache_key) == 1
+
+            # Replay onto a fresh root: the negative analysis slot is
+            # installed, which is what blocks a re-run of the module.
+            target_root = RootAnalysis(storage_dir=str(tmp_path / "target_root"))
+            target_root.initialize_storage()
+            target_obs = target_root.add_file_observable(str(png_path))
+            apply_delta(target_root, target_obs, delta, blob_store=blob_store)
+
+            replayed = target_obs.get_analysis(QRCodeAnalysis)
+            assert isinstance(replayed, QRCodeAnalysis)
+            assert not replayed.extracted_text
+            assert replayed.generate_summary() is None
+            assert not replayed.observables
+        finally:
+            _delete_cache_row(delta.cache_key)
 
 
 class TestKillSwitch:

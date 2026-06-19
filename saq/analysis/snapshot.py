@@ -19,6 +19,7 @@ from saq.analysis.module_execution_delta import (
 )
 from saq.analysis.module_path import MODULE_PATH
 from saq.analysis.observable import Observable
+from saq.constants import F_FILE
 
 if TYPE_CHECKING:
     from saq.analysis.observable import Observable
@@ -243,6 +244,19 @@ class ModuleExecutionSnapshot:
                         initial_detections=[_serialize_detection(d) for d in obs.detections],
                         initial_excluded_analysis=list(obs._excluded_analysis),
                         initial_limited_analysis=list(obs._limited_analysis),
+                        # Phase 4 fidelity: file identity for blob-backed
+                        # replay, plus the state a module commonly sets on a
+                        # file it creates (OCR/QR set volatile, an
+                        # R_EXTRACTED_FROM relationship, and redirection).
+                        # file_path is duck-typed rather than
+                        # isinstance(FileObservable) to keep this module free
+                        # of saq.observables imports.
+                        file_path=getattr(obs, "file_path", None) if obs._type == F_FILE else None,
+                        volatile=obs.volatile,
+                        initial_relationships=[
+                            _serialize_relationship(r) for r in obs._relationships
+                        ],
+                        initial_redirection=obs._redirection,
                     ))
 
         # Root-level diff

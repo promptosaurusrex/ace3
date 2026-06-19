@@ -18,10 +18,11 @@ from saq.analysis.cache import (
 from saq.analysis.module_execution_delta import (
     ModuleExecutionDelta,
     ObservableDiff,
+    ObservableSpec,
     RootDiff,
 )
 from saq.configuration.config import get_config
-from saq.constants import DB_ANALYSIS_RESULT_CACHE
+from saq.constants import DB_ANALYSIS_RESULT_CACHE, F_FILE
 from saq.database.pool import get_db_connection
 
 
@@ -374,3 +375,68 @@ class TestGetCachedDelta:
             assert result.delta.analysis["details"]["v"] == "live"
         finally:
             _delete_cache_row(cache_key)
+
+
+class TestGetCachedDeltaFileObservables:
+    """Phase 4: file-bearing rows are only usable when every file blob
+    still exists."""
+
+    def _file_delta(self, module, sha, file_path="output.txt"):
+        delta = _make_delta(
+            module,
+            analysis={"module_path": "x", "details": {}, "completed": True},
+        )
+        delta.new_observables = [
+            ObservableSpec(uuid=str(uuid4()), type=F_FILE, value=sha, file_path=file_path),
+        ]
+        return delta
+
+    @pytest.mark.integration
+    def test_file_hit_when_blob_present(self, blob_store):
+        module = _make_module()
+        obs = _make_observable()
+        sha = blob_store.put(b"file content for lookup test")
+        delta = self._file_delta(module, sha)
+        try:
+            _write_raw_row(delta.cache_key, module, delta.to_dict())
+            result = get_cached_delta(obs, module, blob_store)
+            assert result.delta is not None
+            assert result.miss_reason is None
+            spec = result.delta.new_observables[0]
+            assert spec.value == sha
+            assert spec.file_path == "output.txt"
+        finally:
+            _delete_cache_row(delta.cache_key)
+
+    @pytest.mark.integration
+    def test_missing_file_blob_returns_miss(self, blob_store, caplog):
+        """GC or a failed remote upload lost the blob — must be a miss
+        (live-run fall-through), never an error."""
+        module = _make_module()
+        obs = _make_observable()
+        delta = self._file_delta(module, "1" * 64)  # never stored
+        try:
+            _write_raw_row(delta.cache_key, module, delta.to_dict())
+            with caplog.at_level(logging.WARNING):
+                result = get_cached_delta(obs, module, blob_store)
+            assert result.delta is None
+            assert result.miss_reason == "blob_missing"
+            assert any("missing file blob" in r.getMessage() for r in caplog.records)
+        finally:
+            _delete_cache_row(delta.cache_key)
+
+    @pytest.mark.integration
+    def test_file_spec_without_path_returns_decode_error(self, blob_store):
+        module = _make_module()
+        obs = _make_observable()
+        sha = blob_store.put(b"content")
+        delta = self._file_delta(module, sha)
+        delta_dict = delta.to_dict()
+        del delta_dict["new_observables"][0]["file_path"]
+        try:
+            _write_raw_row(delta.cache_key, module, delta_dict)
+            result = get_cached_delta(obs, module, blob_store)
+            assert result.delta is None
+            assert result.miss_reason == "decode_error"
+        finally:
+            _delete_cache_row(delta.cache_key)
