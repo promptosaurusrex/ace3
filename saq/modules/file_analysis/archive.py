@@ -6,6 +6,7 @@ from typing import Type, override
 import zipfile
 from pydantic import Field
 from saq.analysis.analysis import Analysis
+from saq.signatures import ARCHIVE_SINGLE_DANGEROUS_FILE
 from saq.constants import AnalysisExecutionResult, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_SANDBOX, F_FILE, R_EXTRACTED_FROM
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
@@ -499,23 +500,23 @@ class ArchiveAnalyzer(AnalysisModule):
                     for ext in [ '.exe', '.scr', '.cpl', '.jar', '.class' ]:
                         if extracted_file.file_name.lower().endswith(ext):
                             analysis.add_tag('exe_in_zip')
-                            file_observable.add_detection_point("An archive contained a single file that was an executable")
+                            file_observable.add_detection_point("An archive contained a single file that was an executable", signature_uuid=ARCHIVE_SINGLE_DANGEROUS_FILE.uuid)
                     for ext in [ '.vbe', '.vbs', '.jse', '.js', '.bat', '.wsh', '.ps1' ]:
                         if extracted_file.file_name.lower().endswith(ext):
                             analysis.add_tag('script_in_zip')
-                            file_observable.add_detection_point("An archive contained a single file that was a script")
+                            file_observable.add_detection_point("An archive contained a single file that was a script", signature_uuid=ARCHIVE_SINGLE_DANGEROUS_FILE.uuid)
                     for ext in [ '.lnk' ]:
                         if extracted_file.file_name.lower().endswith(ext):
                             analysis.add_tag('lnk_in_zip')
-                            file_observable.add_detection_point("An archive contained a single file that was a shortcut")
+                            file_observable.add_detection_point("An archive contained a single file that was a shortcut", signature_uuid=ARCHIVE_SINGLE_DANGEROUS_FILE.uuid)
                     for ext in ['.jnlp']:
                         if extracted_file.file_name.lower().endswith(ext):
                             analysis.add_tag('jnlp_in_zip')
-                            file_observable.add_detection_point("An archive contained a single file that was a Java Web Start application")
+                            file_observable.add_detection_point("An archive contained a single file that was a Java Web Start application", signature_uuid=ARCHIVE_SINGLE_DANGEROUS_FILE.uuid)
                     for ext in ['.one']:
                         if extracted_file.file_name.lower().endswith(ext):
                             analysis.add_tag('one_in_zip')
-                            file_observable.add_detection_point("An archive contained a single file that was a OneNote document")
+                            file_observable.add_detection_point("An archive contained a single file that was a OneNote document", signature_uuid=ARCHIVE_SINGLE_DANGEROUS_FILE.uuid)
 
         if len(removed_files) > 0:
             logging.info("removed {} files because we've hit the limit".format(len(removed_files)))

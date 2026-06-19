@@ -6,6 +6,7 @@ from subprocess import PIPE, Popen
 import tempfile
 from typing import override
 from saq.analysis.analysis import Analysis
+from saq.signatures import CVE_2021_30657_DMG_SCRIPT
 from saq.constants import F_FILE, AnalysisExecutionResult
 from saq.environment import get_temp_dir
 from saq.modules import AnalysisModule
@@ -120,7 +121,7 @@ class CVE_2021_30657_Analyzer(AnalysisModule):
                     shutil.copy(target_file, target_path)
                     file_observable = analysis.add_file_observable(target_path)
                     if file_observable:
-                        file_observable.add_detection_point(f"Possible CVE-2021-30657 attack: a file in DMG format file {_file} is a script")
+                        file_observable.add_detection_point(f"Possible CVE-2021-30657 attack: a file in DMG format file {_file} is a script", signature_uuid=CVE_2021_30657_DMG_SCRIPT.uuid)
                         file_observable.add_tag("CVE-2021-30657")
                         analysis.suspect_files[file_observable.file_path] = stdout.strip()
 

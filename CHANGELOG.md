@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.67] - 2026-06-17
+
+- [fixed detection_points table issues](https://github.com/ACE-Collective/ace3/pull/326)
+
+## [3.0.66] - 2026-06-16
+
+- [Fixes double backslash bug with user observables](https://github.com/ACE-Collective/ace3/pull/324)
+- [added yara and observable modifier rule docs](https://github.com/ACE-Collective/ace3/pull/323)
+- [added hunting documentation](https://github.com/ACE-Collective/ace3/pull/322)
+- [detection point refactoring](https://github.com/ACE-Collective/ace3/pull/299)
+
+## [3.0.65] - 2026-06-12
+
+- [Add 'draining_collectors' node status and update draining logic](https://github.com/ACE-Collective/ace3/pull/318)
+
 ## [3.0.64] - 2026-06-11
 
 - [Analysis cache replay fixes](https://github.com/ACE-Collective/ace3/pull/309)
@@ -365,7 +380,7 @@ and this project (tries to) adheres to [Semantic Versioning](https://semver.org/
 
 - summary detail processing for `QueryHunt` with `SummaryDetailConfig` for grouped/ungrouped details, format validation, and limit enforcement
 - adds support for analysis module config propert default_collapsed 
-- adds support for the new meta tagging for yara rules as defined in `YARA_META_TAGS.md`.
+- adds support for the new meta tagging for yara rules as defined in `YARA_RULES.md`.
 - added logo source files and adjusted title to include version and svg for favicon
 
 ## [3.0.0] - 2026-02-27

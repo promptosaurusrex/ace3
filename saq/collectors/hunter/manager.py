@@ -9,10 +9,24 @@ from saq.configuration.config import get_config
 from saq.configuration.schema import HuntTypeConfig
 from saq.constants import ExecutionMode
 from saq.error import report_exception
+from saq.git import get_commit_hash, git_dir_contains
 from saq.network_semaphore import NetworkSemaphoreClient
+from saq.signatures import SIGNATURE_VERSION_UNKNOWN
 from saq.util import local_time, abs_path
 from saq.util.hashing import sha256
 from saq.collectors.hunter.base_hunter import Hunt, InvalidHuntTypeError
+
+
+def _normalize_rule_dir(entry) -> tuple[str, "str | None"]:
+    """Returns (rule_dir, git_dir) from a rule_dirs entry. Accepts a
+    HuntRuleDirConfig (the canonical config form), a plain dict, or a bare
+    string (the last only for internal callers — operator config requires the
+    dict form and is enforced by HuntTypeConfig)."""
+    if isinstance(entry, str):
+        return entry, None
+    if isinstance(entry, dict):
+        return entry["rule_dir"], entry.get("git_dir")
+    return entry.rule_dir, entry.git_dir
 
 CONCURRENCY_TYPE_NETWORK_SEMAPHORE = 'network_semaphore'
 CONCURRENCY_TYPE_LOCAL_SEMAPHORE = 'local_semaphore'
@@ -65,7 +79,13 @@ class HuntManager:
         self.hunt_type = hunt_type
 
         # the list of directories that contain the hunt configuration yaml files for this type of hunt
+        # (each entry is a HuntRuleDirConfig {rule_dir, git_dir?}; bare strings tolerated internally)
         self.rule_dirs = rule_dirs
+
+        # maps an absolute hunt yaml path -> the signature_version (git commit hash of the
+        # entry's git_dir, or SIGNATURE_VERSION_UNKNOWN), populated by _list_hunt_yaml and
+        # used to stamp each loaded Hunt
+        self._yaml_signature_versions: dict[str, str] = {}
 
         # the class used to instantiate the rules in the given rules directories
         self.hunt_cls = hunt_cls
@@ -488,6 +508,9 @@ class HuntManager:
             try:
                 logging.info(f"loading hunt from {hunt_config_file_path}")
                 hunt = self.load_hunt_from_config(hunt_config_file_path)
+                # stamp the hunt with the signature_version resolved for its rule_dir's git_dir
+                hunt.signature_version = self._yaml_signature_versions.get(
+                    hunt_config_file_path, SIGNATURE_VERSION_UNKNOWN)
 
                 if hunt_filter(hunt):
                     logging.debug(f"loaded {hunt} from {hunt_config_file_path}")
@@ -551,13 +574,34 @@ class HuntManager:
         return hunt
 
     def _list_hunt_yaml(self) -> list[str]:
-        """Returns the list of yaml files for hunts in self.rule_dirs."""
+        """Returns the list of yaml files for hunts in self.rule_dirs. As a side
+        effect, records the signature_version (git commit hash of each entry's
+        git_dir, or SIGNATURE_VERSION_UNKNOWN) per yaml path in
+        self._yaml_signature_versions, so loaded hunts can be stamped."""
         result = []
-        for rule_dir in self.rule_dirs:
+        self._yaml_signature_versions = {}
+        # cache the resolved commit per git_dir so we only invoke git once per repo
+        commit_cache: dict[str, str] = {}
+        for entry_config in self.rule_dirs:
+            rule_dir, git_dir = _normalize_rule_dir(entry_config)
             rule_dir = abs_path(rule_dir)
             if not os.path.isdir(rule_dir):
                 logging.error(f"rules directory {rule_dir} specified for {self} is not a directory")
                 continue
+
+            # resolve the signature_version for hunts loaded from this rule_dir.
+            # git_dir is optional; when set it must equal or contain rule_dir,
+            # otherwise we log an error and fall back to unknown.
+            if git_dir:
+                if git_dir not in commit_cache:
+                    if git_dir_contains(git_dir, rule_dir):
+                        commit_cache[git_dir] = get_commit_hash(git_dir) or SIGNATURE_VERSION_UNKNOWN
+                    else:
+                        logging.error("hunt git_dir %s does not contain rule_dir %s", git_dir, rule_dir)
+                        commit_cache[git_dir] = SIGNATURE_VERSION_UNKNOWN
+                signature_version = commit_cache[git_dir]
+            else:
+                signature_version = SIGNATURE_VERSION_UNKNOWN
 
             # load each .yaml file found in this rules directory
             logging.debug(f"searching {rule_dir} for hunt configurations")
@@ -578,6 +622,7 @@ class HuntManager:
                 if hunt_config.endswith('.include.yaml'):
                     continue
 
+                self._yaml_signature_versions[entry.path] = signature_version
                 result.append(entry.path)
 
         return result

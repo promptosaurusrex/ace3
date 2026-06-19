@@ -4,6 +4,7 @@ from subprocess import PIPE, Popen
 from typing import Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
+from saq.signatures import RTF_EXTRACTED_SUSPECT_FILE
 from saq.constants import DIRECTIVE_SANDBOX, F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
@@ -213,19 +214,19 @@ class ExtractedRTFAnalyzer(AnalysisModule):
 
         for ext in self.suspect_ext:
             if _file.file_path.lower().endswith('.{}'.format(ext)):
-                _file.add_detection_point('file extracted from RTF has suspect file extension')
+                _file.add_detection_point('file extracted from RTF has suspect file extension', signature_uuid=RTF_EXTRACTED_SUSPECT_FILE.uuid)
                 _file.add_directive(DIRECTIVE_SANDBOX)
                 #_file.add_tag('suspect')
 
         for mime_type in self.suspect_mime_type:
             if mime_type.lower() in file_type_analysis.mime_type.lower():
-                _file.add_detection_point('file extracted from RTF has suspect mime type')
+                _file.add_detection_point('file extracted from RTF has suspect mime type', signature_uuid=RTF_EXTRACTED_SUSPECT_FILE.uuid)
                 _file.add_directive(DIRECTIVE_SANDBOX)
                 #_file.add_tag('suspect')
 
         for file_type in self.suspect_file_type:
             if file_type.lower() in file_type_analysis.file_type.lower():
-                _file.add_detection_point('file extracted from RTF has suspect file type')
+                _file.add_detection_point('file extracted from RTF has suspect file type', signature_uuid=RTF_EXTRACTED_SUSPECT_FILE.uuid)
                 _file.add_directive(DIRECTIVE_SANDBOX)
                 #_file.add_tag('suspect')
 

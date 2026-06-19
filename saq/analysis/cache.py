@@ -988,7 +988,9 @@ def _apply_observable_spec(parent_analysis, spec, staged_file: Optional[str] = N
     for det_dict in spec.initial_detections:
         description = det_dict.get("description")
         if description:
-            new_obs.add_detection_point(description, det_dict.get("details"))
+            new_obs.add_detection_point(
+                description, det_dict.get("details"), det_dict.get("queue"),
+                det_dict.get("signature_uuid"), det_dict.get("signature_version"))
     for name in spec.initial_excluded_analysis:
         if name not in new_obs._excluded_analysis:
             new_obs._excluded_analysis.append(name)
@@ -1058,7 +1060,9 @@ def _apply_observable_diff(observable, diff, root, source_observable_uuid=None) 
     for det_dict in diff.added_detections:
         description = det_dict.get("description")
         if description:
-            observable.add_detection_point(description, det_dict.get("details"))
+            observable.add_detection_point(
+                description, det_dict.get("details"), det_dict.get("queue"),
+                det_dict.get("signature_uuid"), det_dict.get("signature_version"))
     for directive in diff.added_directives:
         observable.add_directive(directive)
     uuid_map = {source_observable_uuid: observable} if source_observable_uuid else {}
@@ -1095,4 +1099,6 @@ def _apply_root_diff(root, root_diff) -> None:
     for det_dict in root_diff.added_detections:
         description = det_dict.get("description")
         if description:
-            root.add_detection_point(description, det_dict.get("details"))
+            root.add_detection_point(
+                description, det_dict.get("details"), det_dict.get("queue"),
+                det_dict.get("signature_uuid"), det_dict.get("signature_version"))

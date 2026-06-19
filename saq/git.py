@@ -2,11 +2,43 @@ import logging
 import os
 import subprocess
 import threading
-from typing import Type
+from typing import Optional, Type
 
 from saq.configuration import get_config
 from saq.configuration.schema import GitRepoConfig, ServiceConfig
 from saq.service import ACEServiceInterface
+
+# timeout for the standalone commit-hash helpers below, which aren't tied to a
+# GitRepoConfig (and so can't use its git_command_timeout)
+GIT_COMMAND_TIMEOUT = 30  # seconds
+
+
+def get_commit_hash(git_dir: str) -> Optional[str]:
+    """returns the HEAD commit hash of the git repo at git_dir, or None if
+    git_dir is falsy or the git command fails (logs a warning on failure).
+    callers apply their own "unknown" fallback so this module stays decoupled
+    from saq.signatures."""
+    if not git_dir:
+        return None
+    try:
+        p = subprocess.run(
+            ["git", "-C", git_dir, "rev-parse", "HEAD"],
+            text=True, capture_output=True, timeout=GIT_COMMAND_TIMEOUT)
+    except Exception as e:
+        logging.warning("failed to get commit hash for %s: %s", git_dir, e)
+        return None
+    if p.returncode != 0:
+        logging.warning("failed to get commit hash for %s: %s", git_dir, p.stderr.strip())
+        return None
+    return p.stdout.strip() or None
+
+
+def git_dir_contains(git_dir: str, rule_dir: str) -> bool:
+    """returns True if git_dir equals or is an ancestor of rule_dir (so the
+    repo at git_dir actually contains the rules loaded from rule_dir)"""
+    g = os.path.realpath(git_dir)
+    r = os.path.realpath(rule_dir)
+    return r == g or r.startswith(g + os.sep)
 
 class GitRepo:
     def __init__(self, config: GitRepoConfig):

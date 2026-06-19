@@ -286,7 +286,7 @@ def alt_setup(rules_dir):
                 name="splunk_alt",
                 python_module="saq.collectors.hunter.splunk_hunter",
                 python_class="SplunkHunt",
-                rule_dirs=[rules_dir],
+                rule_dirs=[{"rule_dir": rules_dir}],
                 concurrency_limit=1,
                 splunk_config=get_config().get_splunk_config("splunk_alt"),
                 update_frequency=60,

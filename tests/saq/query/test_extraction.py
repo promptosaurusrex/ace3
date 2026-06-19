@@ -3,7 +3,7 @@ import logging
 import pytest
 from pydantic import ValidationError
 
-from saq.constants import F_FILE, F_FILE_LOCATION, F_HOSTNAME, F_IPV4, SUMMARY_DETAIL_FORMAT_JINJA
+from saq.constants import F_FILE, F_FILE_LOCATION, F_HOSTNAME, F_IPV4, F_USER, SUMMARY_DETAIL_FORMAT_JINJA
 from saq.observables.mapping import (
     ObservableMapping,
     RelationshipMapping,
@@ -176,6 +176,26 @@ def test_extract_observables_wildcard_missing_top_key_skipped():
     extracted, _, _ = extract_observables_from_event(event, mappings)
 
     assert extracted == []
+
+
+@pytest.mark.unit
+def test_extract_observables_multivalue_user_field_strips_domain():
+    """A multivalue (Splunk-style list) user field maps each element to a non-empty
+    user observable, even when the domain separator is a double backslash.
+
+    Regression for an analyst-reported hunt that produced empty `user` observables:
+    the list is expanded element-by-element (so the whole list is never stringified)
+    and UserObservable drops the domain to the bare account name rather than the
+    empty segment between the two backslashes.
+    """
+    mappings = [ObservableMapping(fields=["process_username"], type=F_USER)]
+    event = {"process_username": ["DOMAIN\\\\user", "DOMAIN\\\\user"]}
+
+    extracted, _, _ = extract_observables_from_event(event, mappings)
+
+    values = [e.observable.value for e in extracted]
+    assert "" not in values
+    assert values == ["user", "user"]
 
 
 @pytest.mark.unit
