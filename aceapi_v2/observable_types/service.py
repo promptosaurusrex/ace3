@@ -1,23 +1,17 @@
 """Observable type service for ACE API v2."""
 
-from sqlalchemy import distinct, select
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from saq.database.model import Observable
 from saq.observables.type_hierarchy import get_all_valid_types
 
 
-async def get_observable_types(session: AsyncSession) -> list[str]:
-    """Return a list of unique observable types from the database.
+async def get_observable_types() -> list[str]:
+    """Return the list of valid observable types from the configured registry.
 
-    Args:
-        session: AsyncSession for database access
+    The single source of truth is the configured ``observable_types.yaml``
+    (plus any Python-registered observable classes), surfaced via
+    :func:`get_all_valid_types`. Observable types that only exist in old/stale
+    database rows are intentionally excluded.
 
     Returns:
         List of observable type names, sorted alphabetically
     """
-    result = await session.execute(select(distinct(Observable.type)))
-    db_types = [row[0] for row in result.all()]
-    all_types = set(db_types) | set(get_all_valid_types())
-
-    return sorted(all_types)
+    return sorted(get_all_valid_types())
