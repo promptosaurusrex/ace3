@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.observable_types.router import _cache
 from saq.database.model import Observable
+from saq.observables.type_hierarchy import get_all_valid_types
 
 pytestmark = pytest.mark.integration
 
@@ -39,73 +40,55 @@ class TestObservableTypes:
         assert isinstance(data["data"], list)
 
     @pytest.mark.asyncio
-    async def test_list_observable_types_returns_unique_types(
-        self, session: AsyncSession, client: AsyncClient
-    ):
-        """Test that endpoint returns unique observable types."""
-        # Create test observables with different types
-        observables = [
-            Observable(type="ipv4", sha256=b"a" * 32, value=b"192.168.1.1"),
-            Observable(type="ipv4", sha256=b"b" * 32, value=b"192.168.1.2"),
-            Observable(type="domain", sha256=b"c" * 32, value=b"example.com"),
-            Observable(type="url", sha256=b"d" * 32, value=b"https://example.com"),
-            Observable(type="domain", sha256=b"e" * 32, value=b"test.com"),
-        ]
-        for obs in observables:
-            session.add(obs)
-        await session.commit()
-
-        response = await client.get("/observable-types/")
-        assert response.status_code == 200
-
-        data = response.json()
-        assert "data" in data
-        types = data["data"]
-        assert isinstance(types, list)
-
-        # Extract type names from response objects
-        type_names = [t["name"] for t in types]
-
-        # Should contain our types (uniquely)
-        assert "ipv4" in type_names
-        assert "domain" in type_names
-        assert "url" in type_names
-
-        # Should be sorted alphabetically
-        assert type_names == sorted(type_names)
-
-    @pytest.mark.asyncio
-    async def test_list_observable_types_sorted(
-        self, session: AsyncSession, client: AsyncClient
-    ):
-        """Test that observable types are returned in sorted order."""
-        # Create observables with types that would be unsorted if not ordered
-        observables = [
-            Observable(type="zebra_type", sha256=b"z" * 32, value=b"z"),
-            Observable(type="alpha_type", sha256=b"a" * 32, value=b"a"),
-            Observable(type="middle_type", sha256=b"m" * 32, value=b"m"),
-        ]
-        for obs in observables:
-            session.add(obs)
-        await session.commit()
-
+    async def test_list_observable_types_matches_registry(self, client: AsyncClient):
+        """The endpoint returns exactly the configured valid types, sorted."""
         response = await client.get("/observable-types/")
         assert response.status_code == 200
 
         data = response.json()
         type_names = [t["name"] for t in data["data"]]
+
+        # The configured observable_types.yaml (plus Python-registered classes)
+        # is the single source of truth.
+        assert type_names == sorted(get_all_valid_types())
+        # Sanity check: a well-known registry type is present.
+        assert "ipv4" in type_names
+
+    @pytest.mark.asyncio
+    async def test_db_only_types_are_excluded(
+        self, session: AsyncSession, client: AsyncClient
+    ):
+        """Observable types that exist only in the database are NOT returned.
+
+        The YAML registry is the single source of truth, so stale/legacy types
+        in old observable rows must not leak into the response.
+        """
+        db_only_type = "zebra_type_not_in_yaml"
+        assert db_only_type not in get_all_valid_types()
+
+        session.add(
+            Observable(type=db_only_type, sha256=b"z" * 32, value=b"z")
+        )
+        await session.commit()
+
+        response = await client.get("/observable-types/")
+        assert response.status_code == 200
+
+        type_names = [t["name"] for t in response.json()["data"]]
+        assert db_only_type not in type_names
+
+    @pytest.mark.asyncio
+    async def test_list_observable_types_sorted(self, client: AsyncClient):
+        """Test that observable types are returned in sorted order."""
+        response = await client.get("/observable-types/")
+        assert response.status_code == 200
+
+        type_names = [t["name"] for t in response.json()["data"]]
         assert type_names == sorted(type_names)
 
     @pytest.mark.asyncio
-    async def test_list_observable_types_response_format(
-        self, session: AsyncSession, client: AsyncClient
-    ):
+    async def test_list_observable_types_response_format(self, client: AsyncClient):
         """Test that response follows the expected schema."""
-        # Create a test observable
-        observable = Observable(type="test_type", sha256=b"t" * 32, value=b"test")
-        session.add(observable)
-        await session.commit()
-
         response = await client.get("/observable-types/")
         assert response.status_code == 200
 
@@ -114,7 +97,7 @@ class TestObservableTypes:
         assert "data" in data
         assert isinstance(data["data"], list)
 
-        # Find our test type and verify its structure
-        test_types = [t for t in data["data"] if t["name"] == "test_type"]
-        assert len(test_types) == 1
-        assert test_types[0] == {"name": "test_type"}
+        # A known-valid registry type has the expected object shape.
+        ipv4_types = [t for t in data["data"] if t["name"] == "ipv4"]
+        assert len(ipv4_types) == 1
+        assert ipv4_types[0] == {"name": "ipv4"}

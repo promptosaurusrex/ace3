@@ -17,7 +17,7 @@ async def get_valid_companies(session: AsyncSession) -> list[Company]:
 
 
 async def get_valid_observables(session: AsyncSession) -> list[dict]:
-    all_types = await get_observable_types(session)
+    all_types = await get_observable_types()
     hierarchy = get_type_hierarchy()
     active = [t for t in all_types if not hierarchy.is_deprecated(t)]
     return [

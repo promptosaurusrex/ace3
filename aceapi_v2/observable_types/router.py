@@ -1,12 +1,8 @@
 """Observable type router for ACE API v2."""
 
-from typing import Annotated
-
-from fastapi import APIRouter, Depends, Response, Security
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Response, Security
 
 from aceapi_v2.cache import TTLCache
-from aceapi_v2.database import get_async_session
 from aceapi_v2.dependencies import get_current_auth
 from aceapi_v2.observable_types import service
 from aceapi_v2.observable_types.schemas import ObservableTypeRead
@@ -25,9 +21,8 @@ _cache = TTLCache(ttl=60)
 @router.get("/", response_model=ListResponse[ObservableTypeRead])
 async def list_observable_types(
     response: Response,
-    session: Annotated[AsyncSession, Depends(get_async_session)],
 ) -> ListResponse[ObservableTypeRead]:
-    """Return a list of unique observable types from the database.
+    """Return the list of valid observable types from the configured registry.
 
     Requires authentication (API key or JWT token).
     """
@@ -36,7 +31,7 @@ async def list_observable_types(
         _cache.set_cache_headers(response)
         return cached
 
-    types = await service.get_observable_types(session)
+    types = await service.get_observable_types()
     data = ListResponse(data=[ObservableTypeRead(name=t) for t in types])
     _cache.set("observable_types", data)
     _cache.set_cache_headers(response)
