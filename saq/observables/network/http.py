@@ -1,7 +1,14 @@
 from saq.analysis.observable import Observable
+from saq.analysis.presenter.observable_presenter import register_observable_action
 from saq.configuration.config import get_config
 from saq.constants import F_URI_PATH, F_URL, F_USER_AGENT
-from saq.gui import ObservableActionSeparator, ObservableActionUrlCrawl, ObservableActionUrlscan
+from saq.gui import (
+    ObservableActionSeparator,
+    ObservableActionUrlCrawl,
+    ObservableActionUrlscan,
+    ObservableActionCheckForClickers,
+    ObservableActionOpenSplunkClickerSearch,
+)
 from saq.observables.generator import register_observable_type
 from urlfinderlib.url import URL
 
@@ -69,3 +76,7 @@ class URLObservable(Observable):
 register_observable_type(F_USER_AGENT, UserAgentObservable)
 register_observable_type(F_URI_PATH, URIPathObservable)
 register_observable_type(F_URL, URLObservable)
+
+# "Check for clickers" (generic) and "Open clicker search in Splunk" (source-specific)
+register_observable_action(F_URL, ObservableActionCheckForClickers)
+register_observable_action(F_URL, ObservableActionOpenSplunkClickerSearch)

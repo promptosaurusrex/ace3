@@ -314,6 +314,7 @@ VALID_DISPOSITIONS = [
 # --- DIRECTIVES
 DIRECTIVE_ANALYZE_ACTIVITY = 'analyze_activity'
 DIRECTIVE_ARCHIVE = 'archive'
+DIRECTIVE_CLICKER_DETECTION = 'clicker_detection'
 DIRECTIVE_COLLECT_FILE = 'collect_file'
 DIRECTIVE_CRAWL = 'crawl'
 DIRECTIVE_CRAWL_EXTRACTED_URLS = 'crawl_extracted_urls'
@@ -352,6 +353,7 @@ DIRECTIVE_YARA_META_PREFIX = "yara_meta:"
 DIRECTIVE_DESCRIPTIONS = {
     DIRECTIVE_ANALYZE_ACTIVITY: 'analyze the activity of this for some time period around a certain event',
     DIRECTIVE_ARCHIVE: 'archive the file',
+    DIRECTIVE_CLICKER_DETECTION: 'check log sources for users who clicked this URL or visited this domain',
     DIRECTIVE_COLLECT_FILE: 'collect the file from the remote endpoint',
     DIRECTIVE_CRAWL: 'crawl the URL',
     DIRECTIVE_CRAWL_EXTRACTED_URLS: 'crawl all extracted URLs',
@@ -533,6 +535,8 @@ ACTION_UN_WHITELIST = 'un_whitelist'
 ACTION_WHITELIST = 'whitelist'
 ACTION_URL_CRAWL = 'crawl'
 ACTION_URLSCAN = 'urlscan'
+ACTION_CHECK_FOR_CLICKERS = 'check_for_clickers'
+ACTION_OPEN_CLICKER_SEARCH_SPLUNK = 'open_clicker_search_splunk'
 ACTION_FILE_RENDER = 'file'
 ACTION_ADD_TAG = 'add_tag'
 ACTION_ENABLE_DETECTION = 'enable_detection'

@@ -2082,10 +2082,31 @@ tag_css_class:
   alert: danger
   critical: danger
 
+# Clicker detection (Splunk): answers "did anyone click this URL / visit this domain?"
+# Runs the search defined in the analyst-editable clicker config (config_path) for url/fqdn
+# observables carrying the clicker_detection directive (added by the "Check for clickers"
+# observable action). Disabled by default; deployments using Splunk set enabled: true and
+# point config_path at their analyst_data file (e.g. signatures/analyst_data/clicker_detection.yaml).
+analysis_module_clicker_detection_splunk:
+  name: clicker_detection_splunk
+  instance: clicker_detection_splunk
+  python_module: saq.modules.clicker_detection
+  python_class: SplunkClickerDetectionAnalyzer
+  enabled: false
+  api_name: default
+  valid_observable_types: [url, fqdn]
+  required_directives: [clicker_detection]
+  question: "Did anyone click this URL or visit this domain?"
+  summary: "URL Clicks"
+  # source key within the clicker config; path is relative to SAQ_HOME and watched for live reload
+  source: splunk
+  config_path: etc/clicker_detection.yaml
+
 module_group_correlation:
   name: correlation
   modules:
     - active_directory_analyzer
+    - clicker_detection_splunk
     - fqdn_analyzer
     - idna_analyzer
     - message_id_analyzer_v2

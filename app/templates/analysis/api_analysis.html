@@ -4,7 +4,7 @@
 {% if analysis.details.get('gui_link') %}
 <div class="mb-3">
     <a class="btn btn-sm btn-outline-primary" href="{{ analysis.details['gui_link'] }}" target="_blank">
-        <i class="bi bi-box-arrow-up-right"></i> Open in Splunk
+        <i class="bi bi-box-arrow-up-right"></i> {{ analysis.details.get('gui_link_label') or 'Open Search' }}
     </a>
 </div>
 {% endif %}

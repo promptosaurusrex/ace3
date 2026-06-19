@@ -157,6 +157,7 @@ class SplunkAPIAnalyzer(BaseAPIAnalyzer):
             start_time.astimezone(tz),
             stop_time.astimezone(tz),
         )
+        self.analysis.details['gui_link_label'] = 'Open in Splunk'
 
         self.target_query = self.target_query.replace('<O_TIMESPEC>', time_spec)
 
