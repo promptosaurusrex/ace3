@@ -1,5 +1,8 @@
 """Unit tests for OCR/QR extended_version (Phase 4 cache-key invalidation
 tied to external tool versions and the QR filter file)."""
+import hashlib
+import os
+
 import pytest
 
 from saq.configuration.config import get_analysis_module_config
@@ -62,9 +65,9 @@ class TestQRCodeExtendedVersion:
         assert ev["zbarimg"] == "0.23"
         assert ev["gs"] == "10.0"
         assert ev["pdfinfo"] == "poppler 22.x"
-        mtime_str, _, size_str = ev["qrcode_filter_version"].partition("-")
-        assert int(mtime_str) > 0
-        assert int(size_str) > 0
+        # the filter fingerprint is a content sha256, not an mtime+size string
+        expected = hashlib.sha256(filter_file.read_bytes()).hexdigest()
+        assert ev["qrcode_filter_version"] == expected
 
     @pytest.mark.unit
     def test_filter_edit_changes_fingerprint(self, test_context, monkeypatch, tmp_path):
@@ -86,6 +89,36 @@ class TestQRCodeExtendedVersion:
         filter_file.write_text("one\ntwo - longer content\n")
         second = analyzer.extended_version["qrcode_filter_version"]
         assert first != second
+
+    @pytest.mark.unit
+    def test_identical_content_same_fingerprint_across_mtime(self, test_context, monkeypatch, tmp_path):
+        """Regression: the filter ships from a git repo, so its mtime is set
+        per host at checkout. Identical content must yield an identical
+        fingerprint regardless of mtime — a content hash, not mtime+size."""
+        monkeypatch.setattr(
+            "saq.modules.file_analysis.qrcode.probe_binary_version",
+            lambda name, args=None: None,
+        )
+        content = "example\\.com\n"
+        file_a = tmp_path / "a.filter"
+        file_b = tmp_path / "b.filter"
+        file_a.write_text(content)
+        file_b.write_text(content)
+        # force distinct mtimes — what differs across hosts after a checkout
+        os.utime(file_a, (1000, 1000))
+        os.utime(file_b, (2000, 2000))
+
+        monkeypatch.setattr(
+            QRCodeAnalyzer, "qrcode_filter_path",
+            property(lambda _self: str(file_a)),
+        )
+        first = _make_qr(test_context).extended_version["qrcode_filter_version"]
+        monkeypatch.setattr(
+            QRCodeAnalyzer, "qrcode_filter_path",
+            property(lambda _self: str(file_b)),
+        )
+        second = _make_qr(test_context).extended_version["qrcode_filter_version"]
+        assert first == second
 
     @pytest.mark.unit
     def test_missing_tools_and_filter_yield_empty(self, test_context, monkeypatch):

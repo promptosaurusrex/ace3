@@ -12,7 +12,7 @@ from saq.environment import get_global_runtime_settings
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import is_image, is_pdf_file
-from saq.modules.tool_version import probe_binary_version
+from saq.modules.tool_version import file_content_version, probe_binary_version
 from saq.observables.file import FileObservable
 
 from PIL import Image, ImageOps
@@ -144,10 +144,12 @@ class QRCodeAnalyzer(AnalysisModule):
         package upgrade must invalidate cached results. A failed probe
         omits that tool's key (staleness over key poisoning). The filter
         file's *contents* change the module's output but only its *path*
-        sits in the config (and thus the config hash), so an
-        mtime+size fingerprint covers analyst edits — same pattern as
-        nrd_analyzer / site_tagger. pdfinfo prints its version to stderr
-        via ``-v``; probe_binary_version falls back to stderr.
+        sits in the config (and thus the config hash), so a content sha256
+        covers analyst edits. The hash (not an mtime+size fingerprint) keeps
+        the key deterministic across hosts — the filter ships from a git repo,
+        so its mtime is set per host at checkout/pull. pdfinfo prints its
+        version to stderr via ``-v``; probe_binary_version falls back to
+        stderr.
         """
         result = {}
         for tool, args in (("zbarimg", None), ("gs", None), ("pdfinfo", ["-v"])):
@@ -156,11 +158,9 @@ class QRCodeAnalyzer(AnalysisModule):
                 result[tool] = version
         filter_path = self.qrcode_filter_path
         if filter_path is not None:
-            try:
-                st = os.stat(filter_path)
-                result["qrcode_filter_version"] = f"{st.st_mtime_ns}-{st.st_size}"
-            except OSError:
-                pass
+            version = file_content_version(filter_path)
+            if version is not None:
+                result["qrcode_filter_version"] = version
         return result
 
     def _get_pdf_page_count(self, pdf_path: str) -> Optional[int]:

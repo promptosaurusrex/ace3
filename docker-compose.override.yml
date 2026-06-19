@@ -1,0 +1,70 @@
+#
+# LOCAL DEV ONLY — do not commit.
+#
+# Adds a file-collection service container to the local dev environment. The core
+# docker-compose.yml has no such container (only the production bv_ace compose does),
+# so nothing runs the FileCollectionService and queued file_collection rows sit in NEW.
+# This mirrors the `remediation` service in docker-compose.yml. docker compose
+# auto-merges this override file. The service_file_collection config is already provided
+# in dev by the loaded crowdstrike integration config (enabled, instance_types: [ANY]).
+#
+# YAML anchors do not cross compose files, so x-common-env / x-common-volumes are copied
+# verbatim from docker-compose.yml. Named volumes (ace-data, ace-auth, ...) come from the
+# base compose via the merge.
+#
+
+x-common-env: &common-env
+  SAQ_ENC: ${SAQ_ENC:-test}
+  SAQ_CONFIG_PATHS: ${SAQ_CONFIG_PATHS:-}
+  ACE_INSTANCE_TYPE: DEV # possible values: DEV, QA, PRODUCTION
+  # if this node is the primary node, set this value to 1, otherwise set it to 0
+  # in a standalone deployment, this should be set to 1
+  ACE_IS_PRIMARY_NODE: ${ACE_IS_PRIMARY_NODE:-1}
+  # if your primary database has a different hostname, you will need to pass it in as ACE_DB_HOST
+  ACE_DB_HOST: ${ACE_DB_HOST:-ace-db}
+  ACE_DB_READONLY_HOST: ${ACE_DB_READONLY_HOST:-ace-db-readonly}
+  ACE_DB_USER_PASSWORD: ${ACE_DB_USER_PASSWORD:-}
+  ACE_SUPERUSER_DB_USER_PASSWORD: ${ACE_SUPERUSER_DB_USER_PASSWORD:-}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+  RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-}
+  QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+  ACE_API_KEY: ${ACE_API_KEY:-}
+  FLASK_SECRET_KEY: ${FLASK_SECRET_KEY:-}
+  AWS_REGION:
+
+x-common-volumes: &common-volumes
+  - .:/opt/ace
+  # NOTE your ssh keys are mounted read-only in all containers
+  - ~/.ssh:/home/ace/.ssh:ro
+  - ace-data:/opt/ace/data
+  - ace-sql:/docker-entrypoint-initdb.d
+  - ace-sql-readonly:/ace-sql-readonly
+  - ace-auth:/auth
+  - ace-user-home:/home/ace
+  - ./ssl:/opt/ace/ssl
+  - ace-phishkit:/phishkit
+  - ace-js-deobfuscator:/js-deobfuscator
+  - ./signatures:/opt/ace/signatures
+  - type: tmpfs
+    target: /tmp
+
+services:
+
+  file-collection:
+    platform: linux/amd64
+    environment:
+      <<: *common-env
+      ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
+      FLUENT_BIT_TAG: ace-file-collection
+    image: ${ACE3_IMAGE_URL:-ace3:latest}
+    depends_on:
+      ace:
+        condition: service_started
+    command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start file_collection"
+    restart: always
+    volumes: *common-volumes
+    hostname: ace
+    cap_add:
+      - SYS_PTRACE
+    networks:
+      - ace
