@@ -408,7 +408,7 @@ def test_module_contract(module_key, test_context, monkeypatch):
             f"{module_key}: file spec's backing file {backing} does not "
             f"exist — the cache write would be refused (file_missing)."
         )
-        assert os.path.getsize(backing) <= max_bytes, (
+        assert not max_bytes or os.path.getsize(backing) <= max_bytes, (
             f"{module_key}: produced file exceeds "
             f"analysis_cache.file_blob_max_bytes ({max_bytes}) — the "
             f"cache write would be refused (file_too_large)."

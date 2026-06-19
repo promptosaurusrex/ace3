@@ -471,6 +471,20 @@ class TestPutCachedDeltaFileObservables:
         assert any("refusal_reason=file_too_large" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.integration
+    def test_does_not_refuse_when_size_cap_disabled(self, blob_store, tmp_path, monkeypatch):
+        # a cap of 0 disables the per-file size check entirely
+        monkeypatch.setattr(get_config().analysis_cache, "file_blob_max_bytes", 0)
+        module = _make_module()
+        root = _make_file_root(tmp_path)
+        file_obs = _add_root_file(root, tmp_path)
+        delta = _make_file_delta(module, file_obs)
+        try:
+            assert put_cached_delta(delta, module, blob_store, root=root) is not None
+            assert _row_count(delta.cache_key) == 1
+        finally:
+            _delete_cache_row(delta.cache_key)
+
+    @pytest.mark.integration
     def test_refuses_when_spec_missing_file_path(self, blob_store, tmp_path, caplog):
         module = _make_module()
         root = _make_file_root(tmp_path)

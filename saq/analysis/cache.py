@@ -495,7 +495,7 @@ def _validate_file_specs(file_specs: list[ObservableSpec], root) -> Optional[str
             size = os.path.getsize(full_path)
         except OSError:
             return "file_missing"
-        if size > max_bytes:
+        if max_bytes and size > max_bytes:
             return "file_too_large"
     return None
 
