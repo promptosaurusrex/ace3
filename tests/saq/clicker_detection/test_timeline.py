@@ -23,8 +23,11 @@ def test_register_clicker_event_provider_idempotent():
     n = len(REGISTERED_CLICKER_PROVIDERS)
     register_clicker_event_provider(_P)
     register_clicker_event_provider(_P)
-    assert REGISTERED_CLICKER_PROVIDERS.count(_P) == 1
-    assert len(REGISTERED_CLICKER_PROVIDERS) == n + 1
+    try:
+        assert REGISTERED_CLICKER_PROVIDERS.count(_P) == 1
+        assert len(REGISTERED_CLICKER_PROVIDERS) == n + 1
+    finally:
+        REGISTERED_CLICKER_PROVIDERS.remove(_P)
 
 
 class _FakeRoot:
