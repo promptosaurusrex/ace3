@@ -6,6 +6,13 @@ script (docker/startup/start.sh -> bin/initialize-environment.sh) which sets:
 - SAQ_HOME environment variable
 - SAQ_CONFIG_PATHS environment variable (if load_local_environment exists)
 - Activates the Python virtual environment
+
+** WARNING **
+Served via "uvicorn api_uvicorn:application --workers N". uvicorn --workers uses the
+"spawn" start method, so each worker is a fresh interpreter and the async db engine
+(aceapi_v2/database.py) is created lazily per worker -- no pooled connection crosses a
+fork. Switching to a fork-based worker model would require a pid-checkout listener on
+the engine; see the fork-safety note in aceapi_v2/database.py:create_engine_for.
 """
 import os
 

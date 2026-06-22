@@ -1,6 +1,9 @@
 """FastAPI application factory for ACE API v2."""
 
-from fastapi import FastAPI
+import logging
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from aceapi_v2.alerts.router import router as alerts_router
 from aceapi_v2.auth.router import router as auth_router
@@ -13,6 +16,9 @@ from aceapi_v2.observables.router import router as observables_router
 from aceapi_v2.threat_types.router import router as threat_types_router
 from aceapi_v2.observable_comments.router import router as observable_comments_router
 from aceapi_v2.threats.router import router as threats_router
+from saq.error.reporting import report_exception
+
+logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
@@ -23,6 +29,12 @@ def create_app() -> FastAPI:
         version="2.0.0",
         root_path="/api/v2",
     )
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception):
+        logger.error("unhandled exception processing %s %s", request.method, request.url.path)
+        report_exception()
+        return JSONResponse(status_code=500, content={"detail": "internal server error"})
 
     # Include routers
     app.include_router(alerts_router, prefix="/alerts", tags=["alerts"])
