@@ -342,9 +342,10 @@ class TestRunScanner:
         mock_force_stop.assert_called_with("phishkit-scan-test-job")
 
     @pytest.mark.unit
+    @patch("phishkit._graceful_stop_container")
     @patch("phishkit._force_stop_container")
     @patch("phishkit._sync_config", return_value=None)
-    def test_run_scanner_timeout_no_proxy_returns_partial(self, mock_sync, mock_force_stop, tmpdir):
+    def test_run_scanner_timeout_no_proxy_returns_partial(self, mock_sync, mock_force_stop, mock_graceful, tmpdir):
         """Timeout without proxy kills the container then returns partial results.
 
         The scanner's SIGTERM handler flushes partial requests.json/dom.html
@@ -390,13 +391,66 @@ class TestRunScanner:
             proxy_status = json.load(f)
         assert proxy_status["fallback_triggered"] is False
         assert proxy_status["final_route"] == "none"
-        # the container must still be docker-killed on timeout
+        # on timeout the container is SIGTERMed gracefully (so the scanner flushes
+        # partial output) and still hard-reaped in the finally block
+        mock_graceful.assert_any_call("phishkit-scan-test-job")
         mock_force_stop.assert_any_call("phishkit-scan-test-job")
 
     @pytest.mark.unit
     @patch("phishkit._force_stop_container")
+    @patch("phishkit._graceful_stop_container")
     @patch("phishkit._sync_config", return_value=None)
-    def test_run_scanner_timeout_with_proxy_retries(self, mock_sync, mock_force_stop, tmpdir):
+    def test_run_scanner_timeout_graceful_stop_precedes_hard_kill(self, mock_sync, mock_graceful, mock_force_stop, tmpdir):
+        """On timeout the scanner container is SIGTERMed (graceful docker stop) BEFORE
+        any hard kill, so the scanner's _on_term handler can flush partial
+        requests.json/dom.html and exit 143 — otherwise a SIGKILL discards the
+        in-memory request log (e.g. the redirect chain) and no URL observables survive.
+        """
+        from phishkit import _run_scanner
+
+        # track interleaved call order across both stop helpers
+        manager = MagicMock()
+        manager.attach_mock(mock_graceful, "graceful")
+        manager.attach_mock(mock_force_stop, "force")
+
+        config_path = self._write_config(tmpdir)
+        output_dir = str(tmpdir.join("output"))
+        os.makedirs(output_dir)
+
+        proc = MagicMock()
+        proc.communicate.side_effect = [
+            TimeoutExpired(cmd="docker", timeout=10),
+            ("partial stdout", ""),
+        ]
+        proc.returncode = 143
+        proc.kill = MagicMock()
+        proc.wait = MagicMock()
+
+        with patch("phishkit.Popen", return_value=proc):
+            _stdout, _stderr, rc = _run_scanner(
+                target_args=["https://example.com"],
+                output_dir=output_dir,
+                job_id="test-job",
+                timeout=10,
+                proxy=None,
+                proxy_fallback_to_direct=False,
+                config_path=config_path,
+            )
+
+        # graceful SIGTERM stop issued, and strictly before the finally-block hard kill
+        mock_graceful.assert_any_call("phishkit-scan-test-job")
+        ordered_names = [c[0] for c in manager.mock_calls]
+        assert "graceful" in ordered_names and "force" in ordered_names
+        assert ordered_names.index("graceful") < ordered_names.index("force")
+        # the graceful stop gave the flush window, so no escalation to process.kill()
+        assert proc.kill.call_count == 0
+        assert rc == 143
+
+    @pytest.mark.unit
+    @patch("phishkit._graceful_stop_container")
+    @patch("phishkit._force_stop_container")
+    @patch("phishkit._sync_config", return_value=None)
+    def test_run_scanner_timeout_with_proxy_retries(self, mock_sync, mock_force_stop, mock_graceful, tmpdir):
         """Timeout with proxy + fallback enabled retries without proxy."""
         from phishkit import _run_scanner
 
@@ -448,9 +502,10 @@ class TestRunScanner:
         assert proxy_status["final_route"] == "direct"
 
     @pytest.mark.unit
+    @patch("phishkit._graceful_stop_container")
     @patch("phishkit._force_stop_container")
     @patch("phishkit._sync_config", return_value=None)
-    def test_run_scanner_timeout_both_attempts_returns_partial(self, mock_sync, mock_force_stop, tmpdir):
+    def test_run_scanner_timeout_both_attempts_returns_partial(self, mock_sync, mock_force_stop, mock_graceful, tmpdir):
         """Proxy attempt times out AND the direct retry times out — still returns partial.
 
         The direct attempt's SIGTERM-flushed requests.json (written into
@@ -513,9 +568,10 @@ class TestRunScanner:
         assert proxy_status["final_route"] == "direct"
 
     @pytest.mark.unit
+    @patch("phishkit._graceful_stop_container")
     @patch("phishkit._force_stop_container")
     @patch("phishkit._sync_config", return_value=None)
-    def test_run_scanner_timeout_retry_disabled_returns_partial(self, mock_sync, mock_force_stop, tmpdir):
+    def test_run_scanner_timeout_retry_disabled_returns_partial(self, mock_sync, mock_force_stop, mock_graceful, tmpdir):
         """Timeout with retry_on_timeout=False returns partial results (no retry, no raise)."""
         from phishkit import _run_scanner
 

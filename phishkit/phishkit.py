@@ -74,6 +74,25 @@ def _force_stop_container(name: str) -> None:
         logger.debug("docker rm -f %s failed: %s", name, e)
 
 
+def _graceful_stop_container(name: str) -> None:
+    """Best-effort graceful stop: SIGTERM the scanner container and give it a grace
+    window to flush partial output before it is killed.
+
+    The scanner installs a SIGTERM handler that flushes requests.json/dom.html/
+    metrics.json (marked interrupted) and exits 143, so a timed-out crawl still
+    leaves the captured traffic (e.g. redirect/CDN URLs) on disk for ACE to harvest.
+    `docker stop` sends SIGTERM and waits up to --time seconds before escalating to
+    SIGKILL, so that flush can run; `docker kill` (see _force_stop_container) would
+    send an uncatchable SIGKILL and discard the in-memory request log. Silent if the
+    container is already gone."""
+    try:
+        subprocess.run(["docker", "stop", "--time", "5", name],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=15, check=False)
+    except Exception as e:
+        logger.debug("docker stop %s failed: %s", name, e)
+
+
 def _list_phishkit_containers() -> list[dict]:
     """Return metadata for every running scanner container labeled by phishkit."""
     try:
@@ -308,8 +327,11 @@ def _run_scanner(
             try:
                 _stdout, _stderr = process.communicate(timeout=timeout)
             except TimeoutExpired:
-                logger.warning("phishkit job %s timed out, killing container %s", job_id, container_name)
-                _force_stop_container(container_name)
+                logger.warning("phishkit job %s timed out, gracefully stopping container %s", job_id, container_name)
+                # SIGTERM (not SIGKILL) so the scanner's _on_term handler can flush
+                # partial requests.json/dom.html/metrics.json and exit 143 before the
+                # finally-block _force_stop_container reaps the container.
+                _graceful_stop_container(container_name)
                 try:
                     _stdout, _stderr = process.communicate(timeout=10)
                 except TimeoutExpired:
@@ -370,9 +392,11 @@ def _run_scanner(
                 try:
                     _stdout, _stderr = process.communicate(timeout=timeout)
                 except TimeoutExpired:
-                    logger.warning("phishkit job %s (direct retry) timed out, killing container %s",
+                    logger.warning("phishkit job %s (direct retry) timed out, gracefully stopping container %s",
                                    job_id, retry_container_name)
-                    _force_stop_container(retry_container_name)
+                    # SIGTERM first so the scanner flushes partial output and exits
+                    # 143; the finally-block _force_stop_container is the hard backstop.
+                    _graceful_stop_container(retry_container_name)
                     try:
                         _stdout, _stderr = process.communicate(timeout=10)
                     except TimeoutExpired:
