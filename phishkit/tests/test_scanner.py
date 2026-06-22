@@ -536,6 +536,45 @@ class TestVisualCheckboxBypass:
     @pytest.mark.unit
     @patch("scanner.cv2")
     @patch("scanner.Image.open")
+    def test_visual_checkbox_bypass_uses_selector_first(
+        self, mock_image_open, mock_cv2, scanner, tmpdir
+    ):
+        # When a structural selector matches a visible element, the handler
+        # human-clicks its rendered center (from getBoundingClientRect) and never
+        # reaches image template matching. This is the primary path for
+        # polymorphic kits that randomize text/scale but keep role=button.
+        fake_screenshot = MagicMock()
+        fake_screenshot.size = (800, 600)
+        fake_checkbox = MagicMock()
+        fake_checkbox.mode = "RGB"
+        mock_image_open.side_effect = [fake_checkbox, fake_screenshot]
+
+        def cdp(cmd, params=None):
+            if cmd == "Page.captureScreenshot":
+                return {"data": "AAAA"}
+            if cmd == "Runtime.evaluate":
+                return {"result": {"value": {
+                    "x": 115, "y": 215, "w": 30, "h": 30,
+                    "sel": '[role="button"][tabindex="0"]',
+                }}}
+            return {}
+
+        sb = MagicMock()
+        sb.execute_cdp_cmd.side_effect = cdp
+        scanner._output_dir = str(tmpdir)
+        scanner._human_click_at = MagicMock(return_value=True)
+        config = {"checkbox_pngs": ["iVBORw0KGgo="]}
+
+        scanner.visual_checkbox_bypass(sb, config)
+
+        # clicked the element's center via the shared human-click path...
+        scanner._human_click_at.assert_called_once_with(sb, 115, 215)
+        # ...and the image-matching fallback was never reached.
+        mock_cv2.matchTemplate.assert_not_called()
+
+    @pytest.mark.unit
+    @patch("scanner.cv2")
+    @patch("scanner.Image.open")
     def test_visual_checkbox_bypass_palette_mode_converts_to_rgb(
         self, mock_image_open, mock_cv2, scanner, tmpdir
     ):

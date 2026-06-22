@@ -808,6 +808,17 @@ window.matchMedia = function(query) {
 # Default config path baked into the scanner Docker image.
 DEFAULT_CONFIG_PATH = "/opt/app/phishkit_config.yaml"
 
+# Structural CSS selectors the visual_checkbox_bypass handler uses to locate the
+# clickable challenge element when no checkbox image matches. Polymorphic kits
+# randomize text, colors, classes, ids and even the rendered scale (defeating
+# image and text matching) but keep the ARIA semantics of the interactive
+# element, so role=button / tabindex=0 survive across instances. Overridable via
+# handlers.visual_checkbox_bypass.click_selectors in the YAML config.
+DEFAULT_CLICK_SELECTORS = [
+    '[role="button"][tabindex="0"]',
+    '[role="button"][aria-label]',
+]
+
 
 @dataclass
 class PhishkitConfig:
@@ -1473,6 +1484,107 @@ class Scanner:
                 return
             time.sleep(poll_interval)
 
+    def _locate_click_target(self, sb: SB, selectors: list) -> Optional[dict]:
+        """Find the first *visible* element matching any of ``selectors``.
+
+        Returns ``{"x", "y", "sel", "w", "h"}`` where (x, y) is the element's
+        on-screen center in viewport/CSS pixels (from ``getBoundingClientRect``),
+        or ``None`` if nothing visible matches. Used to locate a challenge
+        element by its stable DOM structure when the kit has randomized the
+        text/styling/scale that image and text matching rely on.
+        """
+        expression = """
+        (function (sels) {
+          for (var i = 0; i < sels.length; i++) {
+            var els = document.querySelectorAll(sels[i]);
+            for (var j = 0; j < els.length; j++) {
+              var el = els[j];
+              var r = el.getBoundingClientRect();
+              var visible = (typeof el.checkVisibility === 'function') ? el.checkVisibility() : true;
+              if (visible && r.width > 1 && r.height > 1 &&
+                  r.top < window.innerHeight && r.left < window.innerWidth &&
+                  r.bottom > 0 && r.right > 0) {
+                return {x: r.left + r.width / 2, y: r.top + r.height / 2,
+                        sel: sels[i], w: r.width, h: r.height};
+              }
+            }
+          }
+          return null;
+        })(%s);
+        """ % json.dumps(selectors)
+        try:
+            result = sb.execute_cdp_cmd("Runtime.evaluate", {
+                "expression": expression,
+                "returnByValue": True,
+            })
+        except Exception as e:
+            print(f"selector lookup failed: {e}")
+            return None
+        return result.get("result", {}).get("value")
+
+    def _human_click_at(self, sb: SB, x: int, y: int) -> bool:
+        """Click (x, y) — viewport/CSS pixels — the way a human would.
+
+        Moves the mouse toward the target with intermediate mousemove events
+        first (phishing pages flag clicks with no prior movement as bots), then
+        dispatches a CDP left click and waits up to 15s for the page to
+        navigate. Returns True if navigation was detected.
+
+        (x, y) are CSS/viewport pixels — the same space used by
+        ``getBoundingClientRect`` and CDP ``Input.dispatchMouseEvent`` — so this
+        is correct regardless of devicePixelRatio.
+        """
+        # Use CDP mouse events instead of pyautogui (which requires a display).
+        # Simulate mouse movement toward the target first — phishing pages track
+        # mousemove events and flag clicks with no prior movement as bots.
+        start_x = random.randint(100, 400)
+        start_y = random.randint(100, 400)
+        steps = 5
+        for i in range(steps):
+            frac = (i + 1) / steps
+            mx = int(start_x + (x - start_x) * frac)
+            my = int(start_y + (y - start_y) * frac)
+            sb.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                "type": "mouseMoved",
+                "x": mx,
+                "y": my,
+            })
+            time.sleep(0.05)
+        url_before = sb.cdp.get_current_url()
+        for event_type in ("mousePressed", "mouseReleased"):
+            sb.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                "type": event_type,
+                "x": x,
+                "y": y,
+                "button": "left",
+                "buttons": 1 if event_type == "mousePressed" else 0,
+                "clickCount": 1,
+            })
+        # Wait for the page to navigate after the click (some phishing
+        # pages show a "verifying" animation for 10+ seconds before
+        # redirecting to the credential-harvesting page). A 15s ceiling
+        # keeps total scan time within ACE's delay_analysis budget — if
+        # no navigation has happened by then, the site is almost always
+        # showing a second challenge on the same origin, so waiting
+        # longer burns budget without gaining anything.
+        max_wait = 15
+        poll_interval = 0.5
+        waited = 0.0
+        print(f"waiting up to {max_wait}s for navigation after click")
+        while waited < max_wait:
+            time.sleep(poll_interval)
+            waited += poll_interval
+            try:
+                url_now = sb.cdp.get_current_url()
+            except Exception:
+                continue
+            if url_now != url_before:
+                print(f"navigation detected after {waited:.1f}s: {url_now}")
+                self._wait_for_page_settle(sb)
+                return True
+        print(f"no navigation after {max_wait}s")
+        return False
+
     def visual_checkbox_bypass(self, sb: SB, config: dict):
         # This one is always changing and requires special handling: https://github.com/seleniumbase/SeleniumBase/issues/2842
         print("visual checkbox bypass handler")
@@ -1507,7 +1619,25 @@ class Scanner:
             screenshot.save(pre_bypass_path)
             print(f"saved pre-bypass screenshot to {pre_bypass_path} (size={screenshot.size})")
 
-            # Convert screenshot to grayscale numpy array for template matching
+            # Primary: locate the challenge element by its stable structural
+            # selector and human-click its on-screen center. Polymorphic kits
+            # randomize text/colors/classes/ids and even the rendered scale
+            # (which breaks the image and text matching below), but keep
+            # role=button/tabindex=0 so the selector survives across instances.
+            selectors = config.get("click_selectors", DEFAULT_CLICK_SELECTORS)
+            hit = self._locate_click_target(sb, selectors)
+            if hit:
+                print(
+                    f"selector match {hit['sel']} ({hit['w']:.0f}x{hit['h']:.0f}) "
+                    f"— clicking at ({hit['x']:.0f},{hit['y']:.0f})"
+                )
+                self._human_click_at(sb, int(hit["x"]), int(hit["y"]))
+                if enable_multi_click:
+                    continue
+                return
+
+            # Fallback: image template matching for challenges without a
+            # role=button structure. Convert screenshot to grayscale numpy array.
             screenshot_gray = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2GRAY)
 
             match_loc = None
@@ -1547,58 +1677,7 @@ class Scanner:
             x = match_loc[0] + match_size[0] // 2
             y = match_loc[1] + match_size[1] // 2
             print(f"Visual match — clicking checkbox at ({x},{y})")
-            # Use CDP mouse events instead of pyautogui (which requires a display).
-            # Coordinates from the CDP screenshot are already in viewport space.
-            # Simulate mouse movement toward the checkbox first — phishing pages
-            # track mousemove events and flag clicks with no prior movement as bots.
-            start_x = random.randint(100, 400)
-            start_y = random.randint(100, 400)
-            steps = 5
-            for i in range(steps):
-                frac = (i + 1) / steps
-                mx = int(start_x + (x - start_x) * frac)
-                my = int(start_y + (y - start_y) * frac)
-                sb.execute_cdp_cmd("Input.dispatchMouseEvent", {
-                    "type": "mouseMoved",
-                    "x": mx,
-                    "y": my,
-                })
-                time.sleep(0.05)
-            url_before = sb.cdp.get_current_url()
-            for event_type in ("mousePressed", "mouseReleased"):
-                sb.execute_cdp_cmd("Input.dispatchMouseEvent", {
-                    "type": event_type,
-                    "x": x,
-                    "y": y,
-                    "button": "left",
-                    "buttons": 1 if event_type == "mousePressed" else 0,
-                    "clickCount": 1,
-                })
-            # Wait for the page to navigate after the click (some phishing
-            # pages show a "verifying" animation for 10+ seconds before
-            # redirecting to the credential-harvesting page). A 15s ceiling
-            # keeps total scan time within ACE's delay_analysis budget — if
-            # no navigation has happened by then, the site is almost always
-            # showing a second challenge on the same origin, so waiting
-            # longer burns budget without gaining anything.
-            max_wait = 15
-            poll_interval = 0.5
-            waited = 0.0
-            print(f"waiting up to {max_wait}s for navigation after click")
-            while waited < max_wait:
-                time.sleep(poll_interval)
-                waited += poll_interval
-                try:
-                    url_now = sb.cdp.get_current_url()
-                except Exception:
-                    continue
-                if url_now != url_before:
-                    print(f"navigation detected after {waited:.1f}s: {url_now}")
-                    self._wait_for_page_settle(sb)
-                    break
-            else:
-                print(f"no navigation after {max_wait}s")
-
+            self._human_click_at(sb, x, y)
             matched_indices.add(match_idx)
 
         if enable_multi_click:
