@@ -3,12 +3,11 @@ from saq.remediation.target import ObservableRemediationInterface, register_obse
 from saq.observables.base import Observable
 from saq.constants import F_TEST
 
-import pytest
-
 from saq.remediation.types import RemediationWorkItem, RemediatorResult, RemediatorStatus
-pytestmark = pytest.mark.no_collect
 
 class TestObservableRemediationInterface(ObservableRemediationInterface):
+    __test__ = False # tell pytest this is not a test class
+
     def get_remediation_targets(self, observable: Observable) -> list[RemediationTarget]:
         return [RemediationTarget("test", observable.type, observable.value)]
 
@@ -16,6 +15,8 @@ register_observable_remediation_interface(F_TEST, TestObservableRemediationInter
 
 class TestRemediator(Remediator):
     """Simple test Remediator that returns a RemediatorResult with a value equal to the target value."""
+
+    __test__ = False # tell pytest this is not a test class
 
     def execute(self, target: RemediationWorkItem) -> RemediatorResult:
         try:
