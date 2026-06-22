@@ -3,7 +3,42 @@
 import pytest
 from sqlalchemy import text
 
-from aceapi_v2.database import POOL_RECYCLE_SECONDS, create_engine_for
+from aceapi_v2.database import POOL_RECYCLE_SECONDS, _get_engine, create_engine_for
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_engine_same_loop_returns_same_engine():
+    """repeated lookups within one event loop must return the identical engine
+
+    the engine is cached per running loop, so two calls on the same loop share a
+    pool rather than building a fresh engine each time."""
+    assert _get_engine() is _get_engine()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_engine_distinct_per_event_loop():
+    """each event loop must get its own engine/pool -- regression guard for the
+    cross-loop binding hazard
+
+    aiomysql connections are bound to the loop that created them, so a single
+    process-global engine shared between uvicorn's serving loop and sync.py's
+    background-thread loop would corrupt its pool. this drives _get_engine() from
+    the running test loop and from sync.py's background loop and asserts the two
+    engines (and their pools) are distinct objects."""
+    from aceapi_v2.sync import run_async
+
+    engine_this_loop = _get_engine()
+
+    async def _engine_on_background_loop():
+        return _get_engine()
+
+    # run_async runs the coroutine on sync.py's persistent background-thread loop
+    engine_background_loop = run_async(_engine_on_background_loop())
+
+    assert engine_this_loop is not engine_background_loop
+    assert engine_this_loop.sync_engine.pool is not engine_background_loop.sync_engine.pool
 
 
 @pytest.mark.unit

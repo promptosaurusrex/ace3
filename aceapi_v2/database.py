@@ -1,9 +1,12 @@
+import asyncio
 import logging
 import os
 import ssl
+import threading
 from collections.abc import AsyncGenerator
 from typing import Any
 from urllib.parse import quote_plus
+from weakref import WeakKeyDictionary
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -107,27 +110,43 @@ def create_engine_for(db_name: str = "ace") -> AsyncEngine:
     )
 
 
-# Lazy-initialized engine and session maker (config may not be loaded at module import time)
-_engine: AsyncEngine | None = None
-_async_session_maker: async_sessionmaker | None = None
+# Per-loop engine and session maker registries. aiomysql connections are bound to the
+# event loop that created them, so a single process-global engine would corrupt its pool
+# if more than one loop touched it (e.g. uvicorn's serving loop and the persistent
+# background loop in sync.py). keying the engine by the running loop makes cross-loop pool
+# reuse structurally impossible. WeakKeyDictionary so a loop that is garbage collected
+# drops its engine entry, avoiding unbounded growth. the lock guards the dicts because the
+# loops live in separate threads and can create entries concurrently. it is reentrant
+# because _get_session_maker calls _get_engine while holding the lock (same thread).
+#
+# the engine is also created lazily here (config may not be loaded at module import time).
+_engines: "WeakKeyDictionary[asyncio.AbstractEventLoop, AsyncEngine]" = WeakKeyDictionary()
+_session_makers: "WeakKeyDictionary[asyncio.AbstractEventLoop, async_sessionmaker]" = WeakKeyDictionary()
+_registry_lock = threading.RLock()
 
 
 def _get_engine() -> AsyncEngine:
-    """Get or create the async engine."""
-    global _engine
-    if _engine is None:
-        _engine = create_engine_for("ace")
-    return _engine
+    """get or create the async engine bound to the running event loop"""
+    loop = asyncio.get_running_loop()
+    with _registry_lock:
+        engine = _engines.get(loop)
+        if engine is None:
+            engine = create_engine_for("ace")
+            _engines[loop] = engine
+        return engine
 
 
 def _get_session_maker() -> async_sessionmaker:
-    """Get or create the async session maker."""
-    global _async_session_maker
-    if _async_session_maker is None:
-        _async_session_maker = async_sessionmaker[AsyncSession](
-            _get_engine(), class_=AsyncSession, expire_on_commit=False
-        )
-    return _async_session_maker
+    """get or create the async session maker bound to the running event loop"""
+    loop = asyncio.get_running_loop()
+    with _registry_lock:
+        maker = _session_makers.get(loop)
+        if maker is None:
+            maker = async_sessionmaker[AsyncSession](
+                _get_engine(), class_=AsyncSession, expire_on_commit=False
+            )
+            _session_makers[loop] = maker
+        return maker
 
 
 async def get_async_session() -> AsyncGenerator[AsyncSession]:
