@@ -4,7 +4,7 @@ from flask_login import current_user
 
 from app.filters import AutoTextFilter, BoolFilter, DateRangeFilter, MultiSelectFilter, SelectFilter, TextFilter, TypeValueFilter
 from saq.configuration.config import get_config
-from aceapi_v2.sync import run_async_with_session
+from aceapi_v2.sync import run_async
 from aceapi_v2.observable_types.service import get_observable_types
 from saq.constants import REMEDIATION_STATUS_GUI, VALID_DISPOSITIONS
 from saq.database.model import DispositionBy, Observable, Owner, RemediatedBy, Remediation, Tag
@@ -68,7 +68,7 @@ def create_filter(filter_name: str, inverted: bool):
         'Disposition By': SelectFilter(DispositionBy.display_name, nullable=True, inverted=inverted),
         'Disposition Date': DateRangeFilter(GUIAlert.disposition_time, inverted=inverted),
         'Event Date': DateRangeFilter(GUIAlert.event_time, inverted=inverted),
-        'Observable': TypeValueFilter(Observable.type, Observable.value, options=run_async_with_session(get_observable_types), inverted=inverted),
+        'Observable': TypeValueFilter(Observable.type, Observable.value, options=run_async(get_observable_types()), inverted=inverted),
         'Owner': SelectFilter(Owner.display_name, nullable=True, inverted=inverted),
         'Queue': SelectFilter(GUIAlert.queue, inverted=inverted),
         #'Remediated By': SelectFilter(RemediatedBy.display_name, nullable=True, inverted=inverted),
@@ -86,7 +86,7 @@ def getFilters():
         'Disposition By': SelectFilter(DispositionBy.display_name, nullable=True),
         'Disposition Date': DateRangeFilter(GUIAlert.disposition_time),
         'Event Date': DateRangeFilter(GUIAlert.event_time),
-        'Observable': TypeValueFilter(Observable.type, Observable.value, options=run_async_with_session(get_observable_types)),
+        'Observable': TypeValueFilter(Observable.type, Observable.value, options=run_async(get_observable_types())),
         'Owner': SelectFilter(Owner.display_name, nullable=True),
         'Queue': SelectFilter(GUIAlert.queue),
         #'Remediated By': SelectFilter(RemediatedBy.display_name, nullable=True),

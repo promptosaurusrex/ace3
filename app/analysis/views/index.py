@@ -30,7 +30,7 @@ from saq.remediation.timeline import gather_remediation_events
 from saq.clicker_detection.timeline import gather_clicker_events
 from saq.util.ui import create_histogram_string, get_tag_score
 from saq.util.url import find_all_url_domains
-from aceapi_v2.sync import run_async_with_session
+from aceapi_v2.sync import run_async, run_async_with_session
 from aceapi_v2.observable_comments.service import get_comments_for_observables, get_observable_db_ids
 from aceapi_v2.observable_types.service import get_observable_types
 
@@ -618,7 +618,7 @@ def index():
         observable_db_ids=observable_db_ids,
         interesting_observables=interesting_observables,
         interesting_observable_list=interesting_observable_list,
-        observable_types=run_async_with_session(get_observable_types),
+        observable_types=run_async(get_observable_types()),
         detection_chain_merged_tree=detection_chain_merged_tree,
         detection_chain_module_display_name=module_display_name,
         detection_chain_observable_display_value=observable_display_value,
