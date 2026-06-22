@@ -1,11 +1,14 @@
 """Tests for aceapi_v2 alerts router — bulk add observable endpoint."""
 
+import logging
 import zipfile
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
+
+from aceapi_v2.application import app
 
 pytestmark = pytest.mark.integration
 
@@ -542,6 +545,44 @@ class TestDownloadAlert:
         _wire_get_db(mock_get_db, alert)
         response = await client.get(f"/alerts/{VALID_UUID}/download")
         assert response.status_code == 500
+
+
+class TestUnhandledException:
+    """An unhandled exception in an endpoint should return a 500 and be logged
+    with a traceback through the application logger (not only uvicorn's stderr)."""
+
+    @pytest.mark.asyncio
+    @patch(
+        "aceapi_v2.alerts.service.create_encrypted_alert_zip",
+        side_effect=RuntimeError("boom"),
+    )
+    async def test_unhandled_exception_logged_and_returns_500(
+        self, mock_create_zip, _override_db_session, valid_access_token: str, caplog
+    ):
+        # starlette's ServerErrorMiddleware re-raises after building the response so
+        # the server can still log it; disable raise_app_exceptions so we can observe
+        # the 500 response the catch-all handler produced
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {valid_access_token}"},
+        ) as client:
+            with caplog.at_level(logging.ERROR, logger="aceapi_v2.application"):
+                response = await client.get(f"/alerts/{VALID_UUID}/download")
+
+        # the catch-all handler returns a consistent JSON 500 body
+        assert response.status_code == 500
+        assert response.json() == {"detail": "internal server error"}
+
+        # the exception was logged at ERROR with a traceback by the app handler
+        records = [
+            r for r in caplog.records if r.name == "aceapi_v2.application"
+        ]
+        assert records, "expected an aceapi_v2.application log record"
+        record = records[-1]
+        assert record.levelno == logging.ERROR
+        assert record.exc_info is None
 
 
 class TestViewAlertLogs:
