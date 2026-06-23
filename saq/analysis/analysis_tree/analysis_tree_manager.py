@@ -14,7 +14,7 @@ from saq.analysis.module_path import MODULE_PATH
 from saq.analysis.observable import Observable
 from saq.analysis.observable_registry import ObservableRegistry
 from saq.analysis.detection_point import DetectionPoint
-from saq.constants import EVENT_ANALYSIS_ADDED, EVENT_OBSERVABLE_ADDED
+from saq.constants import EVENT_ANALYSIS_ADDED, EVENT_ANALYSIS_DELETED, EVENT_OBSERVABLE_ADDED
 
 if TYPE_CHECKING:
     from saq.analysis.root import RootAnalysis
@@ -200,6 +200,74 @@ class AnalysisTreeManager:
         self.event_bus.fire_event(observable, EVENT_ANALYSIS_ADDED, analysis)
 
         return analysis
+
+    def delete_analysis(self, observable: Observable, analysis: Analysis) -> None:
+        """Deletes a single Analysis from this Observable and cleans up the state it owns.
+
+        unlike clear_analysis() (which wipes every analysis on one observable) this removes
+        just the one Analysis and recursively prunes the subtree it generated:
+
+        - any observable this analysis generated is removed from the registry if, once this
+          analysis is gone, no other analysis still references it and it did not come with
+          the original alert (recursing into the analysis on those orphaned observables)
+        - the external details file (.ace/*.json) of every removed analysis is deleted
+        - the backing file of any removed F_FILE observable is deleted
+
+        in-tree detection points disappear with the removed nodes; the detection_points
+        table is reconciled to the tree on the next Alert.sync()."""
+        from saq.observables import FileObservable
+
+        assert isinstance(observable, Observable)
+        assert isinstance(analysis, Analysis)
+
+        if observable._analysis.get(analysis.module_path) is not analysis:
+            logging.warning("delete_analysis called for %s which is not present on %s", analysis, observable)
+            return
+
+        # observables that came with the original alert are never removed from the registry
+        original_uuids = set(o.uuid for o in self.root_analysis.observables)
+
+        # analysis objects we unlink, so we can delete their external details files afterwards
+        removed_analysis: list[Analysis] = []
+
+        def remove_analysis_node(source_observable: Observable, target: Analysis):
+            # unlink first so the parent checks below observe the post-removal tree state
+            source_observable._analysis.pop(target.module_path, None)
+            removed_analysis.append(target)
+
+            for child in list(target.observables):
+                # keep observables that came with the alert
+                if child.uuid in original_uuids:
+                    continue
+
+                # keep observables that another analysis still references. the root analysis
+                # is deliberately excluded: its find searches the whole registry, so it
+                # "has" every observable and would make nothing look orphaned.
+                if any(a.has_observable(child) for a in self.all_non_root_analysis):
+                    continue
+
+                # prune the orphaned child: remove its own analysis first
+                for child_analysis in list(child.all_analysis):
+                    remove_analysis_node(child, child_analysis)
+
+                # drop dependency tracking that references the orphaned child
+                for dep in [d for d in self.dependency_manager.dependency_tracking
+                            if d.source_observable_id == child.uuid or d.target_observable_id == child.uuid]:
+                    self.dependency_manager.remove_dependency(dep)
+
+                # remove the backing file for file observables
+                if isinstance(child, FileObservable) and self.file_manager and child.exists:
+                    self.file_manager.delete_file(child.full_path)
+
+                self.observable_registry.remove(child.uuid)
+
+        remove_analysis_node(observable, analysis)
+
+        # delete the external details file for every analysis we unlinked
+        for removed in removed_analysis:
+            self.reset_analysis_details(removed)
+
+        self.event_bus.fire_event(observable, EVENT_ANALYSIS_DELETED, analysis)
 
     # persistence manager facade
     # ------------------------------------------------------------------------

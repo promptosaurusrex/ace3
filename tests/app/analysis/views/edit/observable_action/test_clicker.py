@@ -92,7 +92,6 @@ class TestCheckForClickers:
         obs = Mock()
         obs.type = F_URL
         obs.all_analysis = [prior, other]
-        obs._analysis = {prior.module_path: prior, other.module_path: other}
         mock_alert.root_analysis.get_observable.return_value = obs
         mock_get_alert.return_value = mock_alert
 
@@ -101,9 +100,8 @@ class TestCheckForClickers:
                                 data={"observable_uuid": "x", "alert_uuid": "y"})
 
         assert r.status_code == 200
-        # prior clicker analysis removed (forces re-run); unrelated analysis retained
-        assert prior.module_path not in obs._analysis
-        assert other.module_path in obs._analysis
+        # prior clicker analysis is deleted (forces re-run); unrelated analysis is left intact
+        obs.delete_analysis.assert_called_once_with(prior)
 
 
 @pytest.mark.integration

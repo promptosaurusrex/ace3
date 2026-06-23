@@ -62,12 +62,13 @@ def observable_action_check_for_clickers():
 
         # An analyst re-running this action wants a fresh check. The engine skips a module whose
         # completed analysis already exists (saq/modules/base_module.py accepts()), so drop any
-        # prior clicker-provider analyses to force a clean re-run that picks up new clicks. Removing
-        # the old analysis also removes its in-tree detection point, so re-detecting the same hit
-        # does not create a duplicate (the DB sync further de-dups by content_hash).
+        # prior clicker-provider analyses to force a clean re-run that picks up new clicks.
+        # delete_analysis also prunes the state the old analysis owned (its in-tree detection
+        # points, generated observables, and detail files); the following sync() reconciles the
+        # detection_points table to match, so stale hits do not linger.
         for existing in list(observable.all_analysis):
             if type(existing) in REGISTERED_CLICKER_PROVIDERS:
-                observable._analysis.pop(existing.module_path, None)
+                observable.delete_analysis(existing)
 
         # NOTE set the mode on root_analysis (what sync()/add_workload read), not on the Alert ORM
         # column — otherwise an already-dispositioned alert re-queues in 'dispositioned' mode, whose

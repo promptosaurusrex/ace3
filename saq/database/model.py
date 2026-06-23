@@ -910,9 +910,11 @@ class Alert(Base):
         db.commit()
 
     def _sync_detection_points(self, db, c):
-        """idempotently upserts this alert's detection points into the detection_points
-        table. keyed on the (alert_id, content_hash) unique constraint so repeated syncs
-        do not create duplicate rows and preserve the original insert_date. shares the
+        """reconciles this alert's detection points in the detection_points table so the
+        table matches the current analysis tree. existing rows are upserted keyed on the
+        (alert_id, content_hash) unique constraint (no duplicates, insert_date preserved),
+        and any row whose content_hash is no longer in the tree is deleted (so detections
+        removed via Observable.delete_analysis do not outlive the tree). shares the
         transaction with _rebuild_index (the caller commits)."""
         # all_detection_points already includes the root analysis's own detections
         # (all_analysis includes the root), so do NOT also add root.detections here.
@@ -921,8 +923,15 @@ class Alert(Base):
         for dp in self.root_analysis.all_detection_points:
             detection_points[dp.content_hash] = dp
 
+        # remove rows that no longer correspond to a detection in the tree
         if not detection_points:
+            c.execute("""DELETE FROM detection_points WHERE alert_id = %s""", (self.id,))
             return
+
+        placeholders = ','.join(['%s'] * len(detection_points))
+        c.execute(
+            f"""DELETE FROM detection_points WHERE alert_id = %s AND content_hash NOT IN ({placeholders})""",
+            (self.id, *detection_points.keys()))
 
         sql = """INSERT INTO detection_points
                     ( alert_id, description, details, queue, signature_uuid, signature_version, content_hash )
