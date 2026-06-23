@@ -3,7 +3,13 @@ from unittest.mock import Mock, patch
 import pytest
 from flask import url_for
 
-from saq.constants import DIRECTIVE_CLICKER_DETECTION, F_FQDN, F_IPV4, F_URL
+from saq.constants import (
+    ANALYSIS_MODE_CORRELATION,
+    DIRECTIVE_CLICKER_DETECTION,
+    F_FQDN,
+    F_IPV4,
+    F_URL,
+)
 from saq.gui.alert import GUIAlert
 
 ROUTE = "app.analysis.views.edit.observable_action.clicker"
@@ -48,6 +54,8 @@ class TestCheckForClickers:
                                          web_client, mock_alert):
         obs = Mock()
         obs.type = F_URL
+        obs.all_analysis = []
+        obs._analysis = {}
         mock_alert.root_analysis.get_observable.return_value = obs
         mock_get_alert.return_value = mock_alert
 
@@ -58,6 +66,44 @@ class TestCheckForClickers:
         obs.add_directive.assert_called_once_with(DIRECTIVE_CLICKER_DETECTION)
         mock_alert.sync.assert_called_once()
         mock_add_workload.assert_called_once()
+        # the requeue mode must be set on root_analysis (what add_workload reads), not the Alert
+        # ORM column -- otherwise a dispositioned alert re-queues in 'dispositioned' mode (no modules)
+        assert mock_alert.root_analysis.analysis_mode == ANALYSIS_MODE_CORRELATION
+
+    @patch(f"{ROUTE}.add_workload")
+    @patch(f"{ROUTE}.release_lock")
+    @patch(f"{ROUTE}.acquire_lock", return_value=True)
+    @patch(f"{ROUTE}.get_current_alert")
+    def test_removes_prior_clicker_analysis_to_force_rerun(self, mock_get_alert, _lock, _unlock,
+                                                           _add_workload, web_client, mock_alert):
+        """A repeat run must drop prior clicker-provider analyses so the searches re-run; other
+        analyses on the observable are left intact."""
+        class FakeClickerAnalysis:
+            pass
+
+        class OtherAnalysis:
+            pass
+
+        prior = FakeClickerAnalysis()
+        prior.module_path = "fake:FakeClickerAnalysis"
+        other = OtherAnalysis()
+        other.module_path = "other:OtherAnalysis"
+
+        obs = Mock()
+        obs.type = F_URL
+        obs.all_analysis = [prior, other]
+        obs._analysis = {prior.module_path: prior, other.module_path: other}
+        mock_alert.root_analysis.get_observable.return_value = obs
+        mock_get_alert.return_value = mock_alert
+
+        with patch(f"{ROUTE}.REGISTERED_CLICKER_PROVIDERS", [FakeClickerAnalysis]):
+            r = web_client.post(url_for("analysis.observable_action_check_for_clickers"),
+                                data={"observable_uuid": "x", "alert_uuid": "y"})
+
+        assert r.status_code == 200
+        # prior clicker analysis removed (forces re-run); unrelated analysis retained
+        assert prior.module_path not in obs._analysis
+        assert other.module_path in obs._analysis
 
 
 @pytest.mark.integration

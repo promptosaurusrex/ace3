@@ -97,16 +97,42 @@ def register_clicker_event_provider(analysis_class: type) -> None:
         REGISTERED_CLICKER_PROVIDERS.append(analysis_class)
 
 
-def gather_clicker_events(root: "RootAnalysis") -> list[ClickerEvent]:
-    """Collect every ClickerEvent for an alert, from all registered providers.
+@dataclass
+class ClickerResults:
+    """Aggregated state of clicker detection for an alert, for the URL Clicks view.
 
-    Returns events sorted by ``timestamp`` ascending; events lacking a timestamp sort
-    to the end.
+    Distinguishes "ran but found nothing" from "never ran": ``ran`` is True whenever a registered
+    clicker-provider analysis exists in the tree, regardless of how many events it produced. That
+    lets the UI render the URL Clicks card (so analysts can see the searches were performed and came
+    back clean) only when detection actually ran.
+    """
+
+    events: list[ClickerEvent] = field(default_factory=list)
+    """All ClickerEvents from all providers, sorted by timestamp ascending (None last)."""
+
+    ran: bool = False
+    """True if at least one registered clicker-provider analysis is present in the tree."""
+
+    errors: list[str] = field(default_factory=list)
+    """Per-source search error messages, so the UI can show 'a search errored' vs 'ran clean'."""
+
+
+def gather_clicker_results(root: "RootAnalysis") -> ClickerResults:
+    """Collect clicker detection state for an alert from all registered providers.
+
+    Returns a :class:`ClickerResults` with events sorted by ``timestamp`` ascending (events lacking
+    a timestamp sort to the end), whether any provider analysis ran, and any per-source errors.
     """
     events: list[ClickerEvent] = []
+    ran = False
+    errors: list[str] = []
 
     for provider_class in REGISTERED_CLICKER_PROVIDERS:
         for analysis in root.get_analysis_by_type(provider_class):
+            # The analysis exists, so detection ran for this observable — record that even if
+            # loading its details fails below.
+            ran = True
+
             loader = getattr(analysis, "load_details", None)
             if callable(loader):
                 try:
@@ -118,6 +144,15 @@ def gather_clicker_events(root: "RootAnalysis") -> list[ClickerEvent]:
                     )
                     report_exception()
                     continue
+
+            error_getter = getattr(analysis, "get_clicker_error", None)
+            if callable(error_getter):
+                try:
+                    error = error_getter()
+                except Exception:
+                    error = None
+                if error:
+                    errors.append(error)
 
             try:
                 produced = analysis.get_clicker_events() or []
@@ -147,4 +182,13 @@ def gather_clicker_events(root: "RootAnalysis") -> list[ClickerEvent]:
         return (0, e.timestamp)
 
     events.sort(key=_sort_key)
-    return events
+    return ClickerResults(events=events, ran=ran, errors=errors)
+
+
+def gather_clicker_events(root: "RootAnalysis") -> list[ClickerEvent]:
+    """Collect every ClickerEvent for an alert, from all registered providers.
+
+    Returns events sorted by ``timestamp`` ascending; events lacking a timestamp sort
+    to the end. Thin wrapper over :func:`gather_clicker_results` for callers that only need events.
+    """
+    return gather_clicker_results(root).events

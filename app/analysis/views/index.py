@@ -27,7 +27,7 @@ from saq.error.reporting import report_exception
 from saq.remediation.external.database import get_external_checks_for_alert
 from saq.remediation.external.events import summarize_alert_checks
 from saq.remediation.timeline import gather_remediation_events
-from saq.clicker_detection.timeline import gather_clicker_events
+from saq.clicker_detection.timeline import gather_clicker_results
 from saq.util.ui import create_histogram_string, get_tag_score
 from saq.util.url import find_all_url_domains
 from aceapi_v2.sync import run_async, run_async_with_session
@@ -558,10 +558,11 @@ def index():
         get_external_checks_for_alert(alert.uuid)
     )
 
-    # Aggregate URL-click events from any analysis in the tree that publishes them
+    # Aggregate URL-click state from any analysis in the tree that publishes it
     # (see saq/clicker_detection/timeline.py). The template renders an alert-level
-    # "URL Clicks" card when this list is non-empty.
-    url_clicks_events = gather_clicker_events(alert.root_analysis)
+    # "URL Clicks" card whenever detection ran (url_clicks.ran) — even with zero events —
+    # so analysts can see the searches were performed and came back clean.
+    url_clicks = gather_clicker_results(alert.root_analysis)
 
     import saq.constants
 
@@ -581,7 +582,9 @@ def index():
         target_types=target_types,
         remediation_timeline_events=remediation_timeline_events,
         external_check_footer=external_check_footer,
-        url_clicks_events=url_clicks_events,
+        url_clicks_events=url_clicks.events,
+        url_clicks_ran=url_clicks.ran,
+        url_clicks_errors=url_clicks.errors,
         alert_tags=alert_tags,
         observable=observable,
         observable_presenter=create_observable_presenter(observable) if observable else None,
