@@ -6,6 +6,7 @@ from saq.constants import F_IPV4, LockManagerType, WorkloadManagerType
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.worker import Worker
+from saq.environment import get_global_runtime_settings
 from saq.modules.base_module import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.util.time import local_time
@@ -325,3 +326,28 @@ class TestWorkerDelayedAnalysisFunctions:
         
         # Should be True since local_time() >= timeout (>= condition in the code)
         assert result is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("lock_manager_type", [LockManagerType.LOCAL, LockManagerType.DISTRIBUTED])
+def test_worker_lock_owner_is_node_prefixed(lock_manager_type):
+    """The worker lock_owner must start with this node's name so that
+    DistributedNodeManager.initialize_node() can clear leftover locks on restart
+    (it deletes locks WHERE lock_owner LIKE '<node_name>-%'). If the prefix is
+    missing, locks held at restart are orphaned until they expire."""
+    mock_config_manager = Mock(spec=ConfigurationManager)
+    mock_config_manager.config = Mock()
+    mock_config_manager.config.analysis_mode_priority = None
+    mock_config_manager.config.lock_manager_type = lock_manager_type
+    mock_config_manager.config.workload_manager_type = WorkloadManagerType.MEMORY
+    mock_config_manager.config.single_threaded_mode = True
+
+    worker = Worker(
+        name="email-0",
+        configuration_manager=mock_config_manager,
+        node_manager=Mock(spec=NodeManagerInterface),
+    )
+
+    saq_node = get_global_runtime_settings().saq_node
+    assert worker.lock_manager.lock_owner == f"{saq_node}-worker-email-0"
+    assert worker.lock_manager.lock_owner.startswith(f"{saq_node}-")

@@ -31,7 +31,7 @@ from saq.engine.workload_manager.adapter import WorkloadManagerAdapter
 from saq.engine.workload_manager.database import DatabaseWorkloadManager
 from saq.engine.workload_manager.interface import WorkloadManagerInterface
 from saq.engine.workload_manager.memory import MemoryWorkloadManager
-from saq.environment import get_data_dir
+from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.error.reporting import report_exception
 from saq.modules.interfaces import AnalysisModuleInterface
 
@@ -163,7 +163,9 @@ class Worker:
         return True
 
     def _create_lock_manager(self, lock_manager_type: LockManagerType):
-        lock_owner = f"worker-{self.name}"
+        # prefix with the node name so that DistributedNodeManager.initialize_node() can clear
+        # this node's leftover locks on restart (it matches lock_owner LIKE '<node_name>-%')
+        lock_owner = f"{get_global_runtime_settings().saq_node}-worker-{self.name}"
         if lock_manager_type == LockManagerType.LOCAL:
             return LockManagerAdapter(lock_manager=LocalLockManager(lock_owner=lock_owner))
         elif lock_manager_type == LockManagerType.DISTRIBUTED:
