@@ -7,7 +7,7 @@ import pytest
 from saq.analysis.analysis import Analysis, SummaryDetail
 from saq.analysis.root import RootAnalysis
 from saq.analysis.snapshot import ModuleExecutionSnapshot, _ObservableState
-from saq.constants import F_FILE, F_IPV4, F_FQDN, F_EMAIL_ADDRESS, R_EXTRACTED_FROM, R_IS_HASH_OF
+from saq.constants import F_FILE, F_IP, F_FQDN, F_EMAIL_ADDRESS, R_EXTRACTED_FROM, R_IS_HASH_OF
 from saq.modules.rdap import RdapAnalysis
 
 
@@ -35,7 +35,7 @@ class TestObservableStateCapture:
     @pytest.mark.unit
     def test_capture_empty_observable(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         state = _ObservableState.capture(obs)
 
         assert state.uuid == obs.uuid
@@ -52,7 +52,7 @@ class TestObservableStateCapture:
     @pytest.mark.unit
     def test_capture_observable_with_state(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         obs.add_tag("suspicious")
         obs.add_tag("malware")
         obs.add_directive("sandbox")
@@ -68,7 +68,7 @@ class TestNarrowSnapshot:
     @pytest.mark.unit
     def test_capture_and_diff_add_tag(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         module = _make_mock_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
@@ -86,7 +86,7 @@ class TestNarrowSnapshot:
     @pytest.mark.unit
     def test_diff_add_detection(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         module = _make_mock_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
@@ -102,7 +102,7 @@ class TestNarrowSnapshot:
     @pytest.mark.unit
     def test_diff_add_directive(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         module = _make_mock_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
@@ -115,7 +115,7 @@ class TestNarrowSnapshot:
     @pytest.mark.unit
     def test_diff_add_observable(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         module = _make_mock_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
@@ -135,7 +135,7 @@ class TestNarrowSnapshot:
         from datetime import datetime as _dt, UTC as _UTC
 
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         module = _make_mock_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
@@ -151,7 +151,7 @@ class TestNarrowSnapshot:
     @pytest.mark.unit
     def test_diff_add_observable_with_initial_state(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         module = _make_mock_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
@@ -174,7 +174,7 @@ class TestNarrowSnapshot:
         this, cache replay loses the exclusion and the module re-runs against
         its own children."""
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         module = _make_mock_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
@@ -230,7 +230,7 @@ class TestNarrowSnapshot:
     @pytest.mark.unit
     def test_diff_new_non_file_observable_has_no_file_path(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         module = _make_mock_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
@@ -246,7 +246,7 @@ class TestNarrowSnapshot:
     @pytest.mark.unit
     def test_diff_remove_tag(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         obs.add_tag("benign")
         module = _make_mock_module()
 
@@ -261,7 +261,7 @@ class TestNarrowSnapshot:
     @pytest.mark.unit
     def test_diff_no_changes(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         module = _make_mock_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
@@ -274,7 +274,7 @@ class TestNarrowSnapshot:
     @pytest.mark.unit
     def test_diff_root_tag(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         module = _make_mock_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
@@ -287,7 +287,7 @@ class TestNarrowSnapshot:
     @pytest.mark.unit
     def test_diff_scalar_transitions(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         module = _make_mock_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
@@ -302,7 +302,7 @@ class TestNarrowSnapshot:
     @pytest.mark.unit
     def test_diff_excluded_and_limited_analysis(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         module = _make_mock_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
@@ -319,7 +319,7 @@ class TestWideSnapshot:
     @pytest.mark.unit
     def test_wide_captures_other_observable_mutations(self, tmp_path):
         root = _make_root(tmp_path)
-        target_obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        target_obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         other_obs = root.add_observable_by_spec(F_FQDN, "example.com")
         module = _make_mock_module(wide_diff=True)
 
@@ -341,7 +341,7 @@ class TestWideSnapshot:
     @pytest.mark.unit
     def test_wide_does_not_include_empty_diffs(self, tmp_path):
         root = _make_root(tmp_path)
-        target_obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        target_obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         other_obs = root.add_observable_by_spec(F_FQDN, "example.com")
         module = _make_mock_module(wide_diff=True)
 
@@ -362,7 +362,7 @@ class TestAnalysisChildrenTracking:
         """Simulate the ignore action: remove an observable from a parent analysis's _observables."""
         root = _make_root(tmp_path)
         # Create observables
-        target_obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        target_obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         child_obs = root.add_observable_by_spec(F_EMAIL_ADDRESS, "victim@example.com")
 
         # Create an Analysis on target_obs that has child_obs as a child
@@ -389,7 +389,7 @@ class TestAnalysisChildrenTracking:
     def test_wide_captures_child_addition_to_analysis(self, tmp_path):
         """Track when a module adds an observable as a child of an existing analysis."""
         root = _make_root(tmp_path)
-        target_obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        target_obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         new_child = root.add_observable_by_spec(F_FQDN, "example.com")
 
         analysis = Analysis()
@@ -411,7 +411,7 @@ class TestAnalysisChildrenTracking:
     @pytest.mark.unit
     def test_no_analysis_children_diff_when_unchanged(self, tmp_path):
         root = _make_root(tmp_path)
-        target_obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        target_obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         child_obs = root.add_observable_by_spec(F_FQDN, "example.com")
 
         analysis = Analysis()
@@ -430,7 +430,7 @@ class TestAnalysisChildrenTracking:
     def test_narrow_does_not_track_analysis_children(self, tmp_path):
         """Narrow snapshots don't capture analysis children — only wide does."""
         root = _make_root(tmp_path)
-        target_obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        target_obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         child_obs = root.add_observable_by_spec(F_FQDN, "example.com")
 
         analysis = Analysis()
@@ -451,7 +451,7 @@ class TestDeltaModuleMetadata:
     @pytest.mark.unit
     def test_module_identity_captured(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         module = _make_mock_module(
             name="saq.modules.intel:ThreatIntel",
             instance="instance1",
@@ -466,7 +466,7 @@ class TestDeltaModuleMetadata:
         assert delta.module_instance == "instance1"
         assert delta.module_version == 3
         assert delta.observable_uuid == obs.uuid
-        assert delta.observable_type == F_IPV4
+        assert delta.observable_type == F_IP
         assert delta.observable_value == "10.0.0.1"
         assert delta.created_at is not None
 
@@ -507,7 +507,7 @@ class TestObservableDiffRemovals:
     @pytest.mark.unit
     def test_diff_removal_paths(self, tmp_path, setup, mutate, field_name, expected):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         setup(obs)
         module = _make_mock_module()
 
@@ -523,7 +523,7 @@ class TestObservableDiffRemovals:
     @pytest.mark.unit
     def test_diff_add_relationship(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         other = root.add_observable_by_spec(F_FQDN, "example.com")
         module = _make_mock_module()
 
@@ -545,7 +545,7 @@ class TestObservableDiffRemovals:
     @pytest.mark.unit
     def test_diff_add_relationship_with_timed_target(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         event_time = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
         other = root.add_observable_by_spec(F_FQDN, "timed.example.com", o_time=event_time)
         module = _make_mock_module()
@@ -562,7 +562,7 @@ class TestObservableDiffRemovals:
     @pytest.mark.unit
     def test_diff_remove_relationship(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         other = root.add_observable_by_spec(F_FQDN, "example.com")
         obs.add_relationship(R_IS_HASH_OF, other)
         module = _make_mock_module()
@@ -581,7 +581,7 @@ class TestObservableDiffRemovals:
     @pytest.mark.unit
     def test_diff_redirection_transition(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         module = _make_mock_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
@@ -601,7 +601,7 @@ class TestRootDiffPaths:
     @pytest.mark.unit
     def test_root_diff_remove_tag(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         root.add_tag("pending_review")
         module = _make_mock_module()
 
@@ -839,7 +839,7 @@ class TestDelayedAnalysisTransitions:
     @pytest.mark.unit
     def test_root_diff_add_detection(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         module = _make_mock_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
@@ -853,7 +853,7 @@ class TestDelayedAnalysisTransitions:
     @pytest.mark.unit
     def test_root_diff_remove_detection(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         root.add_detection_point("to be removed", details={"rule": "x"})
         module = _make_mock_module()
 
@@ -874,7 +874,7 @@ class TestSnapshotCaptureEdgeCases:
         """A pre-existing root detection is recorded in the baseline and not
         reported as added on a subsequent diff."""
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         root.add_detection_point("pre-existing", details={"k": "v"})
         module = _make_mock_module()
 
@@ -894,7 +894,7 @@ class TestSnapshotCaptureEdgeCases:
     def test_wide_captures_existing_root_detection(self, tmp_path):
         """Same as above but for wide() so the wide-path loop body runs."""
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         root.add_detection_point("pre-existing", details={"k": "v"})
         module = _make_mock_module(wide_diff=True)
 
@@ -914,7 +914,7 @@ class TestSnapshotCaptureEdgeCases:
         """An observable added between two wide snapshots is reported in
         new_observables but skipped in the other_observable_diffs loop."""
         root = _make_root(tmp_path)
-        target = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        target = root.add_observable_by_spec(F_IP, "10.0.0.1")
         existing = root.add_observable_by_spec(F_FQDN, "existing.example.com")
         module = _make_mock_module(wide_diff=True)
 
@@ -937,7 +937,7 @@ class TestAnalysisSerialization:
     @pytest.mark.unit
     def test_analysis_dict_captures_summary_and_external_details(self, tmp_path):
         root = _make_root(tmp_path)
-        target = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        target = root.add_observable_by_spec(F_IP, "10.0.0.1")
         # Bare Analysis() — its module_path resolves to
         # "saq.analysis.analysis:Analysis". Align the mock module's fallback
         # module-path so snapshot.diff picks up the new analysis key.

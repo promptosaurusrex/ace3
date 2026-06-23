@@ -89,7 +89,7 @@ def test_get_observable_remediation_targets_single_interface():
 @pytest.mark.unit
 def test_get_observable_remediation_targets_multiple_interfaces():
     """Test get_observable_remediation_targets with multiple registered interfaces."""
-    from saq.constants import F_IPV4
+    from saq.constants import F_IP
     from saq.observables.generator import create_observable
     from saq.remediation.target import get_observable_remediation_targets
 
@@ -108,11 +108,11 @@ def test_get_observable_remediation_targets_multiple_interfaces():
                 RemediationTarget("remediator4", observable.type, observable.value)
             ]
 
-    register_observable_remediation_interface(F_IPV4, _interface_one())
-    register_observable_remediation_interface(F_IPV4, _interface_two())
-    register_observable_remediation_interface(F_IPV4, _interface_three())
+    register_observable_remediation_interface(F_IP, _interface_one())
+    register_observable_remediation_interface(F_IP, _interface_two())
+    register_observable_remediation_interface(F_IP, _interface_three())
 
-    observable = create_observable(F_IPV4, "192.168.1.1")
+    observable = create_observable(F_IP, "192.168.1.1")
     targets = get_observable_remediation_targets(observable)
 
     assert len(targets) == 4

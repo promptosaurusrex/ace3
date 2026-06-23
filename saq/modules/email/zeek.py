@@ -4,7 +4,7 @@ import os
 import re
 import shutil
 from saq.analysis import Analysis
-from saq.constants import ANALYSIS_TYPE_BRO_SMTP, DIRECTIVE_ARCHIVE, DIRECTIVE_NO_SCAN, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_ORIGINAL_SMTP, F_EMAIL_ADDRESS, F_EMAIL_CONVERSATION, F_FILE, F_IPV4, create_email_conversation, AnalysisExecutionResult
+from saq.constants import ANALYSIS_TYPE_BRO_SMTP, DIRECTIVE_ARCHIVE, DIRECTIVE_NO_SCAN, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_ORIGINAL_SMTP, F_EMAIL_ADDRESS, F_EMAIL_CONVERSATION, F_FILE, F_IP, create_email_conversation, AnalysisExecutionResult
 from saq.environment import get_data_dir
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
@@ -170,7 +170,7 @@ class BroSMTPStreamAnalyzer(AnalysisModule):
                     self.get_root().description = 'BRO SMTP Scanner Detection - ' 
 
                     if source_ipv4:
-                        observable = analysis.add_observable_by_spec(F_IPV4, source_ipv4)
+                        observable = analysis.add_observable_by_spec(F_IP, source_ipv4)
                         if observable:
                             observable.display_type = "SMTP Source IP"
 

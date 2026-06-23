@@ -5,7 +5,7 @@ import pytz
 
 from saq.analysis.root import load_root
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_HTTP, ANALYSIS_TYPE_BRO_HTTP, EVENT_TIME_FORMAT_JSON_TZ, F_FILE, F_FQDN, F_IPV4, F_IPV4_CONVERSATION, F_URL
+from saq.constants import ANALYSIS_MODE_HTTP, ANALYSIS_TYPE_BRO_HTTP, EVENT_TIME_FORMAT_JSON_TZ, F_FILE, F_FQDN, F_IP, F_IP_CONVERSATION, F_URL
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode
@@ -26,9 +26,9 @@ def verify(root):
     assert len(root.details[HTTP_DETAILS_READY]) > 0
     assert len(root.details[HTTP_DETAILS_REQUEST]) > 0
     assert len(root.details[HTTP_DETAILS_REPLY]) > 0
-    assert root.find_observable(lambda o: o.type == F_IPV4 and o.value == '67.195.197.75')
-    assert root.find_observable(lambda o: o.type == F_IPV4 and o.value == '172.16.139.143')
-    assert root.find_observable(lambda o: o.type == F_IPV4_CONVERSATION and o.value == '172.16.139.143_67.195.197.75')
+    assert root.find_observable(lambda o: o.type == F_IP and o.value == '67.195.197.75')
+    assert root.find_observable(lambda o: o.type == F_IP and o.value == '172.16.139.143')
+    assert root.find_observable(lambda o: o.type == F_IP_CONVERSATION and o.value == '172.16.139.143_67.195.197.75')
     assert root.find_observable(lambda o: o.type == F_URL and o.value == 'http://www.pdf995.com/samples/pdf.pdf')
     assert root.find_observable(lambda o: o.type == F_FQDN and o.value == 'www.pdf995.com')
     assert root.find_observable(lambda o: o.type == F_FILE and o.file_name == 'CZZiJd1zicZKNMMrV1.0.ready')

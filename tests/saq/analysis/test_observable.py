@@ -4,7 +4,7 @@ import pytest
 import time
 
 from saq.configuration import get_config
-from saq.constants import DISPOSITION_DELIVERY, F_ASSET, F_EMAIL_ADDRESS, F_EMAIL_DELIVERY, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_FQDN, F_HOSTNAME, F_INDICATOR, F_IPV4, F_MAC_ADDRESS, F_MD5, F_MESSAGE_ID, F_SHA256, F_SNORT_SIGNATURE, F_TEST, F_URL, F_USER, F_YARA_RULE, create_email_delivery
+from saq.constants import DISPOSITION_DELIVERY, F_ASSET, F_EMAIL_ADDRESS, F_EMAIL_DELIVERY, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_FQDN, F_HOSTNAME, F_INDICATOR, F_IP, F_MAC_ADDRESS, F_MD5, F_MESSAGE_ID, F_SHA256, F_SNORT_SIGNATURE, F_TEST, F_URL, F_USER, F_YARA_RULE, create_email_delivery
 from saq.database import get_db
 from saq.observables import create_observable
 from tests.saq.helpers import create_root_analysis
@@ -135,7 +135,7 @@ EV_OBSERVABLE_VALUE_MAP = {
     F_FQDN: EV_OBSERVABLE_FQDN,
     F_HOSTNAME: EV_OBSERVABLE_HOSTNAME,
     F_INDICATOR: EV_OBSERVABLE_INDICATOR,
-    F_IPV4: EV_OBSERVABLE_IPV4,
+    F_IP: EV_OBSERVABLE_IPV4,
     F_MD5: EV_OBSERVABLE_MD5,
     F_SHA256: EV_OBSERVABLE_SHA256,
     F_URL: EV_OBSERVABLE_URL,
@@ -156,7 +156,7 @@ def test_add_observable():
 @pytest.mark.unit
 def test_add_invalid_observables():
     root = create_root_analysis()
-    observable = root.add_observable_by_spec(F_IPV4, '1.2.3.4.5')
+    observable = root.add_observable_by_spec(F_IP, '1.2.3.4.5')
     assert observable is None
     # XXX broken after upgrade
     #o = root.add_observable_by_spec(F_URL, '\xFF')
@@ -203,9 +203,11 @@ def test_file_type_observables():
 @pytest.mark.unit
 def test_ipv6_observable():
     root = create_root_analysis()
-    # this should not add an observable since this is an ipv6 address
-    observable = root.add_observable_by_spec(F_IPV4, '::1')
-    assert observable is None
+    # F_IP accepts ipv6 addresses (unlike the legacy F_IPV4 type)
+    observable = root.add_observable_by_spec(F_IP, '::1')
+    assert observable is not None
+    assert observable.type == F_IP
+    assert observable.value == '::1'
 
 @pytest.mark.unit
 def test_add_invalid_message_id():
@@ -243,7 +245,7 @@ def test_invalid_mac_observable():
 def test_display_added_time():
     """test that display_added_time renders in UTC with an explicit UTC suffix"""
     root = create_root_analysis()
-    observable = root.add_observable_by_spec(F_IPV4, '1.2.3.4')
+    observable = root.add_observable_by_spec(F_IP, '1.2.3.4')
     assert observable.display_added_time is None
 
     observable.added_time = datetime.datetime(2026, 6, 11, 9, 30, 0, tzinfo=datetime.UTC)
@@ -257,18 +259,18 @@ def test_display_added_time():
 def test_display_type_with_no_custom_display():
     """test that display_type returns the type when no custom display_type is set"""
     root = create_root_analysis()
-    observable = root.add_observable_by_spec(F_IPV4, '1.2.3.4')
-    assert observable.display_type == F_IPV4
+    observable = root.add_observable_by_spec(F_IP, '1.2.3.4')
+    assert observable.display_type == F_IP
     assert observable.display_type == observable.type
 
 @pytest.mark.unit
 def test_display_type_with_custom_display():
     """test that display_type returns custom display with type in parentheses when display_type is set"""
     root = create_root_analysis()
-    observable = root.add_observable_by_spec(F_IPV4, '1.2.3.4')
+    observable = root.add_observable_by_spec(F_IP, '1.2.3.4')
     observable.display_type = "Internal IP"
-    assert observable.display_type == f"Internal IP ({F_IPV4})"
-    assert observable.type == F_IPV4
+    assert observable.display_type == f"Internal IP ({F_IP})"
+    assert observable.type == F_IP
 
 @pytest.mark.unit
 def test_display_value_with_no_custom_display():

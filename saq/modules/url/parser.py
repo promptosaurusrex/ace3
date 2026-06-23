@@ -2,7 +2,7 @@ import logging
 from typing import Optional
 from urllib.parse import parse_qsl, unquote_plus
 from saq.analysis.analysis import Analysis
-from saq.constants import F_FQDN, F_IPV4, F_URI_PATH, F_URL, AnalysisExecutionResult
+from saq.constants import F_FQDN, F_IP, F_URI_PATH, F_URL, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.util.strings import format_item_list_for_summary
 
@@ -121,7 +121,7 @@ class ParseURLAnalyzer(AnalysisModule):
             analysis.params = {k: unquote_plus(v) for k, v in parse_qsl(url.split_value.query, keep_blank_values=True)}
 
             if url.is_netloc_ipv4:
-                ip_observable = analysis.add_observable_by_spec(F_IPV4, url.split_value.hostname)
+                ip_observable = analysis.add_observable_by_spec(F_IP, url.split_value.hostname)
                 if ip_observable:
                     ip_observable.add_tag('ip_in_url')
             elif url.is_netloc_valid_tld:

@@ -13,7 +13,7 @@ from datetime import datetime
 import ace_api
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_NO_SCAN, F_FILE, F_IPV4
+from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_NO_SCAN, F_FILE, F_IP
 from saq.database.pool import get_db_connection
 from saq.database.util.locking import acquire_lock
 from saq.environment import get_global_runtime_settings, get_temp_dir
@@ -475,7 +475,7 @@ def test_clear_invalid_lock_uuid(mock_api_call):
 def test_legacy_submit(mock_api_call):
     
     alert = ace_api.Alert(description='Test Alert')
-    alert.add_observable_by_spec(F_IPV4, '1.2.3.4', local_time(), directives=[DIRECTIVE_NO_SCAN])
+    alert.add_observable_by_spec(F_IP, '1.2.3.4', local_time(), directives=[DIRECTIVE_NO_SCAN])
     alert.add_tag('test')
     temp_path = os.path.join(get_temp_dir(), 'test.txt')
     with open(temp_path, 'w') as fp:
@@ -489,7 +489,7 @@ def test_legacy_submit(mock_api_call):
     root.load()
 
     assert root.description == 'Test Alert'
-    ipv4_observable = root.find_observable(lambda o: o.type == F_IPV4)
+    ipv4_observable = root.find_observable(lambda o: o.type == F_IP)
     assert ipv4_observable
     assert ipv4_observable.value == '1.2.3.4'
     assert ipv4_observable.has_directive(DIRECTIVE_NO_SCAN)
@@ -515,7 +515,7 @@ def test_legacy_failed_submit(api_server, tmpdir):
     stop_api_server(api_server)
 
     alert = ace_api.Alert(description='Test Alert')
-    alert.add_observable_by_spec(F_IPV4, '1.2.3.4', local_time(), directives=[DIRECTIVE_NO_SCAN])
+    alert.add_observable_by_spec(F_IP, '1.2.3.4', local_time(), directives=[DIRECTIVE_NO_SCAN])
     alert.add_tag('test')
     temp_path = os.path.join(get_temp_dir(), 'test.txt')
     with open(temp_path, 'w') as fp:
@@ -549,7 +549,7 @@ def test_failed_submit(api_server, tmpdir):
     stop_api_server(api_server)
 
     analysis = ace_api.Analysis(description='Test Analysis submit')
-    analysis.add_observable_by_spec(F_IPV4, '1.2.3.4', local_time(), directives=[DIRECTIVE_NO_SCAN])
+    analysis.add_observable_by_spec(F_IP, '1.2.3.4', local_time(), directives=[DIRECTIVE_NO_SCAN])
     analysis.add_tag('test')
     analysis.add_user('test_user')
     temp_path = os.path.join(get_temp_dir(), 'test.txt')
@@ -583,7 +583,7 @@ def test_submit_failed_alerts(api_server, tmpdir):
     stop_api_server(api_server)
 
     alert = ace_api.Alert(description='Test Alert')
-    alert.add_observable_by_spec(F_IPV4, '1.2.3.4', local_time(), directives=[DIRECTIVE_NO_SCAN])
+    alert.add_observable_by_spec(F_IP, '1.2.3.4', local_time(), directives=[DIRECTIVE_NO_SCAN])
     alert.add_tag('test')
     temp_path = os.path.join(get_temp_dir(), 'test.txt')
     with open(temp_path, 'w') as fp:
@@ -629,7 +629,7 @@ def test_submit_failed_analysis(api_server, tmpdir):
     stop_api_server(api_server)
 
     analysis = ace_api.Analysis(description='Test Analysis')
-    analysis.add_observable_by_spec(F_IPV4, '1.2.3.4', local_time(), directives=[DIRECTIVE_NO_SCAN])
+    analysis.add_observable_by_spec(F_IP, '1.2.3.4', local_time(), directives=[DIRECTIVE_NO_SCAN])
     analysis.add_tag('test')
     temp_path = os.path.join(get_temp_dir(), 'test.txt')
     with open(temp_path, 'w') as fp:

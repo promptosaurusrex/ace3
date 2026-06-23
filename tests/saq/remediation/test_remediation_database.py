@@ -1,6 +1,6 @@
 import pytest
 
-from saq.constants import F_TEST, F_IPV4, F_FQDN
+from saq.constants import F_TEST, F_IP, F_FQDN
 from saq.database.model import Remediation, RemediationHistory
 from saq.database.pool import get_db
 from saq.environment import get_global_runtime_settings
@@ -22,7 +22,7 @@ def test_get_remediation_history_empty():
 @pytest.mark.integration
 def test_get_remediation_history_single_entry():
     """Test get_remediation_history returns a single history entry."""
-    target = RemediationTarget("email_remediator", F_IPV4, "192.168.1.1")
+    target = RemediationTarget("email_remediator", F_IP, "192.168.1.1")
 
     # Create a remediation
     remediation = Remediation(
@@ -60,7 +60,7 @@ def test_get_remediation_history_single_entry():
 @pytest.mark.integration
 def test_get_remediation_history_multiple_entries():
     """Test get_remediation_history returns multiple history entries."""
-    target = RemediationTarget("firewall_remediator", F_IPV4, "10.0.0.5")
+    target = RemediationTarget("firewall_remediator", F_IP, "10.0.0.5")
 
     # Create a remediation
     remediation = Remediation(
@@ -220,10 +220,10 @@ def test_get_remediation_history_filter_by_remediator_name():
 @pytest.mark.integration
 def test_get_remediation_history_filter_by_observable_type():
     """Test get_remediation_history filters correctly by observable_type."""
-    # Create remediation with observable_type F_IPV4
+    # Create remediation with observable_type F_IP
     remediation_1 = Remediation(
         name="test_remediator",
-        type=F_IPV4,
+        type=F_IP,
         key="192.168.1.1",
         action=RemediationAction.REMOVE.value,
         user_id=get_global_runtime_settings().automation_user_id,
@@ -260,8 +260,8 @@ def test_get_remediation_history_filter_by_observable_type():
     get_db().add_all([history_1, history_2])
     get_db().commit()
 
-    # Query for F_IPV4 only
-    target = RemediationTarget("test_remediator", F_IPV4, "192.168.1.1")
+    # Query for F_IP only
+    target = RemediationTarget("test_remediator", F_IP, "192.168.1.1")
     history = get_remediation_history(target)
 
     assert len(history) == 1
