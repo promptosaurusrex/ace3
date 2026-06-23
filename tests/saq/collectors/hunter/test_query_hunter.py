@@ -23,7 +23,7 @@ from saq.constants import (
     ANALYSIS_MODE_HTTP,
     F_COMMAND_LINE,
     F_HOSTNAME,
-    F_IPV4,
+    F_IP,
     F_SIGNATURE_ID,
     R_EXECUTED_ON,
     R_RELATED_TO,
@@ -543,7 +543,7 @@ def test_process_query_results(monkeypatch):
         description="test instructions",
         playbook_url="http://playbook",
         observable_mapping=[
-            ObservableMapping(fields=["src"], type="ipv4")
+            ObservableMapping(fields=["src"], type="ip")
         ]
     )
 
@@ -581,7 +581,7 @@ def test_process_query_results(monkeypatch):
     for observable in submission.root.observables:
         if observable.type == F_SIGNATURE_ID:
             assert observable.value == hunt.uuid
-        elif observable.type == F_IPV4:
+        elif observable.type == F_IP:
             assert observable.value == "1.2.3.4"
             assert not observable.volatile
         else:
@@ -593,13 +593,13 @@ def test_process_query_results(monkeypatch):
 
     # test volatile observable
     hunt.config.observable_mapping = [
-        ObservableMapping(fields=["src"], type="ipv4", volatile=True)
+        ObservableMapping(fields=["src"], type="ip", volatile=True)
     ]
     submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
     assert submissions
     assert len(submissions) == 1
     submission = submissions[0]
-    ipv4_observable = next((o for o in submission.root.observables if o.type == F_IPV4), None)
+    ipv4_observable = next((o for o in submission.root.observables if o.type == F_IP), None)
     assert ipv4_observable is not None
     assert ipv4_observable.volatile
 
@@ -649,14 +649,14 @@ def test_process_query_results_templated_observable_type(monkeypatch):
         name="test_templated_type",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         observable_mapping=[
-            ObservableMapping(fields=["src"], type="{{ kind }}", fallback_type="ipv4")
+            ObservableMapping(fields=["src"], type="{{ kind }}", fallback_type="ip")
         ],
     )
 
     # rendered type is lowercased and resolved per event
-    submissions = hunt.process_query_results([{"src": "1.2.3.4", "kind": "IPV4"}])
+    submissions = hunt.process_query_results([{"src": "1.2.3.4", "kind": "IP"}])
     assert len(submissions) == 1
-    ipv4_observable = next((o for o in submissions[0].root.observables if o.type == F_IPV4), None)
+    ipv4_observable = next((o for o in submissions[0].root.observables if o.type == F_IP), None)
     assert ipv4_observable is not None
     assert ipv4_observable.value == "1.2.3.4"
 
@@ -668,19 +668,19 @@ def test_process_query_results_templated_observable_type(monkeypatch):
     # unknown rendered type falls back to fallback_type
     submissions = hunt.process_query_results([{"src": "1.2.3.4", "kind": "not_a_type"}])
     assert len(submissions) == 1
-    ipv4_observable = next((o for o in submissions[0].root.observables if o.type == F_IPV4), None)
+    ipv4_observable = next((o for o in submissions[0].root.observables if o.type == F_IP), None)
     assert ipv4_observable is not None
     assert ipv4_observable.value == "1.2.3.4"
 
     # per-event resolution: one batch can emit different observable types
     hunt.config.group_by = "ALL"
     submissions = hunt.process_query_results([
-        {"src": "1.2.3.4", "kind": "ipv4"},
+        {"src": "1.2.3.4", "kind": "ip"},
         {"src": "host.example.com", "kind": "hostname"},
     ])
     assert len(submissions) == 1
     types = {o.type for o in submissions[0].root.observables}
-    assert F_IPV4 in types
+    assert F_IP in types
     assert F_HOSTNAME in types
 
 
@@ -696,7 +696,7 @@ def test_group_value_attached_to_submission(monkeypatch):
         name="test_group_value",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="src",
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
     )
 
     submissions = hunt.process_query_results([
@@ -730,7 +730,7 @@ def test_per_group_suppression_filters_recurring_group(monkeypatch):
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         suppression="00:01:00",
         group_by="src",
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
     )
 
     # first run: 1.2.3.4 alerts
@@ -762,7 +762,7 @@ def test_per_group_suppression_does_not_block_other_groups(monkeypatch):
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         suppression="00:01:00",
         group_by="src",
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
     )
 
     hunt.set_last_alert_time(local_time(), "1.2.3.4")
@@ -789,7 +789,7 @@ def test_per_group_suppression_ignored_for_manual_hunt(monkeypatch, caplog):
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         suppression="00:01:00",
         group_by="src",
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
     )
     hunt.manual_hunt = True
 
@@ -821,7 +821,7 @@ def test_suppressed_property_false_when_group_by_set(monkeypatch):
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         suppression="01:00:00",
         group_by="src",
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
     )
 
     # write a recent hunt-level last_alert_time. for an ungrouped hunt this would mean
@@ -848,7 +848,7 @@ def test_process_query_results_captures_original_events(monkeypatch):
         name="no_correlate",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
     )
     assert hunt.original_query_results is None
     hunt.process_query_results([{"src": "1.2.3.4"}, {"src": "5.6.7.8"}])
@@ -868,7 +868,7 @@ def test_process_query_results_captures_original_events(monkeypatch):
         name="with_correlate",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
         correlate=correlate,
     )
 
@@ -967,8 +967,8 @@ def test_process_query_results_records_hunt_provenance(monkeypatch):
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
         observable_mapping=[
-            ObservableMapping(fields=["src"], type=F_IPV4),  # initial query -> step 0
-            ObservableMapping(fields=["correlate_logs.*.ip"], type=F_IPV4, field_lookup_type="dot"),      # -> step 1
+            ObservableMapping(fields=["src"], type=F_IP),  # initial query -> step 0
+            ObservableMapping(fields=["correlate_logs.*.ip"], type=F_IP, field_lookup_type="dot"),      # -> step 1
             ObservableMapping(fields=["correlate_logs.*.host"], type=F_HOSTNAME, field_lookup_type="dot"),  # -> step 1
         ],
         correlate=correlate,
@@ -997,8 +997,8 @@ def test_process_query_results_records_hunt_provenance(monkeypatch):
     uuid_by_spec = {(o.type, o.value): o.uuid for o in submission.root.observables}
     obs_map = provenance["observables"]
 
-    assert obs_map[uuid_by_spec[(F_IPV4, "1.2.3.4")]] == [0, 1]   # initial + correlated
-    assert obs_map[uuid_by_spec[(F_IPV4, "9.9.9.9")]] == [1]      # correlated only
+    assert obs_map[uuid_by_spec[(F_IP, "1.2.3.4")]] == [0, 1]   # initial + correlated
+    assert obs_map[uuid_by_spec[(F_IP, "9.9.9.9")]] == [1]      # correlated only
     assert obs_map[uuid_by_spec[(F_HOSTNAME, "host-a")]] == [1]
     assert obs_map[uuid_by_spec[(F_HOSTNAME, "host-b")]] == [1]
 
@@ -1018,7 +1018,7 @@ def test_process_query_results_no_provenance_without_correlate(monkeypatch):
         name="no_prov_hunt",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
-        observable_mapping=[ObservableMapping(fields=["src"], type=F_IPV4)],
+        observable_mapping=[ObservableMapping(fields=["src"], type=F_IP)],
     )
     submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
     assert len(submissions) == 1
@@ -1031,7 +1031,7 @@ def test_process_query_results_no_provenance_without_correlate(monkeypatch):
         name="no_correlate_check",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
     )
     no_correlate_subs = no_correlate_hunt.process_query_results([{"src": "1.2.3.4"}])
     assert no_correlate_subs
@@ -1053,7 +1053,7 @@ def test_process_query_results_captures_original_events_for_manual_non_correlate
         name="manual_no_correlate",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
     )
     hunt.manual_hunt = True
     assert hunt.original_query_results is None
@@ -1089,7 +1089,7 @@ def test_correlated_hunt_auto_tags_alert(monkeypatch):
         manager=MockManager(),
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
     )
 
     hunt = default_hunt(name="no_correlate_tag", **base_kwargs)
@@ -1136,7 +1136,7 @@ def test_correlation_trace_scoped_per_alert_no_grouping(monkeypatch):
         name="trace_per_alert",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
         correlate=correlate,
     )
 
@@ -1191,7 +1191,7 @@ def test_correlation_trace_scoped_per_alert_with_grouping(monkeypatch):
         name="trace_per_grouped_alert",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="msg_id",
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
         correlate=correlate,
     )
 
@@ -1242,7 +1242,7 @@ def test_hunt_metadata_name_renders_jinja(monkeypatch):
         manager=MockManager(),
         name='Foo{{- " BAR" if has_x | list | length > 0 else "" -}}',
         group_by=None,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
     )
 
     submissions = hunt.process_query_results([{"src": "1.2.3.4", "has_x": ["yes"]}])
@@ -1262,7 +1262,7 @@ def test_hunt_metadata_name_plain_name_unchanged(monkeypatch):
         manager=MockManager(),
         name="Plain Hunt Name",
         group_by=None,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
     )
 
     submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
@@ -1289,7 +1289,7 @@ def test_event_trace_events_position_indexes_into_alert_events(monkeypatch):
         name="events_position_no_group",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
         correlate=correlate,
     )
     submissions = hunt.process_query_results([
@@ -1312,7 +1312,7 @@ def test_event_trace_events_position_indexes_into_alert_events(monkeypatch):
         name="events_position_grouped",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="msg_id",
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
         correlate=correlate,
     )
     submissions2 = hunt2.process_query_results([
@@ -1364,7 +1364,7 @@ def test_event_summary_auto_derives_from_description_field_then_group_by(monkeyp
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="user",
         description_field="alert_title",
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
         correlate=correlate,
     )
 
@@ -1388,7 +1388,7 @@ def test_event_summary_auto_derives_from_description_field_then_group_by(monkeyp
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
         description_field="alert_title",
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
         correlate=correlate,
     )
     submissions2 = hunt2.process_query_results([
@@ -1406,7 +1406,7 @@ def test_event_summary_auto_derives_from_description_field_then_group_by(monkeyp
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="user",
         description_field="user",
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
         correlate=correlate,
     )
     submissions3 = hunt3.process_query_results([
@@ -1436,7 +1436,7 @@ def test_event_summary_includes_event_time_as_trailing_part(monkeypatch):
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="user",
         description_field=None,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
         correlate=correlate,
     )
 
@@ -1473,7 +1473,7 @@ def test_event_summary_includes_event_time_as_trailing_part(monkeypatch):
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
         description_field=None,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
         correlate=correlate,
     )
     subs2 = hunt_no_time.process_query_results([{"src": "2.2.2.2"}])
@@ -1509,7 +1509,7 @@ def test_event_summary_dedupes_substrings_case_insensitive(monkeypatch):
         group_by="userPrincipalName",
         description_field="alert_title",
         observable_mapping=[
-            ObservableMapping(fields=["ip"], type="ipv4"),
+            ObservableMapping(fields=["ip"], type="ip"),
             ObservableMapping(fields=["email"], type="email_address"),
         ],
         correlate=correlate,
@@ -1582,7 +1582,7 @@ def test_grouped_alert_includes_filtered_events_with_matching_group_value(monkey
         name="trace_filters_attached_grouped",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="msg_id",
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
         correlate=correlate,
     )
 
@@ -1645,7 +1645,7 @@ def test_grouped_alert_includes_stop_outcome_events(monkeypatch):
         name="trace_stop_attached_grouped",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="msg_id",
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
         correlate=correlate,
     )
     # The stop action breaks the engine loop entirely — once tripped, no later
@@ -1683,7 +1683,7 @@ def test_group_by_all_attaches_every_filtered_event(monkeypatch):
         name="trace_group_by_all",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="ALL",
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
         correlate=correlate,
     )
     submissions = hunt.process_query_results([
@@ -1720,7 +1720,7 @@ def test_correlation_trace_filtered_event_not_attached_to_other_alerts(monkeypat
         name="trace_filters_excluded",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
         correlate=correlate,
     )
 
@@ -2224,7 +2224,7 @@ def test_process_query_results_skips_unresolved_interpolated_tags(monkeypatch, t
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         tags=["mitre:{{ mitre_technique }}", "static_tag"],
         observable_mapping=[
-            ObservableMapping(fields=["src"], type="ipv4")
+            ObservableMapping(fields=["src"], type="ip")
         ]
     )
 
@@ -2346,7 +2346,7 @@ def test_process_query_results_with_ignored_values(monkeypatch, tmpdir):
         observable_mapping=[
             ObservableMapping(
                 fields=["src_ip"],
-                type="ipv4",
+                type="ip",
                 ignored_values=[r"0\.0\.0\.0", r"127\.0\.0\.1"]
             )
         ]
@@ -2359,7 +2359,7 @@ def test_process_query_results_with_ignored_values(monkeypatch, tmpdir):
     submission = submissions[0]
 
     # should only have F_SIGNATURE_ID observable, no ipv4 observable
-    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submission.root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 0
 
     # test with another ignored value
@@ -2368,7 +2368,7 @@ def test_process_query_results_with_ignored_values(monkeypatch, tmpdir):
     assert len(submissions) == 1
     submission = submissions[0]
 
-    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submission.root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 0
 
     # test with a value that should NOT be ignored
@@ -2377,7 +2377,7 @@ def test_process_query_results_with_ignored_values(monkeypatch, tmpdir):
     assert len(submissions) == 1
     submission = submissions[0]
 
-    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submission.root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 1
     assert ipv4_observables[0].value == "1.2.3.4"
 
@@ -2397,7 +2397,7 @@ def test_process_query_results_with_ignored_values_multiple_events(monkeypatch, 
         observable_mapping=[
             ObservableMapping(
                 fields=["src_ip"],
-                type="ipv4",
+                type="ip",
                 ignored_values=[r"0\.0\.0\.0"]
             )
         ]
@@ -2412,15 +2412,15 @@ def test_process_query_results_with_ignored_values_multiple_events(monkeypatch, 
     assert len(submissions) == 3
 
     # first submission should have no ipv4 observable (ignored)
-    ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 0
 
     # second and third submissions should have ipv4 observables
-    ipv4_observables = [o for o in submissions[1].root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submissions[1].root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 1
     assert ipv4_observables[0].value == "1.2.3.4"
 
-    ipv4_observables = [o for o in submissions[2].root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submissions[2].root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 1
     assert ipv4_observables[0].value == "5.6.7.8"
 
@@ -2440,7 +2440,7 @@ def test_process_query_results_with_display_type_and_value(monkeypatch, tmpdir):
         observable_mapping=[
             ObservableMapping(
                 fields=["src_ip"],
-                type="ipv4",
+                type="ip",
                 display_type="source_address",
                 display_value="Source IP Address"
             )
@@ -2452,12 +2452,12 @@ def test_process_query_results_with_display_type_and_value(monkeypatch, tmpdir):
     assert len(submissions) == 1
     submission = submissions[0]
 
-    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submission.root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 1
     ipv4_obs = ipv4_observables[0]
 
     # display_type getter appends the actual type in parentheses
-    assert ipv4_obs.display_type == "source_address (ipv4)"
+    assert ipv4_obs.display_type == "source_address (ip)"
     # display_value getter appends the actual value in parentheses
     assert ipv4_obs.display_value == "Source IP Address (1.2.3.4)"
 
@@ -2477,7 +2477,7 @@ def test_process_query_results_with_display_type_only(monkeypatch, tmpdir):
         observable_mapping=[
             ObservableMapping(
                 fields=["src_ip"],
-                type="ipv4",
+                type="ip",
                 display_type="source_ip"
             )
         ]
@@ -2488,12 +2488,12 @@ def test_process_query_results_with_display_type_only(monkeypatch, tmpdir):
     assert len(submissions) == 1
     submission = submissions[0]
 
-    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submission.root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 1
     ipv4_obs = ipv4_observables[0]
 
     # display_type getter appends the actual type in parentheses
-    assert ipv4_obs.display_type == "source_ip (ipv4)"
+    assert ipv4_obs.display_type == "source_ip (ip)"
     # display_value getter returns the actual value when _display_value is None
     assert ipv4_obs.display_value == "1.2.3.4"
 
@@ -2513,7 +2513,7 @@ def test_process_query_results_with_display_value_only(monkeypatch, tmpdir):
         observable_mapping=[
             ObservableMapping(
                 fields=["src_ip"],
-                type="ipv4",
+                type="ip",
                 display_value="Custom IP Display"
             )
         ]
@@ -2524,12 +2524,12 @@ def test_process_query_results_with_display_value_only(monkeypatch, tmpdir):
     assert len(submissions) == 1
     submission = submissions[0]
 
-    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submission.root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 1
     ipv4_obs = ipv4_observables[0]
 
     # display_type getter returns the actual type when _display_type is None
-    assert ipv4_obs.display_type == "ipv4"
+    assert ipv4_obs.display_type == "ip"
     # display_value getter appends the actual value in parentheses
     assert ipv4_obs.display_value == "Custom IP Display (1.2.3.4)"
 
@@ -2657,7 +2657,7 @@ def test_process_query_results_with_ignored_values_empty_list(monkeypatch, tmpdi
         observable_mapping=[
             ObservableMapping(
                 fields=["src_ip"],
-                type="ipv4",
+                type="ip",
                 ignored_values=[]
             )
         ]
@@ -2669,7 +2669,7 @@ def test_process_query_results_with_ignored_values_empty_list(monkeypatch, tmpdi
     assert len(submissions) == 1
     submission = submissions[0]
 
-    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submission.root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 1
     assert ipv4_observables[0].value == "0.0.0.0"
 
@@ -2689,7 +2689,7 @@ def test_process_query_results_with_ignored_values_regex(monkeypatch, tmpdir):
         observable_mapping=[
             ObservableMapping(
                 fields=["src_ip"],
-                type="ipv4",
+                type="ip",
                 ignored_values=[r"10\.0\..*"]
             )
         ]
@@ -2698,19 +2698,19 @@ def test_process_query_results_with_ignored_values_regex(monkeypatch, tmpdir):
     # 10.0.1.1 should be ignored by the regex pattern
     submissions = hunt.process_query_results([{"src_ip": "10.0.1.1"}])
     assert submissions
-    ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 0
 
     # 10.0.255.3 should also be ignored
     submissions = hunt.process_query_results([{"src_ip": "10.0.255.3"}])
     assert submissions
-    ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 0
 
     # 192.168.1.1 should NOT be ignored
     submissions = hunt.process_query_results([{"src_ip": "192.168.1.1"}])
     assert submissions
-    ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 1
     assert ipv4_observables[0].value == "192.168.1.1"
 
@@ -2921,7 +2921,7 @@ def test_process_query_results_with_multiple_relationships(monkeypatch):
             ),
             ObservableMapping(
                 fields=["src_ip"],
-                type=F_IPV4,
+                type=F_IP,
             ),
             # source observable with multiple relationships
             ObservableMapping(
@@ -2938,7 +2938,7 @@ def test_process_query_results_with_multiple_relationships(monkeypatch):
                     RelationshipMapping(
                         type=R_RELATED_TO,
                         target=RelationshipMappingTarget(
-                            type=F_IPV4,
+                            type=F_IP,
                             value="{{ src_ip }}"
                         )
                     ),
@@ -2972,7 +2972,7 @@ def test_process_query_results_with_multiple_relationships(monkeypatch):
     # check for related_to relationship to ipv4
     related_to_rel = next((r for r in cmdline_observable.relationships if r.r_type == R_RELATED_TO), None)
     assert related_to_rel is not None
-    assert related_to_rel.target.type == F_IPV4
+    assert related_to_rel.target.type == F_IP
     assert related_to_rel.target.value == "192.168.1.100"
 
 
@@ -3087,7 +3087,7 @@ def test_process_query_results_with_relationship_static_target_value(monkeypatch
             # target observable with static value
             ObservableMapping(
                 fields=["src_ip"],
-                type=F_IPV4,
+                type=F_IP,
                 value="10.0.0.1"  # static value
             ),
             # source observable with relationship to static target
@@ -3098,7 +3098,7 @@ def test_process_query_results_with_relationship_static_target_value(monkeypatch
                     RelationshipMapping(
                         type=R_RELATED_TO,
                         target=RelationshipMappingTarget(
-                            type=F_IPV4,
+                            type=F_IP,
                             value="10.0.0.1"  # static value matching target
                         )
                     )
@@ -3120,7 +3120,7 @@ def test_process_query_results_with_relationship_static_target_value(monkeypatch
     assert cmdline_observable is not None
 
     # find the ipv4 observable
-    ipv4_observable = next((o for o in submission.root.observables if o.type == F_IPV4), None)
+    ipv4_observable = next((o for o in submission.root.observables if o.type == F_IP), None)
     assert ipv4_observable is not None
     assert ipv4_observable.value == "10.0.0.1"
 
@@ -3145,7 +3145,7 @@ def test_description_field_with_grouping(monkeypatch):
         description_field="alert_title",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         observable_mapping=[
-            ObservableMapping(fields=["src"], type="ipv4")
+            ObservableMapping(fields=["src"], type="ip")
         ]
     )
 
@@ -3177,7 +3177,7 @@ def test_description_field_ungrouped(monkeypatch):
         description_field="alert_title",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         observable_mapping=[
-            ObservableMapping(fields=["src"], type="ipv4")
+            ObservableMapping(fields=["src"], type="ip")
         ]
     )
 
@@ -3202,7 +3202,7 @@ def test_description_field_fallback_when_missing(monkeypatch):
         description_field="alert_title",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         observable_mapping=[
-            ObservableMapping(fields=["src"], type="ipv4")
+            ObservableMapping(fields=["src"], type="ip")
         ]
     )
 
@@ -3229,7 +3229,7 @@ def test_description_field_ignored_for_group_all(monkeypatch):
         description_field="alert_title",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         observable_mapping=[
-            ObservableMapping(fields=["src"], type="ipv4")
+            ObservableMapping(fields=["src"], type="ip")
         ]
     )
 
@@ -3256,7 +3256,7 @@ def test_description_field_backward_compat(monkeypatch):
         description_field=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         observable_mapping=[
-            ObservableMapping(fields=["src"], type="ipv4")
+            ObservableMapping(fields=["src"], type="ip")
         ]
     )
 
@@ -3284,7 +3284,7 @@ def test_fields_mode_any_creates_separate_observables(monkeypatch):
         observable_mapping=[
             ObservableMapping(
                 fields=["src_ip", "dst_ip"],
-                type="ipv4",
+                type="ip",
                 fields_mode=FieldsMode.ANY,
             )
         ]
@@ -3295,7 +3295,7 @@ def test_fields_mode_any_creates_separate_observables(monkeypatch):
     assert len(submissions) == 1
     submission = submissions[0]
 
-    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submission.root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 2
     values = sorted([o.value for o in ipv4_observables])
     assert values == ["1.2.3.4", "5.6.7.8"]
@@ -3316,7 +3316,7 @@ def test_fields_mode_any_partial_fields(monkeypatch):
         observable_mapping=[
             ObservableMapping(
                 fields=["src_ip", "dst_ip"],
-                type="ipv4",
+                type="ip",
                 fields_mode=FieldsMode.ANY,
             )
         ]
@@ -3328,7 +3328,7 @@ def test_fields_mode_any_partial_fields(monkeypatch):
     assert len(submissions) == 1
     submission = submissions[0]
 
-    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submission.root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 1
     assert ipv4_observables[0].value == "1.2.3.4"
 
@@ -3348,7 +3348,7 @@ def test_fields_mode_any_no_fields_present(monkeypatch):
         observable_mapping=[
             ObservableMapping(
                 fields=["src_ip", "dst_ip"],
-                type="ipv4",
+                type="ip",
                 fields_mode=FieldsMode.ANY,
             )
         ]
@@ -3359,7 +3359,7 @@ def test_fields_mode_any_no_fields_present(monkeypatch):
     assert len(submissions) == 1
     submission = submissions[0]
 
-    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submission.root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 0
 
 
@@ -3371,7 +3371,7 @@ def test_fields_mode_any_with_value_raises_error():
     with pytest.raises(ValidationError, match="fields_mode='any' cannot be used with a custom 'value' template"):
         ObservableMapping(
             fields=["src_ip", "dst_ip"],
-            type="ipv4",
+            type="ip",
             fields_mode=FieldsMode.ANY,
             value="{{ src_ip }}:{{ dst_ip }}"
         )
@@ -3392,7 +3392,7 @@ def test_fields_mode_any_with_ignored_values(monkeypatch):
         observable_mapping=[
             ObservableMapping(
                 fields=["src_ip", "dst_ip"],
-                type="ipv4",
+                type="ip",
                 fields_mode=FieldsMode.ANY,
                 ignored_values=[r"0\.0\.0\.0"]
             )
@@ -3404,7 +3404,7 @@ def test_fields_mode_any_with_ignored_values(monkeypatch):
     assert len(submissions) == 1
     submission = submissions[0]
 
-    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submission.root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 1
     assert ipv4_observables[0].value == "5.6.7.8"
 
@@ -3424,7 +3424,7 @@ def test_fields_mode_any_deduplicates(monkeypatch):
         observable_mapping=[
             ObservableMapping(
                 fields=["src_ip", "dst_ip"],
-                type="ipv4",
+                type="ip",
                 fields_mode=FieldsMode.ANY,
             )
         ]
@@ -3436,7 +3436,7 @@ def test_fields_mode_any_deduplicates(monkeypatch):
     assert len(submissions) == 1
     submission = submissions[0]
 
-    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submission.root.observables if o.type == F_IP]
     # should deduplicate to one observable (create_observable returns same object for same type+value)
     assert len(ipv4_observables) == 1
     assert ipv4_observables[0].value == "1.2.3.4"
@@ -3457,7 +3457,7 @@ def test_fields_mode_all_explicit(monkeypatch):
         observable_mapping=[
             ObservableMapping(
                 fields=["src_ip", "dst_ip"],
-                type="ipv4",
+                type="ip",
                 fields_mode=FieldsMode.ALL,
                 value="{{ src_ip }}"
             )
@@ -3468,7 +3468,7 @@ def test_fields_mode_all_explicit(monkeypatch):
     submissions = hunt.process_query_results([{"src_ip": "1.2.3.4", "dst_ip": "5.6.7.8"}])
     assert submissions
     assert len(submissions) == 1
-    ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 1
     assert ipv4_observables[0].value == "1.2.3.4"
 
@@ -3476,7 +3476,7 @@ def test_fields_mode_all_explicit(monkeypatch):
     submissions = hunt.process_query_results([{"src_ip": "1.2.3.4"}])
     assert submissions
     assert len(submissions) == 1
-    ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IPV4]
+    ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 0
 
 
@@ -3504,7 +3504,7 @@ def test_process_query_results_with_relationship_missing_field(monkeypatch, capl
                     RelationshipMapping(
                         type=R_EXECUTED_ON,
                         target=RelationshipMappingTarget(
-                            type=F_IPV4,
+                            type=F_IP,
                             value="{{ src_ip }}"  # src_ip is NOT in the event
                         )
                     )
@@ -3691,7 +3691,7 @@ def test_dedup_key_ungrouped(monkeypatch):
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         observable_mapping=[
-            ObservableMapping(fields=["src"], type="ipv4")
+            ObservableMapping(fields=["src"], type="ip")
         ],
         dedup_key="{{ correlationId }}",
     )
@@ -3715,7 +3715,7 @@ def test_dedup_key_ungrouped_composite(monkeypatch):
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         observable_mapping=[
-            ObservableMapping(fields=["src"], type="ipv4")
+            ObservableMapping(fields=["src"], type="ip")
         ],
         dedup_key="{{ user }}-{{ src_ip }}",
     )
@@ -3739,7 +3739,7 @@ def test_dedup_key_grouped(monkeypatch):
         group_by="id",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         observable_mapping=[
-            ObservableMapping(fields=["src"], type="ipv4")
+            ObservableMapping(fields=["src"], type="ip")
         ],
         dedup_key="{{ id }}",
     )
@@ -3769,7 +3769,7 @@ def test_dedup_key_none_when_not_set(monkeypatch):
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         observable_mapping=[
-            ObservableMapping(fields=["src"], type="ipv4")
+            ObservableMapping(fields=["src"], type="ip")
         ],
     )
 
@@ -3792,7 +3792,7 @@ def test_dedup_key_includes_hunt_uuid_prefix(monkeypatch):
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         observable_mapping=[
-            ObservableMapping(fields=["src"], type="ipv4")
+            ObservableMapping(fields=["src"], type="ip")
         ],
         dedup_key="{{ id }}",
     )
@@ -3818,7 +3818,7 @@ def test_dedup_key_missing_field_returns_none(monkeypatch):
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         observable_mapping=[
-            ObservableMapping(fields=["src"], type="ipv4")
+            ObservableMapping(fields=["src"], type="ip")
         ],
         dedup_key="{{ nonexistent_field }}",
     )
@@ -4559,7 +4559,7 @@ def test_name_jinja_plain_name_unchanged(monkeypatch):
         name="static name",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
     )
 
     submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
@@ -4578,7 +4578,7 @@ def test_name_jinja_per_event_no_group(monkeypatch):
         name="dns lookup of {{ query }} from {{ src }}",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
     )
 
     submissions = hunt.process_query_results([
@@ -4604,7 +4604,7 @@ def test_name_jinja_with_group_by_field(monkeypatch):
         name="lookup of {{ query }}",
         group_by="src",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
     )
 
     submissions = hunt.process_query_results([
@@ -4631,7 +4631,7 @@ def test_name_jinja_with_group_by_all(monkeypatch):
         name="hunt for {{ tag }}",
         group_by="ALL",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
     )
 
     submissions = hunt.process_query_results([
@@ -4654,7 +4654,7 @@ def test_name_jinja_with_description_field(monkeypatch):
         group_by=None,
         description_field="alert_title",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
     )
 
     submissions = hunt.process_query_results([
@@ -4675,7 +4675,7 @@ def test_name_jinja_missing_field_renders_empty(monkeypatch):
         name="lookup of [{{ no_such_field }}] from {{ src }}",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
     )
 
     submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
@@ -4695,7 +4695,7 @@ def test_name_jinja_syntax_error_falls_back_to_raw(monkeypatch, caplog):
         name=raw_name,
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
     )
 
     with caplog.at_level(logging.WARNING):
@@ -4717,7 +4717,7 @@ def test_name_jinja_signature_id_display_value_matches(monkeypatch):
         name="hunt for {{ src }}",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
     )
 
     submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
@@ -4870,7 +4870,7 @@ def test_process_query_results_correlate_capture_and_replay(monkeypatch):
             name="capture",
             analysis_mode=ANALYSIS_MODE_CORRELATION,
             group_by=None,
-            observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+            observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
             correlate=correlate,
         )
         hunt.process_query_results([dict(e) for e in input_events])
@@ -4892,7 +4892,7 @@ def test_process_query_results_correlate_capture_and_replay(monkeypatch):
             name="replay",
             analysis_mode=ANALYSIS_MODE_CORRELATION,
             group_by=None,
-            observable_mapping=[ObservableMapping(fields=["src"], type="ipv4")],
+            observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
             correlate=correlate,
         )
         hunt2._correlate_replay_results = captured["queries"]

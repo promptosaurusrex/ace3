@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from saq.analysis import RootAnalysis
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_SPLUNK_API, F_EMAIL_SUBJECT, F_IPV4
+from saq.constants import ANALYSIS_MODULE_SPLUNK_API, F_EMAIL_SUBJECT, F_IP
 from saq.modules.api_analysis import AnalysisDelay
 from saq.modules.splunk import (
     SplunkAPIAnalysis,
@@ -248,7 +248,7 @@ def test_extract_result_observables_with_tags(test_context):
 
         # Create a mock analysis
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
 
         # Mock result from Splunk
@@ -295,7 +295,7 @@ def test_extract_result_observables_multiple_fields(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
 
         # All fields present - first field's value is used
@@ -335,7 +335,7 @@ def test_extract_result_observables_ignored_values(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
 
         # Value is in ignored list
@@ -381,7 +381,7 @@ def test_extract_result_observables_ignored_values_regex(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
 
         # 10.0.1.1 should be ignored by the regex pattern
@@ -430,7 +430,7 @@ def test_extract_result_observables_fields_mode_any(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
 
         result = {"src_ip": "10.0.0.1", "dst_ip": "10.0.0.2"}
@@ -472,7 +472,7 @@ def test_extract_result_observables_fields_mode_any_partial(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
 
         # only src_ip is present
@@ -511,7 +511,7 @@ def test_extract_result_observables_fields_mode_all(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
 
         # both fields present - should create observable from first field
@@ -550,7 +550,7 @@ def test_extract_result_observables_fields_mode_all_missing(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
 
         # only src_ip present - ALL mode requires all fields, so no observable
@@ -588,7 +588,7 @@ def test_extract_result_observables_fields_mode_all_no_match(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
 
         # no matching fields present - should NOT create observable
@@ -646,7 +646,7 @@ def test_splunk_api_analyzer_o_timespec_requires_observable_time(test_context):
 
         # observable without time
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
 
         with pytest.raises(ValueError, match="O_TIMESPEC.*no time"):
             analyzer.build_target_query(observable, source_event_time=datetime.datetime.now(datetime.timezone.utc))
@@ -681,7 +681,7 @@ def test_splunk_api_analyzer_o_timespec_uses_narrow_durations(test_context):
         analyzer.analysis = SplunkAPIAnalysis()
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         observable.time = MOCK_NOW
 
         analyzer.build_target_query(observable)
@@ -781,7 +781,7 @@ def test_process_pivot_links_basic(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
         analysis.query_results = [{"src_ip": "10.0.0.1"}]
 
@@ -810,7 +810,7 @@ def test_process_pivot_links_target_analysis(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
         analysis.query_results = [{"src_ip": "10.0.0.1"}]
 
@@ -836,7 +836,7 @@ def test_process_pivot_links_multi_valued_field_pairs(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
         analysis.query_results = [{"app": ["incomplete", "not-applicable"]}]
 
@@ -864,7 +864,7 @@ def test_process_pivot_links_skips_undefined(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
         analysis.query_results = [{"present": "abc123"}]
 
@@ -888,7 +888,7 @@ def test_process_pivot_links_skips_empty_values(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
         # label renders empty -> link skipped
         analysis.query_results = [{"host": "server1", "label": ""}]
@@ -913,7 +913,7 @@ def test_process_pivot_links_dedup(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
         analysis.query_results = [
             {"host": "server1"},
@@ -948,7 +948,7 @@ def test_process_pivot_links_dedup_against_existing(test_context):
         analyzer.get_root().add_pivot_link("https://example.com/server1", None, "server1")
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
         analysis.query_results = [{"host": "server1"}, {"host": "server2"}]
 
@@ -971,7 +971,7 @@ def test_process_pivot_links_root_and_analysis_independent_dedup(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
         analysis.query_results = [{}]
 
@@ -990,7 +990,7 @@ def test_process_pivot_links_empty_config(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=_pivot_link_config())
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
         analysis.query_results = [{"src_ip": "10.0.0.1"}]
 
@@ -1013,7 +1013,7 @@ def test_process_pivot_links_query_results_dict(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
         analysis.query_results = {"host": "server1"}
 
@@ -1058,7 +1058,7 @@ def test_process_pivot_links_limit_caps_links(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
         analysis.query_results = [{"id": str(i)} for i in range(1, 6)]
 
@@ -1087,7 +1087,7 @@ def test_process_pivot_links_overflow_skipped_when_not_truncated(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
         analysis.query_results = [
             {"id": str(i), "endpoint": "https://snow.example.com/"} for i in range(1, 4)
@@ -1119,7 +1119,7 @@ def test_process_pivot_links_overflow_emitted_when_truncated(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
         analysis.query_results = [
             {"id": str(i), "endpoint": "https://snow.example.com/", "term": "jdoe@acme.com"}
@@ -1162,7 +1162,7 @@ def test_process_pivot_links_overflow_icon_override(test_context):
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
         analysis.query_results = [
             {"id": "1", "endpoint": "https://snow.example.com"},

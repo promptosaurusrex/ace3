@@ -3,7 +3,7 @@ from unittest.mock import Mock, patch
 import pytest
 from flask import url_for
 
-from saq.constants import DIRECTIVE_CLICKER_DETECTION, F_FQDN, F_IPV4, F_URL
+from saq.constants import DIRECTIVE_CLICKER_DETECTION, F_FQDN, F_IP, F_URL
 from saq.gui.alert import GUIAlert
 
 ROUTE = "app.analysis.views.edit.observable_action.clicker"
@@ -33,7 +33,7 @@ class TestCheckForClickers:
     @patch(f"{ROUTE}.get_current_alert")
     def test_wrong_observable_type(self, mock_get_alert, _lock, _unlock, web_client, mock_alert):
         obs = Mock()
-        obs.type = F_IPV4
+        obs.type = F_IP
         mock_alert.root_analysis.get_observable.return_value = obs
         mock_get_alert.return_value = mock_alert
         r = web_client.post(url_for("analysis.observable_action_check_for_clickers"),

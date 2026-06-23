@@ -1,6 +1,6 @@
 import pytest
 
-from saq.constants import F_IPV4, F_TEST
+from saq.constants import F_IP, F_TEST
 from saq.database.model import Remediation, RemediationHistory, User
 from saq.database.pool import get_db
 from saq.environment import get_global_runtime_settings
@@ -451,14 +451,14 @@ def test_mass_remediate_targets():
             ]
 
     # register the interface
-    register_observable_remediation_interface(F_IPV4, _test_interface())
+    register_observable_remediation_interface(F_IP, _test_interface())
 
     initial_count = get_db().query(Remediation).count()
 
     # mass remediate two IP addresses
     observable_values = ["192.168.1.1", "10.0.0.1"]
     count = mass_remediate_targets(
-        F_IPV4, observable_values, get_global_runtime_settings().automation_user_id
+        F_IP, observable_values, get_global_runtime_settings().automation_user_id
     )
 
     # should create 4 remediations (2 targets per observable * 2 observables)
@@ -468,7 +468,7 @@ def test_mass_remediate_targets():
     assert final_count == initial_count + 4
 
     # verify remediations were created with correct values
-    remediations = get_db().query(Remediation).filter(Remediation.type == F_IPV4).all()
+    remediations = get_db().query(Remediation).filter(Remediation.type == F_IP).all()
     assert len(remediations) == 4
 
     # check that we have remediations for both IPs and both remediators
@@ -489,14 +489,14 @@ def test_mass_remediate_targets_invalid_observable():
         def get_remediation_targets(self, observable) -> list[RemediationTarget]:
             return [RemediationTarget("remediator1", observable.type, observable.value)]
 
-    register_observable_remediation_interface(F_IPV4, _test_interface())
+    register_observable_remediation_interface(F_IP, _test_interface())
 
     initial_count = get_db().query(Remediation).count()
 
     # mix valid and invalid IP addresses
     observable_values = ["192.168.1.1", "not_an_ip", "10.0.0.1"]
     count = mass_remediate_targets(
-        F_IPV4, observable_values, get_global_runtime_settings().automation_user_id
+        F_IP, observable_values, get_global_runtime_settings().automation_user_id
     )
 
     # should create 2 remediations (1 target per valid observable * 2 valid observables)
@@ -541,7 +541,7 @@ def test_get_distinct_remediation_types():
     target1 = RemediationTarget("custom", F_TEST, "test_value_25")
     target1.queue_remediation(RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id)
 
-    target2 = RemediationTarget("custom", F_IPV4, "192.168.1.2")
+    target2 = RemediationTarget("custom", F_IP, "192.168.1.2")
     target2.queue_remediation(RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id)
 
     target3 = RemediationTarget("custom", F_TEST, "test_value_26")
@@ -551,7 +551,7 @@ def test_get_distinct_remediation_types():
     types = get_distinct_remediation_types()
     assert len(types) == 2
     assert F_TEST in types
-    assert F_IPV4 in types
+    assert F_IP in types
 
 
 @pytest.mark.unit

@@ -3,7 +3,7 @@ import logging
 import pytest
 from pydantic import ValidationError
 
-from saq.constants import F_FILE, F_FILE_LOCATION, F_HOSTNAME, F_IPV4, F_USER, SUMMARY_DETAIL_FORMAT_JINJA
+from saq.constants import F_FILE, F_FILE_LOCATION, F_HOSTNAME, F_IP, F_USER, SUMMARY_DETAIL_FORMAT_JINJA
 from saq.observables.mapping import (
     ObservableMapping,
     RelationshipMapping,
@@ -22,7 +22,7 @@ from saq.query.extraction import (
 @pytest.mark.unit
 def test_interpret_event_value_simple():
     """Test simple field extraction without interpolation."""
-    mapping = ObservableMapping(field="src_ip", type=F_IPV4)
+    mapping = ObservableMapping(field="src_ip", type=F_IP)
     event = {"src_ip": "1.2.3.4"}
     result = interpret_event_value(mapping, event)
     assert result == ["1.2.3.4"]
@@ -40,7 +40,7 @@ def test_interpret_event_value_with_interpolation():
 @pytest.mark.unit
 def test_interpret_event_value_field_override():
     """Test field_override parameter."""
-    mapping = ObservableMapping(fields=["primary", "secondary"], type=F_IPV4)
+    mapping = ObservableMapping(fields=["primary", "secondary"], type=F_IP)
     event = {"primary": "1.1.1.1", "secondary": "2.2.2.2"}
     result = interpret_event_value(mapping, event, field_override="secondary")
     assert result == ["2.2.2.2"]
@@ -136,7 +136,7 @@ def test_interpret_event_value_trailing_wildcard_returns_each_item():
     mapping = ObservableMapping(
         fields=["ips.*"],
         field_lookup_type="dot",
-        type=F_IPV4,
+        type=F_IP,
     )
     event = {"ips": ["1.1.1.1", "2.2.2.2"]}
     result = interpret_event_value(mapping, event, field_override="ips.*")
@@ -150,7 +150,7 @@ def test_extract_observables_wildcard_creates_one_per_item():
         ObservableMapping(
             fields=["logs.*.ip"],
             field_lookup_type="dot",
-            type=F_IPV4,
+            type=F_IP,
             limit=2,
         )
     ]
@@ -168,7 +168,7 @@ def test_extract_observables_wildcard_missing_top_key_skipped():
         ObservableMapping(
             fields=["logs.*.ip"],
             field_lookup_type="dot",
-            type=F_IPV4,
+            type=F_IP,
         )
     ]
     event = {"unrelated": "value"}
@@ -201,7 +201,7 @@ def test_extract_observables_multivalue_user_field_strips_domain():
 @pytest.mark.unit
 def test_interpret_event_value_limit_caps_list_valued_field():
     """limit also caps a plain list-valued field (not just wildcards)."""
-    mapping = ObservableMapping(fields=["ips"], type=F_IPV4, limit=2)
+    mapping = ObservableMapping(fields=["ips"], type=F_IP, limit=2)
     event = {"ips": ["1.1.1.1", "2.2.2.2", "3.3.3.3"]}
     result = interpret_event_value(mapping, event)
     assert result == ["1.1.1.1", "2.2.2.2"]
@@ -211,7 +211,7 @@ def test_interpret_event_value_limit_caps_list_valued_field():
 def test_extract_observables_basic():
     """Test basic observable extraction."""
     mappings = [
-        ObservableMapping(field="src_ip", type=F_IPV4),
+        ObservableMapping(field="src_ip", type=F_IP),
         ObservableMapping(field="hostname", type=F_HOSTNAME),
     ]
     event = {"src_ip": "10.0.0.1", "hostname": "web-server-01"}
@@ -223,7 +223,7 @@ def test_extract_observables_basic():
     assert len(relationships) == 0
 
     types = {ext.observable.type for ext in extracted}
-    assert F_IPV4 in types
+    assert F_IP in types
     assert F_HOSTNAME in types
 
 
@@ -231,7 +231,7 @@ def test_extract_observables_basic():
 def test_extract_observables_missing_field():
     """Test extraction when a mapped field is missing."""
     mappings = [
-        ObservableMapping(field="src_ip", type=F_IPV4),
+        ObservableMapping(field="src_ip", type=F_IP),
         ObservableMapping(field="missing_field", type=F_HOSTNAME),
     ]
     event = {"src_ip": "10.0.0.1"}
@@ -239,7 +239,7 @@ def test_extract_observables_missing_field():
     extracted, file_contents, relationships = extract_observables_from_event(event, mappings)
 
     assert len(extracted) == 1
-    assert extracted[0].observable.type == F_IPV4
+    assert extracted[0].observable.type == F_IP
 
 
 @pytest.mark.unit
@@ -247,7 +247,7 @@ def test_extract_observables_with_tags_and_directives():
     """Test that tags and directives are applied to extracted observables."""
     mappings = [
         ObservableMapping(
-            field="src_ip", type=F_IPV4,
+            field="src_ip", type=F_IP,
             tags=["external", "suspicious"],
             directives=["analyze_ip"],
         ),
@@ -268,7 +268,7 @@ def test_extract_observables_with_ignored_values():
     """Test per-mapping ignored values."""
     mappings = [
         ObservableMapping(
-            field="src_ip", type=F_IPV4,
+            field="src_ip", type=F_IP,
             ignored_values=[r"0\.0\.0\.0"],
         ),
     ]
@@ -287,7 +287,7 @@ def test_extract_observables_with_global_ignored_values():
     """Test global ignored value patterns."""
     import re
     mappings = [
-        ObservableMapping(field="src_ip", type=F_IPV4),
+        ObservableMapping(field="src_ip", type=F_IP),
     ]
 
     patterns = [re.compile(r"0\.0\.0\.0")]
@@ -301,7 +301,7 @@ def test_extract_observables_with_global_ignored_values():
 def test_extract_observables_with_value_filter():
     """Test value_filter callback."""
     mappings = [
-        ObservableMapping(field="src_ip", type=F_IPV4),
+        ObservableMapping(field="src_ip", type=F_IP),
     ]
     event = {"src_ip": "  10.0.0.1  "}
 
@@ -320,7 +320,7 @@ def test_extract_observables_with_relationships():
     """Test relationship tracking."""
     mappings = [
         ObservableMapping(
-            field="src_ip", type=F_IPV4,
+            field="src_ip", type=F_IP,
             relationships=[
                 RelationshipMapping(
                     type="connected_to",
@@ -343,7 +343,7 @@ def test_extract_observables_with_relationships():
 def test_extract_observables_volatile():
     """Test volatile flag on observables."""
     mappings = [
-        ObservableMapping(field="src_ip", type=F_IPV4, volatile=True),
+        ObservableMapping(field="src_ip", type=F_IP, volatile=True),
     ]
     event = {"src_ip": "10.0.0.1"}
 
@@ -380,7 +380,7 @@ def test_extract_observables_file_type():
 def test_extract_observables_empty_value_skipped():
     """Test that empty values are skipped."""
     mappings = [
-        ObservableMapping(field="src_ip", type=F_IPV4),
+        ObservableMapping(field="src_ip", type=F_IP),
     ]
     event = {"src_ip": ""}
 
@@ -441,7 +441,7 @@ def test_extract_observables_skips_unresolved_tags_directives():
     """observable mapping tags/directives with any missing field are skipped entirely."""
     mappings = [
         ObservableMapping(
-            field="src_ip", type=F_IPV4,
+            field="src_ip", type=F_IP,
             tags=["mitre:{{ technique }}", "static_tag"],
             directives=["{{ missing_directive }}", "analyze_ip"],
         ),
@@ -536,12 +536,12 @@ def _error_records(caplog):
 def test_extract_observables_templated_type_resolves():
     """A Jinja-templated type renders against the event before observable creation."""
     mappings = [ObservableMapping(field="src", type="{{ obs_type }}")]
-    event = {"src": "1.2.3.4", "obs_type": "ipv4"}
+    event = {"src": "1.2.3.4", "obs_type": "ip"}
 
     extracted, _, _ = extract_observables_from_event(event, mappings)
 
     assert len(extracted) == 1
-    assert extracted[0].observable.type == F_IPV4
+    assert extracted[0].observable.type == F_IP
     assert extracted[0].observable.value == "1.2.3.4"
 
 
@@ -549,12 +549,12 @@ def test_extract_observables_templated_type_resolves():
 def test_extract_observables_templated_type_lowercased():
     """The rendered type is lowercased before validation/creation."""
     mappings = [ObservableMapping(field="src", type="{{ obs_type }}")]
-    event = {"src": "1.2.3.4", "obs_type": "IPV4"}
+    event = {"src": "1.2.3.4", "obs_type": "IP"}
 
     extracted, _, _ = extract_observables_from_event(event, mappings)
 
     assert len(extracted) == 1
-    assert extracted[0].observable.type == F_IPV4
+    assert extracted[0].observable.type == F_IP
 
 
 @pytest.mark.unit
@@ -597,7 +597,7 @@ def test_extract_observables_templated_type_unknown_skips_with_error(caplog):
 def test_extract_observables_templated_type_unknown_uses_fallback(caplog):
     """An unknown resolved type falls back to fallback_type and still logs an error."""
     mappings = [
-        ObservableMapping(field="src", type="{{ platform }}_user_id", fallback_type=F_IPV4)
+        ObservableMapping(field="src", type="{{ platform }}_user_id", fallback_type=F_IP)
     ]
     event = {"src": "1.2.3.4", "platform": "gcp"}
 
@@ -605,7 +605,7 @@ def test_extract_observables_templated_type_unknown_uses_fallback(caplog):
         extracted, _, _ = extract_observables_from_event(event, mappings)
 
     assert len(extracted) == 1
-    assert extracted[0].observable.type == F_IPV4
+    assert extracted[0].observable.type == F_IP
     assert "gcp_user_id" in caplog.text
     assert "fallback_type" in caplog.text
 
@@ -614,13 +614,13 @@ def test_extract_observables_templated_type_unknown_uses_fallback(caplog):
 def test_extract_observables_templated_type_valid_ignores_fallback(caplog):
     """A valid resolved type is used directly; fallback_type stays unused and nothing is logged."""
     mappings = [ObservableMapping(field="src", type="{{ kind }}", fallback_type=F_HOSTNAME)]
-    event = {"src": "1.2.3.4", "kind": "ipv4"}
+    event = {"src": "1.2.3.4", "kind": "ip"}
 
     with caplog.at_level(logging.ERROR):
         extracted, _, _ = extract_observables_from_event(event, mappings)
 
     assert len(extracted) == 1
-    assert extracted[0].observable.type == F_IPV4
+    assert extracted[0].observable.type == F_IP
     assert _error_records(caplog) == []
 
 
@@ -648,7 +648,7 @@ def test_extract_observables_templated_type_missing_field_skips_silently(caplog)
 
     for mapping in [
         ObservableMapping(field="src", type="{{ platform }}_user_id"),
-        ObservableMapping(field="src", type="{{ platform }}_user_id", fallback_type=F_IPV4),
+        ObservableMapping(field="src", type="{{ platform }}_user_id", fallback_type=F_IP),
     ]:
         with caplog.at_level(logging.ERROR):
             extracted, _, _ = extract_observables_from_event(event, [mapping])
@@ -668,12 +668,12 @@ def test_extract_observables_templated_type_empty_field(caplog):
     assert "_user_id" in caplog.text
 
     mappings = [
-        ObservableMapping(field="src", type="{{ platform }}_user_id", fallback_type=F_IPV4)
+        ObservableMapping(field="src", type="{{ platform }}_user_id", fallback_type=F_IP)
     ]
     with caplog.at_level(logging.ERROR):
         extracted, _, _ = extract_observables_from_event(event, mappings)
     assert len(extracted) == 1
-    assert extracted[0].observable.type == F_IPV4
+    assert extracted[0].observable.type == F_IP
 
 
 @pytest.mark.unit
@@ -724,7 +724,7 @@ def test_templated_type_parse_time_constraints():
     with pytest.raises(ValidationError):
         ObservableMapping(field="x", type="{{ t }}", file_decoder=DecoderType.BASE64)
     with pytest.raises(ValidationError):
-        ObservableMapping(field="x", type=F_IPV4, fallback_type=F_HOSTNAME)
+        ObservableMapping(field="x", type=F_IP, fallback_type=F_HOSTNAME)
     with pytest.raises(ValidationError):
         ObservableMapping(field="x", type="{{ t }}", fallback_type="{{ u }}")
     with pytest.raises(ValidationError):

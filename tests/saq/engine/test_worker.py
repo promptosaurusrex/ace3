@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 import pytest
 from unittest.mock import Mock
 
-from saq.constants import F_IPV4, LockManagerType, WorkloadManagerType
+from saq.constants import F_IP, LockManagerType, WorkloadManagerType
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.worker import Worker
@@ -144,7 +144,7 @@ class TestWorkerDelayedAnalysisFunctions:
         """Test is_delayed_analysis_timed_out when no timeout is set."""
         root = create_root_analysis(storage_dir=str(tmpdir))
         root.initialize_storage()
-        observable = root.add_observable_by_spec(F_IPV4, "192.168.1.1")
+        observable = root.add_observable_by_spec(F_IP, "192.168.1.1")
         analysis_module = MockAnalysisModule()
         
         result = worker.is_delayed_analysis_timed_out(
@@ -159,7 +159,7 @@ class TestWorkerDelayedAnalysisFunctions:
         """Test is_delayed_analysis_timed_out when timeout has not expired."""
         root = create_root_analysis(storage_dir=str(tmpdir))
         root.initialize_storage()
-        observable = root.add_observable_by_spec(F_IPV4, "192.168.1.1")
+        observable = root.add_observable_by_spec(F_IP, "192.168.1.1")
         analysis_module = MockAnalysisModule()
         
         # Set a timeout in the future (2 hours from now)
@@ -176,7 +176,7 @@ class TestWorkerDelayedAnalysisFunctions:
         """Test is_delayed_analysis_timed_out when timeout has expired (hours)."""
         root = create_root_analysis(storage_dir=str(tmpdir))
         root.initialize_storage()
-        observable = root.add_observable_by_spec(F_IPV4, "192.168.1.1")
+        observable = root.add_observable_by_spec(F_IP, "192.168.1.1")
         analysis_module = MockAnalysisModule()
         
         # Mock the start time to be in the past
@@ -201,7 +201,7 @@ class TestWorkerDelayedAnalysisFunctions:
         """Test is_delayed_analysis_timed_out when timeout has expired (minutes)."""
         root = create_root_analysis(storage_dir=str(tmpdir))
         root.initialize_storage()
-        observable = root.add_observable_by_spec(F_IPV4, "192.168.1.1")
+        observable = root.add_observable_by_spec(F_IP, "192.168.1.1")
         analysis_module = MockAnalysisModule()
         
         # Mock the start time to be in the past
@@ -226,7 +226,7 @@ class TestWorkerDelayedAnalysisFunctions:
         """Test is_delayed_analysis_timed_out when timeout has expired (seconds)."""
         root = create_root_analysis(storage_dir=str(tmpdir))
         root.initialize_storage()
-        observable = root.add_observable_by_spec(F_IPV4, "192.168.1.1")
+        observable = root.add_observable_by_spec(F_IP, "192.168.1.1")
         analysis_module = MockAnalysisModule()
         
         # Mock the start time to be in the past
@@ -251,7 +251,7 @@ class TestWorkerDelayedAnalysisFunctions:
         """Test is_delayed_analysis_timed_out with combined timeout parameters that have expired."""
         root = create_root_analysis(storage_dir=str(tmpdir))
         root.initialize_storage()
-        observable = root.add_observable_by_spec(F_IPV4, "192.168.1.1")
+        observable = root.add_observable_by_spec(F_IP, "192.168.1.1")
         analysis_module = MockAnalysisModule()
         
         # Mock the start time to be in the past (2 hours ago)
@@ -278,7 +278,7 @@ class TestWorkerDelayedAnalysisFunctions:
         """Test is_delayed_analysis_timed_out with combined timeout parameters that have not expired."""
         root = create_root_analysis(storage_dir=str(tmpdir))
         root.initialize_storage()
-        observable = root.add_observable_by_spec(F_IPV4, "192.168.1.1")
+        observable = root.add_observable_by_spec(F_IP, "192.168.1.1")
         analysis_module = MockAnalysisModule()
         
         # Mock the start time to be in the recent past (30 minutes ago)
@@ -305,7 +305,7 @@ class TestWorkerDelayedAnalysisFunctions:
         """Test is_delayed_analysis_timed_out when current time is exactly at timeout."""
         root = create_root_analysis(storage_dir=str(tmpdir))
         root.initialize_storage()
-        observable = root.add_observable_by_spec(F_IPV4, "192.168.1.1")
+        observable = root.add_observable_by_spec(F_IP, "192.168.1.1")
         analysis_module = MockAnalysisModule()
         
         # Mock the start time to be exactly 1 hour ago
