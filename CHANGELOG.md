@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.68] - 2026-06-22
+
+- [Implements initial analysis caching of file observables](https://github.com/ACE-Collective/ace3/pull/320)
+- [Clicker detection](https://github.com/ACE-Collective/ace3/pull/329)
+- [Only return configured observable types](https://github.com/ACE-Collective/ace3/pull/331)
+- [Fixes get_observable_types regression](https://github.com/ACE-Collective/ace3/pull/332)
+- [Phishkit sigkill and click improvements](https://github.com/ACE-Collective/ace3/pull/333)
+- [pip package updates & bugfixes](https://github.com/ACE-Collective/ace3/pull/335)
+- [more bugfixes](https://github.com/ACE-Collective/ace3/pull/336)
+- [Add fixture to restore clicker providers in tests](https://github.com/ACE-Collective/ace3/pull/337)
+
 ## [3.0.67] - 2026-06-17
 
 - [fixed detection_points table issues](https://github.com/ACE-Collective/ace3/pull/326)
