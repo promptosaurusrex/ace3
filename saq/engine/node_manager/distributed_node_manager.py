@@ -136,9 +136,9 @@ class DistributedNodeManager(NodeManagerInterface):
         )
 
         # clear any outstanding locks left over from a previous execution
-        # we use the lock_owner columns of the locks table to determine if any locks are outstanding for this node
-        # the format of the value of the column is node-mode-pid
-        # ace-qa2.local-email-25203
+        # we use the lock_owner column of the locks table to determine if any locks are outstanding for this node
+        # worker lock owners are formatted as node-worker-<worker name> (see Worker._create_lock_manager)
+        # for example ace-qa2.local-worker-email-0
         with get_db_connection() as db:
             cursor = db.cursor()
             cursor.execute(

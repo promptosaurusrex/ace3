@@ -2581,20 +2581,23 @@ def test_clear_outstanding_locks():
 
     # create an arbitrary lock
     assert acquire_lock(str(uuid.uuid4()), str(uuid.uuid4()), f'{get_global_runtime_settings().saq_node}-unittest-12345')
+    # a lock using the actual worker lock_owner format (see Worker._create_lock_manager) -
+    # this is the lock that was orphaned across restarts before the lock_owner was node-prefixed
+    assert acquire_lock(str(uuid.uuid4()), str(uuid.uuid4()), f'{get_global_runtime_settings().saq_node}-worker-email-0')
     assert acquire_lock(str(uuid.uuid4()), str(uuid.uuid4()), 'some_other_node.local-unittest-12345')
-    
-    # should have two locks now
+
+    # should have three locks now
     with get_db_connection() as db:
         cursor = db.cursor()
         cursor.execute("SELECT COUNT(*) FROM locks")
-        assert cursor.fetchone()[0] == 2
+        assert cursor.fetchone()[0] == 3
         db.commit()
 
     # initialize the engine again
     engine = Engine()
 
-    # should see a logging message about locks being deleted
-    assert log_count('clearing 1 locks from previous execution') == 1
+    # should see a logging message about both of this node's locks being deleted
+    assert log_count('clearing 2 locks from previous execution') == 1
 
     with get_db_connection() as db:
         cursor = db.cursor()
