@@ -172,6 +172,7 @@ def export_alerts_to_csv():
         'Owner', 
         'UUID', 
         'Queue', 
+        'Tags',
         'Comments',
     )
     for alert in alerts:
@@ -187,6 +188,7 @@ def export_alerts_to_csv():
             alert.owner.gui_display if alert.owner_id is not None else '', 
             alert.uuid,
             alert.queue,
+            ', '.join(tag.name for tag in alert.sorted_tags),
             '\n'.join(comments.get(alert.uuid, [])),
         )
 
