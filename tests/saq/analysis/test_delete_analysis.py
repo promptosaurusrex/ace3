@@ -4,8 +4,10 @@ import uuid
 import pytest
 
 from saq.analysis.analysis import Analysis
-from saq.constants import F_FILE, F_FQDN, F_TEST, F_URL
+from saq.analysis.root import load_root
+from saq.constants import F_FQDN, F_TEST, F_URL
 from saq.environment import get_base_dir
+from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import create_root_analysis
 
 
@@ -21,8 +23,25 @@ class SecondAnalysis(Analysis):
     pass
 
 
+class Level1Analysis(Analysis):
+    pass
+
+
+class Level2Analysis(Analysis):
+    pass
+
+
+class Level3Analysis(Analysis):
+    pass
+
+
 def _detail_path(root, analysis):
     return os.path.join(get_base_dir(), root.storage_dir, ".ace", analysis.external_details_path)
+
+
+def _integrity(root):
+    """returns the list of tree-integrity issues (empty list == healthy)."""
+    return root.analysis_tree_manager.validate_tree_integrity()
 
 
 @pytest.mark.integration
@@ -143,3 +162,219 @@ def test_delete_analysis_deletes_backing_file_of_generated_file_observable(tmpdi
 
     assert file_obs.uuid not in registry
     assert not os.path.exists(full_path)
+
+
+# --- stress / break-it tests -------------------------------------------------
+
+
+@pytest.mark.integration
+def test_delete_analysis_cascades_through_multiple_levels():
+    """deleting a top-level analysis prunes the entire generated subtree (multiple levels
+    of observables + analysis), removes a deep detection point, and leaves a healthy tree
+    that round-trips through save/load."""
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+
+    top = root.add_observable_by_spec(F_TEST, "top")
+    a1 = Level1Analysis()
+    top.add_analysis(a1)
+    a1.details = {"level": 1}
+
+    mid = a1.add_observable_by_spec(F_TEST, "mid")
+    a2 = Level2Analysis()
+    mid.add_analysis(a2)
+    a2.details = {"level": 2}
+
+    leaf = a2.add_observable_by_spec(F_TEST, "leaf")
+    a3 = Level3Analysis()
+    leaf.add_analysis(a3)
+    a3.add_detection_point("deep detection")
+
+    root.save()
+
+    registry = root.analysis_tree_manager.observable_registry
+    assert mid.uuid in registry and leaf.uuid in registry
+    assert len(root.all_detection_points) == 1
+    assert _integrity(root) == []
+
+    detail_paths = [_detail_path(root, a) for a in (a1, a2, a3) if a.external_details_path]
+    assert all(os.path.exists(p) for p in detail_paths)
+
+    top.delete_analysis(a1)
+
+    # the entire generated subtree is gone
+    assert top.get_analysis(Level1Analysis) is None
+    assert mid.uuid not in registry
+    assert leaf.uuid not in registry
+    assert top.uuid in registry  # the observable the analysis hung off of survives
+    assert root.all_detection_points == []
+    assert all(not os.path.exists(p) for p in detail_paths)
+    assert _integrity(root) == []
+
+    # round-trip: save the pruned tree, reload, and confirm it is still healthy
+    root.save()
+    reloaded = load_root(get_storage_dir(root.uuid))
+    assert _integrity(reloaded) == []
+    reloaded_top = reloaded.get_observable(top.uuid)
+    assert reloaded_top.get_analysis(Level1Analysis) is None
+    assert reloaded.get_observable(mid.uuid) is None
+    assert reloaded.get_observable(leaf.uuid) is None
+    assert reloaded.all_detection_points == []
+
+
+@pytest.mark.integration
+def test_delete_analysis_twice_is_a_noop():
+    """a repeat delete of the same analysis is a guarded no-op, not a crash."""
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    obs = root.add_observable_by_spec(F_TEST, "host")
+    analysis = DeletableAnalysis()
+    obs.add_analysis(analysis)
+    child = analysis.add_observable_by_spec(F_TEST, "child")
+    root.save()
+
+    obs.delete_analysis(analysis)
+    assert obs.get_analysis(DeletableAnalysis) is None
+    assert child.uuid not in root.analysis_tree_manager.observable_registry
+
+    # second delete must not raise and must not disturb the tree
+    obs.delete_analysis(analysis)
+    assert obs.get_analysis(DeletableAnalysis) is None
+    assert _integrity(root) == []
+
+
+@pytest.mark.integration
+def test_delete_analysis_not_on_observable_is_a_noop():
+    """deleting an analysis object that was never attached to the observable is a no-op."""
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    obs = root.add_observable_by_spec(F_TEST, "host")
+    attached = DeletableAnalysis()
+    obs.add_analysis(attached)
+
+    stray = FirstAnalysis()  # never added to anything
+    obs.delete_analysis(stray)
+
+    # the real analysis is untouched
+    assert obs.get_analysis(DeletableAnalysis) is attached
+    assert _integrity(root) == []
+
+
+@pytest.mark.integration
+def test_delete_analysis_shared_observable_removed_only_after_last_referrer():
+    """a child shared by two sibling analyses survives until BOTH are deleted."""
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    obs = root.add_observable_by_spec(F_TEST, "host")
+
+    a1 = FirstAnalysis()
+    obs.add_analysis(a1)
+    shared = a1.add_observable_by_spec(F_TEST, "shared")
+
+    a2 = SecondAnalysis()
+    obs.add_analysis(a2)
+    assert a2.add_observable(shared) is shared  # dedups to the same registry object
+
+    root.save()
+    registry = root.analysis_tree_manager.observable_registry
+
+    obs.delete_analysis(a1)
+    assert shared.uuid in registry  # still referenced by a2
+    assert _integrity(root) == []
+
+    obs.delete_analysis(a2)
+    assert shared.uuid not in registry  # last referrer gone
+    assert _integrity(root) == []
+
+
+@pytest.mark.integration
+def test_delete_analysis_drops_dependencies_referencing_removed_observable():
+    """a dependency whose target observable is pruned by the delete is removed from
+    dependency tracking, leaving no dangling references after save/load."""
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    obs = root.add_observable_by_spec(F_TEST, "host")
+
+    a1 = FirstAnalysis()
+    obs.add_analysis(a1)
+    child = a1.add_observable_by_spec(F_TEST, "child")
+
+    dep_mgr = root.analysis_tree_manager.dependency_manager
+    dep = dep_mgr.add_dependency(obs, FirstAnalysis, None, child, SecondAnalysis, None)
+    assert dep in dep_mgr.dependency_tracking
+
+    root.save()
+    obs.delete_analysis(a1)
+
+    assert child.uuid not in root.analysis_tree_manager.observable_registry
+    assert dep not in dep_mgr.dependency_tracking
+    assert not any(
+        d.source_observable_id == child.uuid or d.target_observable_id == child.uuid
+        for d in dep_mgr.dependency_tracking
+    )
+    assert _integrity(root) == []
+
+    # the registry no longer hands back the pruned observable, so save/load is clean
+    root.save()
+    reloaded = load_root(get_storage_dir(root.uuid))
+    assert _integrity(reloaded) == []
+
+
+@pytest.mark.integration
+def test_delete_analysis_terminates_on_observable_cycle():
+    """a generated observable that cycles back to an original alert observable must not
+    cause infinite recursion; the cycle's anchor (original) observable is retained."""
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    anchor = root.add_observable_by_spec(F_TEST, "anchor")  # original alert observable
+
+    a1 = FirstAnalysis()
+    anchor.add_analysis(a1)
+    o2 = a1.add_observable_by_spec(F_TEST, "o2")
+
+    a2 = SecondAnalysis()
+    o2.add_analysis(a2)
+    a2.add_observable(anchor)  # cycle: a2 references the original observable
+
+    root.save()
+    registry = root.analysis_tree_manager.observable_registry
+
+    anchor.delete_analysis(a1)  # must terminate
+
+    assert anchor.get_analysis(FirstAnalysis) is None
+    assert o2.uuid not in registry  # the generated cycle node is pruned
+    assert anchor.uuid in registry  # the original anchor is retained
+    assert _integrity(root) == []
+
+
+@pytest.mark.integration
+def test_delete_analysis_retains_subtree_held_alive_by_reference_cycle():
+    """documents a known limitation: when generated observables form a reference cycle
+    that does NOT touch an original observable, deleting the producer leaves the cycle
+    intact (each node keeps the next alive). the tree stays internally consistent."""
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    anchor = root.add_observable_by_spec(F_TEST, "anchor")
+
+    aroot = Level1Analysis()
+    anchor.add_analysis(aroot)
+    o1 = aroot.add_observable_by_spec(F_TEST, "o1")  # generated (non-original)
+
+    a1 = FirstAnalysis()
+    o1.add_analysis(a1)
+    o2 = a1.add_observable_by_spec(F_TEST, "o2")
+
+    a2 = SecondAnalysis()
+    o2.add_analysis(a2)
+    a2.add_observable(o1)  # cycle among generated observables o1 <-> o2
+
+    root.save()
+    registry = root.analysis_tree_manager.observable_registry
+
+    anchor.delete_analysis(aroot)  # must terminate
+
+    assert anchor.get_analysis(Level1Analysis) is None
+    # o1 is still referenced by a2, so the whole cycle is retained -- no dangling refs
+    assert o1.uuid in registry
+    assert o2.uuid in registry
+    assert _integrity(root) == []
