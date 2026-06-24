@@ -5,14 +5,20 @@ from datetime import datetime
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from saq.analysis.analysis import Analysis
 from saq.analysis.detection_point import DetectionPoint
-from saq.constants import F_FQDN
+from saq.constants import F_FQDN, F_URL
 from saq.database import db_DetectionPoint
 from saq.database.model import Alert, load_alert
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.signatures import BUILTIN_SIGNATURE_UUID, get_builtin_signature_version
 from tests.saq.helpers import create_root_analysis, insert_alert
+
+
+class ProviderAnalysis(Analysis):
+    """stand-in for a clicker-style provider analysis whose detections we later delete."""
+    pass
 
 
 def _rows_for(alert_id):
@@ -275,3 +281,73 @@ def test_detection_count_query_expression():
     # the hybrid property's class-level expression is usable directly in a query
     count = get_db().query(Alert.detection_count).filter(Alert.id == alert.id).scalar()
     assert count == 2
+
+
+# --- reconcile-on-sync: detections removed from the tree are removed from the table ---
+
+
+def _alert_with_provider_detection():
+    """builds and syncs an alert carrying a root-level detection plus a provider analysis
+    that generated a child observable with its own detection. returns the loaded Alert."""
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+
+    root.add_detection_point("real detection")  # root-level, must survive a delete
+
+    obs = root.add_observable_by_spec(F_FQDN, "evil.example.com")
+    analysis = ProviderAnalysis()
+    obs.add_analysis(analysis)
+    child = analysis.add_observable_by_spec(F_URL, "https://evil.example.com/clicked")
+    child.add_detection_point(
+        "someone clicked",
+        signature_uuid=YARA_SIGNATURE_UUID,
+        signature_version=YARA_SIGNATURE_VERSION)
+
+    root.save()
+    ALERT(root)
+    return load_alert(root.uuid)
+
+
+@pytest.mark.integration
+def test_sync_reconciles_deleted_analysis_detection_points():
+    alert = _alert_with_provider_detection()
+    assert len(_rows_for(alert.id)) == 2
+
+    obs = alert.root_analysis.get_observables_by_type(F_FQDN)[0]
+    analysis = obs.get_analysis(ProviderAnalysis)
+    assert analysis is not None
+
+    obs.delete_analysis(analysis)
+    alert.sync()
+
+    # the provider's detection is gone; the root-level detection survives
+    rows = _rows_for(alert.id)
+    assert len(rows) == 1
+    assert rows[0].content_hash == DetectionPoint("real detection").content_hash
+
+    get_db().expire_all()
+    assert get_db().query(Alert).filter(Alert.id == alert.id).one().detection_count == 1
+
+
+@pytest.mark.integration
+def test_sync_reconciles_to_zero_when_all_detections_removed():
+    """covers the empty-set branch: deleting the only detection clears every row."""
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+
+    obs = root.add_observable_by_spec(F_FQDN, "evil.example.com")
+    analysis = ProviderAnalysis()
+    obs.add_analysis(analysis)
+    child = analysis.add_observable_by_spec(F_URL, "https://evil.example.com/clicked")
+    child.add_detection_point("someone clicked")
+
+    root.save()
+    ALERT(root)
+    alert = load_alert(root.uuid)
+    assert len(_rows_for(alert.id)) == 1
+
+    target = alert.root_analysis.get_observables_by_type(F_FQDN)[0]
+    target.delete_analysis(target.get_analysis(ProviderAnalysis))
+    alert.sync()
+
+    assert _rows_for(alert.id) == []

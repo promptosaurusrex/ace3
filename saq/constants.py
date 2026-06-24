@@ -468,6 +468,8 @@ EVENT_DETAILS_UPDATED = 'details_updated'
 EVENT_DIRECTIVE_ADDED = 'directive_added'
 # fired when we add an Analysis to an Observable
 EVENT_ANALYSIS_ADDED = 'analysis_added'
+# fired when we delete an Analysis from an Observable
+EVENT_ANALYSIS_DELETED = 'analysis_deleted'
 # fired when we add a DetectionPoint ot an Analysis or Observable
 EVENT_DETECTION_ADDED = 'detection_added'
 # fired when an analysis is marked as completed manually
@@ -491,6 +493,7 @@ VALID_EVENTS = [
     EVENT_TAG_ADDED,
     EVENT_OBSERVABLE_ADDED,
     EVENT_ANALYSIS_ADDED,
+    EVENT_ANALYSIS_DELETED,
     EVENT_DETECTION_ADDED,
     EVENT_DIRECTIVE_ADDED,
     EVENT_RELATIONSHIP_ADDED,

@@ -110,6 +110,13 @@ class ClickerDetectionAnalysisMixin:
         count = len(events)
         return f"{label}: {count} click{'' if count == 1 else 's'} found"
 
+    def get_clicker_error(self) -> Optional[str]:
+        """The search error for this source's clicker run, if any (for the URL Clicks card).
+
+        Lets the unified view surface 'a search errored' distinctly from 'ran clean, no clicks'.
+        """
+        return self.query_error or None
+
     def get_clicker_events(self) -> list[ClickerEvent]:
         events: list[ClickerEvent] = []
         for raw in self.details.get("clicker_events", []) or []:

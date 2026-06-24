@@ -9,6 +9,7 @@ from app.analysis.views.session.alert import get_current_alert
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.clicker_detection.config import build_splunk_clicker_search_urls, load_clicker_config
+from saq.clicker_detection.timeline import REGISTERED_CLICKER_PROVIDERS
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_CLICKER_DETECTION, F_FQDN, F_URL
 from saq.database.util.locking import acquire_lock, release_lock
@@ -58,7 +59,21 @@ def observable_action_check_for_clickers():
         )
 
         observable.add_directive(DIRECTIVE_CLICKER_DETECTION)
-        alert.analysis_mode = ANALYSIS_MODE_CORRELATION
+
+        # An analyst re-running this action wants a fresh check. The engine skips a module whose
+        # completed analysis already exists (saq/modules/base_module.py accepts()), so drop any
+        # prior clicker-provider analyses to force a clean re-run that picks up new clicks.
+        # delete_analysis also prunes the state the old analysis owned (its in-tree detection
+        # points, generated observables, and detail files); the following sync() reconciles the
+        # detection_points table to match, so stale hits do not linger.
+        for existing in list(observable.all_analysis):
+            if type(existing) in REGISTERED_CLICKER_PROVIDERS:
+                observable.delete_analysis(existing)
+
+        # NOTE set the mode on root_analysis (what sync()/add_workload read), not on the Alert ORM
+        # column — otherwise an already-dispositioned alert re-queues in 'dispositioned' mode, whose
+        # module group is empty, and no clicker module ever runs.
+        alert.root_analysis.analysis_mode = ANALYSIS_MODE_CORRELATION
         alert.sync()
         add_workload(alert.root_analysis)
 

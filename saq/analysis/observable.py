@@ -723,6 +723,12 @@ class Observable(BaseNode):
         """Deletes all analysis records for this observable."""
         self.analysis = {}
 
+    def delete_analysis(self, analysis: "Analysis") -> None:
+        """Deletes a single Analysis from this Observable, cleaning up the state it owns
+        (orphaned generated observables, external detail files, and in-tree detection
+        points). See AnalysisTreeManager.delete_analysis for the full behavior."""
+        self.analysis_tree_manager.delete_analysis(self, analysis)
+
     def is_on_detection_path(self) -> bool:
         """Returns True if this node or any node down to (but not including) the root has a detection point."""
         from saq.analysis.root import RootAnalysis

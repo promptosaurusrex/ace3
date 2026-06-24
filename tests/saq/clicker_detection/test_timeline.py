@@ -6,6 +6,7 @@ from saq.clicker_detection.timeline import (
     ClickerEvent,
     REGISTERED_CLICKER_PROVIDERS,
     gather_clicker_events,
+    gather_clicker_results,
     register_clicker_event_provider,
 )
 
@@ -71,3 +72,74 @@ def test_gather_clicker_events_tolerates_provider_exception(monkeypatch):
     root = _FakeRoot({BoomAnalysis: [BoomAnalysis()]})
     # must not raise; just yields nothing
     assert gather_clicker_events(root) == []
+
+
+@pytest.mark.unit
+def test_gather_clicker_results_ran_with_no_events(monkeypatch):
+    """A provider analysis that ran but produced no events -> ran is True, events empty."""
+    class EmptyAnalysis:
+        def get_clicker_events(self):
+            return []
+
+    monkeypatch.setattr(
+        "saq.clicker_detection.timeline.REGISTERED_CLICKER_PROVIDERS", [EmptyAnalysis]
+    )
+    root = _FakeRoot({EmptyAnalysis: [EmptyAnalysis()]})
+    results = gather_clicker_results(root)
+    assert results.ran is True
+    assert results.events == []
+    assert results.errors == []
+
+
+@pytest.mark.unit
+def test_gather_clicker_results_collects_errors(monkeypatch):
+    """Provider exposing get_clicker_error -> error surfaced; still counts as ran."""
+    class ErrorAnalysis:
+        def get_clicker_events(self):
+            return []
+
+        def get_clicker_error(self):
+            return "splunk: search timed out"
+
+    monkeypatch.setattr(
+        "saq.clicker_detection.timeline.REGISTERED_CLICKER_PROVIDERS", [ErrorAnalysis]
+    )
+    root = _FakeRoot({ErrorAnalysis: [ErrorAnalysis()]})
+    results = gather_clicker_results(root)
+    assert results.ran is True
+    assert results.errors == ["splunk: search timed out"]
+
+
+@pytest.mark.unit
+def test_gather_clicker_results_not_ran_when_no_provider_analysis(monkeypatch):
+    """No provider analysis in the tree -> ran is False (card stays hidden)."""
+    class NeverRanAnalysis:
+        def get_clicker_events(self):
+            return []
+
+    monkeypatch.setattr(
+        "saq.clicker_detection.timeline.REGISTERED_CLICKER_PROVIDERS", [NeverRanAnalysis]
+    )
+    root = _FakeRoot({})  # provider registered, but no instance in the tree
+    results = gather_clicker_results(root)
+    assert results.ran is False
+    assert results.events == []
+    assert results.errors == []
+
+
+@pytest.mark.unit
+def test_gather_clicker_events_delegates_to_results(monkeypatch):
+    """gather_clicker_events returns just the sorted events from gather_clicker_results."""
+    class GoodAnalysis:
+        def get_clicker_events(self):
+            return [
+                ClickerEvent(source="splunk", timestamp=datetime(2026, 6, 17, 12, 5, tzinfo=timezone.utc), user="b"),
+                ClickerEvent(source="splunk", timestamp=datetime(2026, 6, 17, 12, 1, tzinfo=timezone.utc), user="a"),
+            ]
+
+    monkeypatch.setattr(
+        "saq.clicker_detection.timeline.REGISTERED_CLICKER_PROVIDERS", [GoodAnalysis]
+    )
+    root = _FakeRoot({GoodAnalysis: [GoodAnalysis()]})
+    assert gather_clicker_events(root) == gather_clicker_results(root).events
+    assert [e.user for e in gather_clicker_events(root)] == ["a", "b"]

@@ -25,15 +25,15 @@ class AnalysisTreeValidator:
             for analysis in observable.all_analysis:
                 if analysis.observable is not observable:
                     issues.append(
-                        f"Analysis {analysis} in observable {observable.id} has incorrect observable reference"
+                        f"Analysis {analysis} in observable {observable.uuid} has incorrect observable reference"
                     )
 
         # Check that all observables in analysis exist in the registry
         for analysis in self.query_engine.all_analysis:
             for observable in analysis.observables:
-                if observable.id not in self.observable_registry.store:
+                if observable.uuid not in self.observable_registry.store:
                     issues.append(
-                        f"Observable {observable.id} in analysis {analysis} not found in registry"
+                        f"Observable {observable.uuid} in analysis {analysis} not found in registry"
                     )
 
         return issues
