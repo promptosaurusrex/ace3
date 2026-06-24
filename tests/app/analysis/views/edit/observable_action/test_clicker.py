@@ -7,6 +7,7 @@ from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
     DIRECTIVE_CLICKER_DETECTION,
     F_FQDN,
+    F_IP,
     F_URL,
 )
 from saq.gui.alert import GUIAlert
