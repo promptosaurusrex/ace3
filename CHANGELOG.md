@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.69] - 2026-06-24
+
+- [fixed issue with work getting lost between restarts](https://github.com/ACE-Collective/ace3/pull/339)
+- [s/ipv4/ip/g](https://github.com/ACE-Collective/ace3/pull/340)
+- [Fix alert/event tag exporting. Add alert tags to event export.](https://github.com/ACE-Collective/ace3/pull/341)
+- [Fixes a few clicker detection issues](https://github.com/ACE-Collective/ace3/pull/342)
+- [added support for deleting existing analysis from observables](https://github.com/ACE-Collective/ace3/pull/343)
+
 ## [3.0.68] - 2026-06-22
 
 - [Implements initial analysis caching of file observables](https://github.com/ACE-Collective/ace3/pull/320)
