@@ -1251,6 +1251,12 @@ analysis_module_nrd_analyzer:
   python_class: NRDAnalyzer
   enabled: true
 
+analysis_module_fqdn_lookalike_analyzer:
+  name: fqdn_lookalike_analyzer
+  python_module: saq.modules.fqdn_lookalike
+  python_class: FQDNLookalikeAnalyzer
+  enabled: true
+
 analysis_module_active_directory_analyzer:
   name: active_directory_analyzer
   python_module: saq.modules.asset.active_directory
@@ -2195,6 +2201,7 @@ module_group_common:
     - configuration_defined_tagging
     - correlated_tag_analyzer
     - email_address_fqdn_analyzer
+    - fqdn_lookalike_analyzer
     - nrd_analyzer
     - observable_detection
     - observable_modifier
