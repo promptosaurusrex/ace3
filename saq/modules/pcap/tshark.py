@@ -3,7 +3,7 @@ import os
 import re
 from subprocess import Popen
 from saq.analysis.analysis import Analysis
-from saq.constants import DIRECTIVE_EXCLUDE_ALL, F_FILE, F_IPV4, AnalysisExecutionResult
+from saq.constants import DIRECTIVE_EXCLUDE_ALL, F_FILE, F_IP, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.observables.file import FileObservable
 
@@ -83,7 +83,7 @@ class TsharkPcapAnalyzer(AnalysisModule):
                         m = RE_TRUE_CLIENT_IP.search(line)
                         if m:
                             ipv4 = m.group(1)
-                            ipv4_observable = analysis.add_observable_by_spec(F_IPV4, ipv4)
+                            ipv4_observable = analysis.add_observable_by_spec(F_IP, ipv4)
                             if ipv4_observable:
                                 ipv4_observable.display_type = "True Client IP"
                                 extracted_ipv4s.add(ipv4_observable.value)
@@ -92,7 +92,7 @@ class TsharkPcapAnalyzer(AnalysisModule):
                         if m:
                             for m in RE_FORWARDED_FOR.finditer(line):
                                 ipv4 = m.group(1)
-                                ipv4_observable = analysis.add_observable_by_spec(F_IPV4, ipv4)
+                                ipv4_observable = analysis.add_observable_by_spec(F_IP, ipv4)
                                 if ipv4_observable:
                                     ipv4_observable.display_type = "Forwarded For IP"
                                     extracted_ipv4s.add(ipv4_observable.value)

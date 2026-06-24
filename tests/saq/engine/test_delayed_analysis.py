@@ -3,10 +3,8 @@ import pytest
 from uuid import uuid4
 
 from saq.analysis.analysis import Analysis
-from saq.analysis.observable import Observable
-from saq.constants import F_IPV4
+from saq.constants import F_IP
 from saq.engine.delayed_analysis import DelayedAnalysisRequest
-from saq.engine.configuration_manager import ConfigurationManager
 from tests.saq.helpers import create_root_analysis
 
 
@@ -152,7 +150,7 @@ class TestDelayedAnalysisRequest:
         root.initialize_storage()
         
         # Add an observable
-        observable = root.add_observable_by_spec(F_IPV4, "192.168.1.1")
+        observable = root.add_observable_by_spec(F_IP, "192.168.1.1")
         
         # Create a mock analysis and add it to the observable
         analysis = MockAnalysis()
@@ -229,7 +227,7 @@ class TestDelayedAnalysisRequest:
         root.initialize_storage()
         
         # Add an observable
-        observable = root.add_observable_by_spec(F_IPV4, "192.168.1.1")
+        observable = root.add_observable_by_spec(F_IP, "192.168.1.1")
         root.save()
         
         # Create mock configuration manager without the analysis module
@@ -260,7 +258,7 @@ class TestDelayedAnalysisRequest:
         root.initialize_storage()
         
         # Add an observable without analysis
-        observable = root.add_observable_by_spec(F_IPV4, "192.168.1.1")
+        observable = root.add_observable_by_spec(F_IP, "192.168.1.1")
         root.save()
         
         mock_analysis_module = MockAnalysisModule("test_module", instance="test_instance")

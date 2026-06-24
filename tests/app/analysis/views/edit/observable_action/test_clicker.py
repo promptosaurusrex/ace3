@@ -7,7 +7,6 @@ from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
     DIRECTIVE_CLICKER_DETECTION,
     F_FQDN,
-    F_IPV4,
     F_URL,
 )
 from saq.gui.alert import GUIAlert
@@ -39,7 +38,7 @@ class TestCheckForClickers:
     @patch(f"{ROUTE}.get_current_alert")
     def test_wrong_observable_type(self, mock_get_alert, _lock, _unlock, web_client, mock_alert):
         obs = Mock()
-        obs.type = F_IPV4
+        obs.type = F_IP
         mock_alert.root_analysis.get_observable.return_value = obs
         mock_get_alert.return_value = mock_alert
         r = web_client.post(url_for("analysis.observable_action_check_for_clickers"),
@@ -92,7 +91,6 @@ class TestCheckForClickers:
         obs = Mock()
         obs.type = F_URL
         obs.all_analysis = [prior, other]
-        obs._analysis = {prior.module_path: prior, other.module_path: other}
         mock_alert.root_analysis.get_observable.return_value = obs
         mock_get_alert.return_value = mock_alert
 
@@ -101,9 +99,8 @@ class TestCheckForClickers:
                                 data={"observable_uuid": "x", "alert_uuid": "y"})
 
         assert r.status_code == 200
-        # prior clicker analysis removed (forces re-run); unrelated analysis retained
-        assert prior.module_path not in obs._analysis
-        assert other.module_path in obs._analysis
+        # prior clicker analysis is deleted (forces re-run); unrelated analysis is left intact
+        obs.delete_analysis.assert_called_once_with(prior)
 
 
 @pytest.mark.integration

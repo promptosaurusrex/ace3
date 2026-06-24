@@ -8,6 +8,7 @@ wildcard (``*``/``*``) permissions in the global test setup.
 """
 
 from datetime import date
+from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
@@ -23,6 +24,7 @@ from saq.database import (
     EventVector,
     get_db,
 )
+from saq.database.model import Alert, EventMapping, EventTagMapping, Tag, TagMapping
 
 pytestmark = pytest.mark.integration
 
@@ -160,6 +162,56 @@ class TestExportEvents:
         # header row + the seeded event's data row
         assert '"id","uuid","creation_date"' in body
         assert '"export-event"' in body
+
+    @pytest.mark.asyncio
+    async def test_exports_csv_separates_event_and_alert_tags(self, client: AsyncClient):
+        """Event CSV export has distinct ``tags`` (direct) and ``alert_tags`` (inherited) columns."""
+        lookups = _make_lookups()
+        event = _make_event("tagged-event", lookups, lookups["open_status"])
+
+        db = get_db()
+        alert = Alert(
+            uuid=str(uuid4()),
+            location="test-location",
+            storage_dir=f"storage/{uuid4()}",
+            tool="test-tool",
+            tool_instance="test-tool-instance",
+            alert_type="test",
+        )
+        db.add(alert)
+        db.flush()
+
+        event_tag = Tag(name="mitre:TA0011")
+        alert_tag = Tag(name="mitre:T1105")
+        db.add_all([event_tag, alert_tag])
+        db.flush()
+
+        db.add(EventTagMapping(event_id=event.id, tag_id=event_tag.id))
+        db.add(TagMapping(alert_id=alert.id, tag_id=alert_tag.id))
+        db.add(EventMapping(event_id=event.id, alert_id=alert.id))
+        db.commit()
+
+        response = await client.get(
+            "/events/export",
+            params={"type": "csv", "checked_events[]": [event.id]},
+        )
+        assert response.status_code == 200
+
+        body = response.text
+        lines = body.splitlines()
+        header = lines[0]
+        assert '"tags"' in header
+        assert '"alert_tags"' in header
+
+        # the row for our event must contain both tag names, each in its own column
+        event_row = next(line for line in lines[1:] if '"tagged-event"' in line)
+        tags_idx = header.split(",").index('"tags"')
+        alert_tags_idx = header.split(",").index('"alert_tags"')
+        cells = event_row.split(",")
+        assert "mitre:TA0011" in cells[tags_idx]
+        assert "mitre:T1105" not in cells[tags_idx]
+        assert "mitre:T1105" in cells[alert_tags_idx]
+        assert "mitre:TA0011" not in cells[alert_tags_idx]
 
     @pytest.mark.asyncio
     async def test_unsupported_format_returns_422(self, client: AsyncClient):

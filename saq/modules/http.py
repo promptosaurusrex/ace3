@@ -10,7 +10,7 @@ from subprocess import Popen, PIPE
 from pydantic import Field
 
 from saq.analysis import Analysis
-from saq.constants import ANALYSIS_TYPE_BRO_HTTP, F_FILE, F_FQDN, F_IPV4, F_IPV4_CONVERSATION, F_URL, create_ipv4_conversation, AnalysisExecutionResult
+from saq.constants import ANALYSIS_TYPE_BRO_HTTP, F_FILE, F_FQDN, F_IP, F_IP_CONVERSATION, F_URL, create_ip_conversation, AnalysisExecutionResult
 from saq.environment import get_base_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -202,14 +202,14 @@ class BroHTTPStreamAnalyzer(AnalysisModule):
         self.get_root().description = 'BRO HTTP Scanner Detection - {} {}'.format(request_method, request_original_uri)
         self.get_root().event_time = datetime.now() if stream_time is None else stream_time
 
-        request_ip = self.get_root().add_observable_by_spec(F_IPV4, request_ipv4)
+        request_ip = self.get_root().add_observable_by_spec(F_IP, request_ipv4)
         if request_ip:
             request_ip.display_type = "HTTP Request IP"
         if reply_ipv4:
-            reply_ip = self.get_root().add_observable_by_spec(F_IPV4, reply_ipv4)
+            reply_ip = self.get_root().add_observable_by_spec(F_IP, reply_ipv4)
             if reply_ip:
                 reply_ip.display_type = "HTTP Reply IP"
-            self.get_root().add_observable_by_spec(F_IPV4_CONVERSATION, create_ipv4_conversation(request_ipv4, reply_ipv4))
+            self.get_root().add_observable_by_spec(F_IP_CONVERSATION, create_ip_conversation(request_ipv4, reply_ipv4))
 
         if 'host' in request_headers_lookup:
             self.get_root().add_observable_by_spec(F_FQDN, request_headers_lookup['host'])
@@ -451,17 +451,17 @@ class BrotexHTTPPackageAnalyzer(AnalysisModule):
                     http_file_observable.add_yara_meta("type", "network.http")
 
             if http_request[KEY_SRC_IP]:
-                src_ip = analysis.add_observable_by_spec(F_IPV4, http_request[KEY_SRC_IP])
+                src_ip = analysis.add_observable_by_spec(F_IP, http_request[KEY_SRC_IP])
                 if src_ip:
                     src_ip.display_type = "HTTP Source IP"
 
             if http_request[KEY_DEST_IP]:
-                dest_ip = analysis.add_observable_by_spec(F_IPV4, http_request[KEY_DEST_IP])
+                dest_ip = analysis.add_observable_by_spec(F_IP, http_request[KEY_DEST_IP])
                 if dest_ip:
                     dest_ip.display_type = "HTTP Destination IP"
 
             if http_request[KEY_SRC_IP] and http_request[KEY_DEST_IP]:
-                analysis.add_observable_by_spec(F_IPV4_CONVERSATION, create_ipv4_conversation(
+                analysis.add_observable_by_spec(F_IP_CONVERSATION, create_ip_conversation(
                                         http_request[KEY_SRC_IP], http_request[KEY_DEST_IP]))
 
             if http_request[KEY_HOST]:

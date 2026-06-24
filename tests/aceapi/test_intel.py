@@ -35,7 +35,7 @@ from aceapi.intel import (
 )
 from saq.analysis import RootAnalysis
 from saq.configuration.config import get_config
-from saq.constants import F_IPV4, F_FQDN
+from saq.constants import F_IP, F_FQDN
 from saq.database import Observable, User, Alert, Event, ALERT
 
 from flask import url_for
@@ -258,7 +258,7 @@ def test_get_observable(test_client):
     assert json_result[KEY_ERROR] is None
 
     root = create_root_analysis()
-    root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+    root.add_observable_by_spec(F_IP, "1.2.3.4")
     root.save()
     ALERT(root)
 
@@ -270,7 +270,7 @@ def test_get_observable(test_client):
     assert result.status_code == 200
     json_result = json.loads(result.data)
     assert len(json_result[KEY_RESULTS]) == 1
-    assert json_result[KEY_RESULTS][0]["type"] == F_IPV4
+    assert json_result[KEY_RESULTS][0]["type"] == F_IP
     assert base64.b64decode(json_result[KEY_RESULTS][0]["value"]).decode() == "1.2.3.4"
 
     observable_id = json_result[KEY_RESULTS][0]["id"]
@@ -290,7 +290,7 @@ def test_get_observable(test_client):
 
     # insert another observable
     root = create_root_analysis(uuid=str(uuid.uuid4()))
-    root.add_observable_by_spec(F_IPV4, "1.2.3.5")
+    root.add_observable_by_spec(F_IP, "1.2.3.5")
     root.save()
     ALERT(root)
 
@@ -372,13 +372,13 @@ def test_get_observable(test_client):
     get_db().close()
 
     # query type
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_TYPES: "ipv4" }, **client_kwargs)
+    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_TYPES: "ip" }, **client_kwargs)
     assert result.status_code == 200
     json_result = json.loads(result.data)
     assert len(json_result[KEY_RESULTS]) == 2
 
     # query type and value
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_TYPES: "ipv4", KEY_VALUES: "1.2.3.4" }, **client_kwargs)
+    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_TYPES: "ip", KEY_VALUES: "1.2.3.4" }, **client_kwargs)
     assert result.status_code == 200
     json_result = json.loads(result.data)
     assert len(json_result[KEY_RESULTS]) == 1

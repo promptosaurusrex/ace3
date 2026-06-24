@@ -11,7 +11,7 @@ import pytz
 
 from saq.analysis.root import KEY_PLAYBOOK_URL
 from saq.configuration.config import get_config
-from saq.constants import DIRECTIVE_NO_SCAN, EVENT_TIME_FORMAT_JSON_TZ, F_FILE, F_IPV4, F_USER
+from saq.constants import DIRECTIVE_NO_SCAN, EVENT_TIME_FORMAT_JSON_TZ, F_FILE, F_IP, F_USER
 from saq.database.pool import get_db_connection
 from saq.environment import get_data_dir, get_global_runtime_settings, get_local_timezone
 from saq.json_encoding import _JSONEncoder
@@ -30,7 +30,7 @@ def test_api_analysis_submit(test_client):
             'event_time': t,
             'details': { 'hello': 'world' },
             'observables': [
-                { 'type': F_IPV4, 'value': '1.2.3.4', 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
+                { 'type': F_IP, 'value': '1.2.3.4', 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
                 { 'type': F_USER, 'value': 'test_user', 'time': t },
             ],
             'tags': [ 'alert_tag_1', 'alert_tag_2' ],
@@ -75,8 +75,8 @@ def test_api_analysis_submit(test_client):
 
     for o_uuid in result['observable_store']:
         observable = result['observable_store'][o_uuid]
-        if observable['type'] == F_IPV4:
-            assert observable['type'] == F_IPV4
+        if observable['type'] == F_IP:
+            assert observable['type'] == F_IP
             assert observable['value'] == '1.2.3.4'
             assert observable['time'] == '2017-11-11T07:36:01.000001+0000'
             assert observable['tags'][0] == 'tag_1'
@@ -158,8 +158,8 @@ def test_api_analysis_submit(test_client):
     file_uuid = None
 
     for observable in result['observables']:
-        if observable['type'] == F_IPV4:
-            assert observable['type'] == F_IPV4
+        if observable['type'] == F_IP:
+            assert observable['type'] == F_IP
             assert observable['value'] == '1.2.3.4'
             assert observable['time'] == '2017-11-11T07:36:01.000001+0000'
             assert observable['tags'][0] == 'tag_1'
@@ -188,7 +188,7 @@ def test_api_analysis_submit_added_by(test_client):
             'description': 'testing',
             'details': {},
             'observables': [
-                { 'type': F_IPV4, 'value': '1.2.3.4', 'added_by': 'analyst1', 'added_time': added_time },
+                { 'type': F_IP, 'value': '1.2.3.4', 'added_by': 'analyst1', 'added_time': added_time },
                 { 'type': F_USER, 'value': 'test_user' },
                 { 'type': F_FILE, 'value': file_sha256, 'file_path': 'sample.dat', 'added_by': 'analyst1', 'added_time': added_time },
             ],
@@ -205,7 +205,7 @@ def test_api_analysis_submit_added_by(test_client):
 
     assert len(result['observable_store']) == 3
     for observable in result['observable_store'].values():
-        if observable['type'] in (F_IPV4, F_FILE):
+        if observable['type'] in (F_IP, F_FILE):
             assert observable['added_by'] == 'analyst1'
             assert observable['added_time'] == '2026-06-11T09:30:00.000000+0000'
         elif observable['type'] == F_USER:
@@ -227,7 +227,7 @@ def test_api_analysis_submit_queue(test_client):
             'details': { 'hello': 'world' },
             'queue': 'internal',
             'observables': [
-                { 'type': F_IPV4, 'value': '1.2.3.4', 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
+                { 'type': F_IP, 'value': '1.2.3.4', 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
                 { 'type': F_USER, 'value': 'test_user', 'time': t },
             ],
             'tags': [ 'alert_tag_1', 'alert_tag_2' ],
@@ -262,8 +262,8 @@ def test_api_analysis_submit_queue(test_client):
 
     for o_uuid in result['observable_store']:
         observable = result['observable_store'][o_uuid]
-        if observable['type'] == F_IPV4:
-            assert observable['type'] == F_IPV4
+        if observable['type'] == F_IP:
+            assert observable['type'] == F_IP
             assert observable['value'] == '1.2.3.4'
             assert observable['time'] == '2017-11-11T07:36:01.000001+0000'
             assert observable['tags'][0] == 'tag_1'
@@ -343,8 +343,8 @@ def test_api_analysis_submit_queue(test_client):
     file_uuid = None
 
     for observable in result['observables']:
-        if observable['type'] == F_IPV4:
-            assert observable['type'] == F_IPV4
+        if observable['type'] == F_IP:
+            assert observable['type'] == F_IP
             assert observable['value'] == '1.2.3.4'
             assert observable['time'] == '2017-11-11T07:36:01.000001+0000'
             assert observable['tags'][0] == 'tag_1'
@@ -376,7 +376,7 @@ def test_api_analysis_submit_invalid(test_client):
             'details': { 'hello': 'world' },
             'company_name': 'invalid_company_name',
             'observables': [
-                { 'type': F_IPV4, 'value': '1.2.3.4', 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
+                { 'type': F_IP, 'value': '1.2.3.4', 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
                 { 'type': F_USER, 'value': 'test_user', 'time': t },
             ],
             'tags': [ 'alert_tag_1', 'alert_tag_2' ],
@@ -397,7 +397,7 @@ def test_api_analysis_submit_invalid(test_client):
             'event_time': t,
             'details': { 'hello': 'world' },
             'observables': [
-                { 'type': F_IPV4, 'value': '1.2.3.4', 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
+                { 'type': F_IP, 'value': '1.2.3.4', 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
                 { 'type': F_USER, 'value': 'test_user', 'time': t },
             ],
             'tags': [ 'alert_tag_1', 'alert_tag_2' ],
@@ -418,7 +418,7 @@ def test_api_analysis_submit_invalid(test_client):
             'event_time': '20189-13-143', # <-- invalid event time
             'details': { 'hello': 'world' },
             'observables': [
-                { 'type': F_IPV4, 'value': '1.2.3.4', 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
+                { 'type': F_IP, 'value': '1.2.3.4', 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
                 { 'type': F_USER, 'value': 'test_user', 'time': t },
             ],
             'tags': [ 'alert_tag_1', 'alert_tag_2' ],
@@ -455,7 +455,7 @@ def test_api_analysis_submit_invalid(test_client):
                 'details': { 'hello': 'world' },
                 'observables': [
                                 # \/ missing value
-                    { 'type': F_IPV4, 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
+                    { 'type': F_IP, 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
                     { 'type': F_USER, 'value': 'test_user', 'time': t },
                 ],
                 'tags': [ 'alert_tag_1', 'alert_tag_2' ],
@@ -506,7 +506,7 @@ def test_api_analysis_submit_invalid(test_client):
                 'event_time': t,
                 'details': { 'hello': 'world' },
                 'observables': [
-                    { 'type': F_IPV4, 'value': '1.2.3.4', 'time': 'INVALID_TIME', 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
+                    { 'type': F_IP, 'value': '1.2.3.4', 'time': 'INVALID_TIME', 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
                     { 'type': F_USER, 'value': 'test_user', 'time': t },
                 ],
                 'tags': [ 'alert_tag_1', 'alert_tag_2' ],
@@ -584,7 +584,7 @@ rule test_filter {
             'event_time': t,
             'details': { 'hello': 'world' },
             'observables': [
-                { 'type': F_IPV4, 'value': '1.2.3.4', 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
+                { 'type': F_IP, 'value': '1.2.3.4', 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
                 { 'type': F_USER, 'value': 'test_user', 'time': t },
             ],
             'tags': [ 'alert_tag_1', 'alert_tag_2' ],
@@ -616,7 +616,7 @@ rule test_filter {
             'event_time': t,
             'details': { 'hello': 'world' },
             'observables': [
-                { 'type': F_IPV4, 'value': '1.2.3.4', 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
+                { 'type': F_IP, 'value': '1.2.3.4', 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
                 { 'type': F_USER, 'value': 'test_user', 'time': t },
             ],
             'tags': [ 'alert_tag_1', 'alert_tag_2' ],
@@ -658,7 +658,7 @@ rule test_files {
             'event_time': t,
             'details': { 'hello': 'world' },
             'observables': [
-                { 'type': F_IPV4, 'value': '1.2.3.4', 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
+                { 'type': F_IP, 'value': '1.2.3.4', 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
                 { 'type': F_USER, 'value': 'test_user', 'time': t },
             ],
             'tags': [ 'alert_tag_1', 'alert_tag_2' ],

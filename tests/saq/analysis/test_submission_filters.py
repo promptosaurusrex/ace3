@@ -5,7 +5,7 @@ import pytest
 
 from saq.analysis.root import RootAnalysis, Submission
 from saq.configuration.config import get_config
-from saq.constants import CONFIG_COLLECTION_TUNING_UPDATE_FREQUENCY, F_IPV4
+from saq.constants import CONFIG_COLLECTION_TUNING_UPDATE_FREQUENCY, F_IP
 from saq.submission_filter import TUNING_TARGET_ALL, TUNING_TARGET_FILES, TUNING_TARGET_SUBMISSION, SubmissionFilter
 
 from yara_scanner import YaraScanner
@@ -244,7 +244,7 @@ def test_tuning_rules_observable_match(mock_tuning_rules, submission):
 # sample observable layout
 #  {
 #   "time": "2020-02-14T20:45:00.620518+0000",
-#   "type": "ipv4",
+#   "type": "ip",
 #   "value": "1.2.3.4"
 #  },
 
@@ -254,14 +254,14 @@ rule test_observable {
     meta:
         targets = "observable"
     strings:
-        $ = /"type": "ipv4"/
+        $ = /"type": "ip"/
         $ = /"value": "1.2.3.4"/
     condition:
         all of them
 }
 """)
     submission_filter = create_submission_filter()
-    submission.root.add_observable_by_spec(F_IPV4, "1.2.3.4", local_time())
+    submission.root.add_observable_by_spec(F_IP, "1.2.3.4", local_time())
     matches = submission_filter.get_tuning_matches(submission)
     submission_filter.log_tuning_matches(submission, matches)
     assert matches
@@ -274,12 +274,12 @@ def test_tuning_rules_submission_all_fields_match(mock_tuning_rules, submission)
 #   [
 #    {
 #     "time": "2020-02-14T20:45:00.620518+0000",
-#     "type": "ipv4",
+#     "type": "ip",
 #     "value": "1.2.3.4"
 #    },
 #    {
 #     "time": "2020-02-14T20:45:00.620565+0000",
-#     "type": "ipv4",
+#     "type": "ip",
 #     "value": "1.2.3.5"
 #    }
 #   ]
@@ -354,7 +354,7 @@ rule test_observable {
     meta:
         targets = "observable"
     strings:
-        $ = /"type": "ipv4"/
+        $ = /"type": "ip"/
         $ = /"value": "1.2.3.5"/
     condition:
         all of them
@@ -364,8 +364,8 @@ rule test_observable {
     for tag in [ 'tag_1', 'tag_2' ]:
         submission.root.add_tag(tag)
 
-    submission.root.add_observable_by_spec(F_IPV4, "1.2.3.4", local_time())
-    submission.root.add_observable_by_spec(F_IPV4, "1.2.3.5", local_time())
+    submission.root.add_observable_by_spec(F_IP, "1.2.3.4", local_time())
+    submission.root.add_observable_by_spec(F_IP, "1.2.3.5", local_time())
     matches = submission_filter.get_tuning_matches(submission)
     submission_filter.log_tuning_matches(submission, matches)
     # looks like there's a bug in the library that is returning multiple match results for the same match

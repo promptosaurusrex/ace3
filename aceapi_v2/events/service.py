@@ -84,6 +84,7 @@ def _export_events_to_csv_sync(event_ids: list[int]) -> str:
         "MONTH(events.alert_time)",
         "MAX(disposition)",
         "tags",
+        "alert_tags",
     )
 
     for event in export_events:
@@ -91,6 +92,9 @@ def _export_events_to_csv_sync(event_ids: list[int]) -> str:
         threat_names = ", ".join(event.malware_names)
         campaign = event.campaign.name if event.campaign else ""
         tags = ", ".join(tag.name for tag in event.tags)
+        # sorted_tags walks EventMapping -> Alert -> TagMapping at query time;
+        # nothing is written back to event_tag_mapping.
+        alert_tags = ", ".join(event.sorted_tags)
 
         csv.add_row(
             event.id,
@@ -118,6 +122,7 @@ def _export_events_to_csv_sync(event_ids: list[int]) -> str:
             event.alert_time.strftime("%b") if event.alert_time else "",
             event.disposition,
             tags,
+            alert_tags,
         )
 
     return str(csv)

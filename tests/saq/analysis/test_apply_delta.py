@@ -18,7 +18,7 @@ from saq.analysis.module_execution_delta import (
     RootDiff,
 )
 from saq.analysis.root import RootAnalysis
-from saq.constants import F_EMAIL_ADDRESS, F_FILE, F_FQDN, F_IPV4, F_URL, F_USER, R_EXTRACTED_FROM, R_IS_HASH_OF
+from saq.constants import F_EMAIL_ADDRESS, F_FILE, F_FQDN, F_IP, F_URL, F_USER, R_EXTRACTED_FROM, R_IS_HASH_OF
 from saq.modules.rdap import RdapAnalysis
 
 
@@ -55,7 +55,7 @@ class TestApplyDeltaPrimitives:
     @pytest.mark.unit
     def test_added_tags_applied(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         delta = _empty_delta(
             obs,
             target_observable_diff=ObservableDiff(added_tags=["suspicious", "malware"]),
@@ -67,7 +67,7 @@ class TestApplyDeltaPrimitives:
     @pytest.mark.unit
     def test_added_detections_applied(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         delta = _empty_delta(
             obs,
             target_observable_diff=ObservableDiff(
@@ -84,7 +84,7 @@ class TestApplyDeltaPrimitives:
     @pytest.mark.unit
     def test_added_directives_applied(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         delta = _empty_delta(
             obs,
             target_observable_diff=ObservableDiff(added_directives=["sandbox"]),
@@ -97,7 +97,7 @@ class TestApplyDeltaPrimitives:
         root = _make_root(tmp_path)
         src = root.add_observable_by_spec(F_FQDN, "example.com")
         # Pre-existing target observable in the tree.
-        target = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        target = root.add_observable_by_spec(F_IP, "1.2.3.4")
         delta = _empty_delta(
             src,
             target_observable_diff=ObservableDiff(
@@ -138,13 +138,13 @@ class TestApplyDeltaPrimitives:
             obs,
             observable_uuid="source-obs-uuid",  # captured on a different alert
             new_observables=[
-                ObservableSpec(uuid="source-child-uuid", type=F_IPV4, value="1.2.3.4"),
+                ObservableSpec(uuid="source-child-uuid", type=F_IP, value="1.2.3.4"),
             ],
             target_observable_diff=ObservableDiff(
                 added_relationships=[{
                     "type": R_IS_HASH_OF,
                     "target": "source-child-uuid",
-                    "target_type": F_IPV4,
+                    "target_type": F_IP,
                     "target_value": "1.2.3.4",
                 }],
             ),
@@ -153,7 +153,7 @@ class TestApplyDeltaPrimitives:
 
         assert len(obs.relationships) == 1
         resolved = obs.relationships[0].target
-        assert resolved.type == F_IPV4
+        assert resolved.type == F_IP
         assert resolved.value == "1.2.3.4"
         # The replayed child got a fresh uuid — spec resolution, not uuid.
         assert resolved.uuid != "source-child-uuid"
@@ -189,7 +189,7 @@ class TestApplyDeltaPrimitives:
     @pytest.mark.unit
     def test_excluded_and_limited_dedupe(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         delta = _empty_delta(
             obs,
             target_observable_diff=ObservableDiff(
@@ -205,7 +205,7 @@ class TestApplyDeltaPrimitives:
     @pytest.mark.unit
     def test_scalar_transitions_applied(self, tmp_path):
         root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         delta = _empty_delta(
             obs,
             target_observable_diff=ObservableDiff(

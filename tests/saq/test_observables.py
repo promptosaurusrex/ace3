@@ -1,7 +1,7 @@
 import pytest
 
 from saq.analysis import RootAnalysis, Observable
-from saq.constants import F_EMAIL_ADDRESS, F_EMAIL_DELIVERY, F_FILE_LOCATION, F_IPV4, F_MESSAGE_ID, F_USER, F_YARA_STRING
+from saq.constants import F_EMAIL_ADDRESS, F_EMAIL_DELIVERY, F_FILE_LOCATION, F_IP, F_MESSAGE_ID, F_USER, F_YARA_STRING
 
 @pytest.mark.unit
 def test_observables():
@@ -132,6 +132,6 @@ def test_yara_string_observable():
 @pytest.mark.unit
 def test_volatile():
     root = RootAnalysis()
-    o = root.add_observable_by_spec(F_IPV4, '1.2.3.4', volatile=True)
+    o = root.add_observable_by_spec(F_IP, '1.2.3.4', volatile=True)
     assert o.volatile
     assert Observable.from_json(o.json).volatile

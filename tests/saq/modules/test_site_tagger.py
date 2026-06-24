@@ -18,7 +18,7 @@ from saq.constants import (
     ANALYSIS_MODULE_SITE_TAGGER,
     AnalysisExecutionResult,
     F_FQDN,
-    F_IPV4,
+    F_IP,
 )
 from saq.modules.tag import SiteTagAnalysis, SiteTagAnalyzer
 from tests.saq.helpers import create_root_analysis
@@ -62,11 +62,11 @@ def _build_analyzer(test_context):
 
 
 def test_analyzer_creates_analysis_and_tags_on_match(site_tags_csv, test_context):
-    site_tags_csv(["ipv4,cidr,false,10.0.0.0/8,internal-network"])
+    site_tags_csv(["ip,cidr,false,10.0.0.0/8,internal-network"])
 
     root = create_root_analysis()
     root.initialize_storage()
-    observable = root.add_observable_by_spec(F_IPV4, "10.1.2.3")
+    observable = root.add_observable_by_spec(F_IP, "10.1.2.3")
 
     analyzer = _build_analyzer(test_context)
     analyzer.root = root
@@ -82,12 +82,12 @@ def test_analyzer_creates_analysis_and_tags_on_match(site_tags_csv, test_context
 def test_analyzer_no_match_no_analysis(site_tags_csv, test_context):
     """Type IS in tag_mapping, but no rule matches the value — under the
     fix, no SiteTagAnalysis should be created."""
-    site_tags_csv(["ipv4,cidr,false,10.0.0.0/8,internal-network"])
+    site_tags_csv(["ip,cidr,false,10.0.0.0/8,internal-network"])
 
     root = create_root_analysis()
     root.initialize_storage()
     # Outside the 10.0.0.0/8 CIDR — rule won't match.
-    observable = root.add_observable_by_spec(F_IPV4, "203.0.113.45")
+    observable = root.add_observable_by_spec(F_IP, "203.0.113.45")
 
     analyzer = _build_analyzer(test_context)
     analyzer.root = root
@@ -99,7 +99,7 @@ def test_analyzer_no_match_no_analysis(site_tags_csv, test_context):
 
 def test_analyzer_type_not_in_mapping_skips_entirely(site_tags_csv, test_context):
     """Type isn't in tag_mapping at all — fast-exit path, no analysis."""
-    site_tags_csv(["ipv4,cidr,false,10.0.0.0/8,internal-network"])
+    site_tags_csv(["ip,cidr,false,10.0.0.0/8,internal-network"])
 
     root = create_root_analysis()
     root.initialize_storage()
@@ -117,21 +117,21 @@ def test_reload_does_not_duplicate_rules(site_tags_csv, test_context):
     re-fires the callback on every mtime change, and prior to the clear()
     fix each reload appended every rule again.
     """
-    site_tags_csv(["ipv4,cidr,false,10.0.0.0/8,internal-network"])
+    site_tags_csv(["ip,cidr,false,10.0.0.0/8,internal-network"])
 
     analyzer = _build_analyzer(test_context)
-    # After __init__ the mapping has exactly one rule for ipv4.
-    assert len(analyzer.tag_mapping["ipv4"]) == 1
+    # After __init__ the mapping has exactly one rule for ip.
+    assert len(analyzer.tag_mapping["ip"]) == 1
 
     # Simulate the engine re-firing the callback (e.g., the CSV was touched).
     analyzer.load_csv_file()
     analyzer.load_csv_file()
 
-    assert len(analyzer.tag_mapping["ipv4"]) == 1
+    assert len(analyzer.tag_mapping["ip"]) == 1
 
     root = create_root_analysis()
     root.initialize_storage()
-    observable = root.add_observable_by_spec(F_IPV4, "10.1.2.3")
+    observable = root.add_observable_by_spec(F_IP, "10.1.2.3")
     analyzer.root = root
 
     assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
@@ -143,13 +143,13 @@ def test_reload_does_not_duplicate_rules(site_tags_csv, test_context):
 def test_analyzer_multiple_matching_rules_single_analysis(site_tags_csv, test_context):
     """Two rules match the same observable — one analysis, both tags."""
     site_tags_csv([
-        "ipv4,cidr,false,10.0.0.0/8,internal-network",
-        "ipv4,cidr,false,10.1.0.0/16,corp-vpn",
+        "ip,cidr,false,10.0.0.0/8,internal-network",
+        "ip,cidr,false,10.1.0.0/16,corp-vpn",
     ])
 
     root = create_root_analysis()
     root.initialize_storage()
-    observable = root.add_observable_by_spec(F_IPV4, "10.1.2.3")
+    observable = root.add_observable_by_spec(F_IP, "10.1.2.3")
 
     analyzer = _build_analyzer(test_context)
     analyzer.root = root
@@ -168,7 +168,7 @@ def test_analyzer_multiple_matching_rules_single_analysis(site_tags_csv, test_co
 
 
 def test_extended_version_returns_csv_version_string(site_tags_csv, test_context):
-    site_tags_csv(["ipv4,cidr,false,10.0.0.0/8,internal-network"])
+    site_tags_csv(["ip,cidr,false,10.0.0.0/8,internal-network"])
 
     analyzer = _build_analyzer(test_context)
 
@@ -194,15 +194,15 @@ def test_extended_version_empty_when_csv_missing(tmp_path, monkeypatch, test_con
 
 
 def test_extended_version_changes_when_csv_rotated(site_tags_csv, test_context):
-    csv_path = site_tags_csv(["ipv4,cidr,false,10.0.0.0/8,internal-network"])
+    csv_path = site_tags_csv(["ip,cidr,false,10.0.0.0/8,internal-network"])
 
     analyzer = _build_analyzer(test_context)
     before = analyzer.extended_version["site_tags_version"]
 
     # Rewrite with different rules — different size at least.
     site_tags_csv([
-        "ipv4,cidr,false,10.0.0.0/8,internal-network",
-        "ipv4,cidr,false,192.168.0.0/16,private",
+        "ip,cidr,false,10.0.0.0/8,internal-network",
+        "ip,cidr,false,192.168.0.0/16,private",
     ])
     # Force mtime forward 1s in case the two writes land in the same FS tick.
     st = os.stat(csv_path)
