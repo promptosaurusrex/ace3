@@ -6,7 +6,7 @@ from flask import url_for
 
 from saq.configuration import get_config
 from saq.constants import F_TEST
-from saq.database.model import Alert, Comment
+from saq.database.model import Alert, Comment, Tag, TagMapping
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.environment import get_global_runtime_settings
@@ -96,6 +96,35 @@ def test_export_alerts_to_csv_with_alerts(web_client, root_analysis):
     assert 'Alert Time' in csv_content
     assert 'Description' in csv_content
     assert str(alert.uuid) in csv_content
+
+
+@pytest.mark.integration
+def test_export_alerts_to_csv_includes_tags(web_client, root_analysis):
+    """Exported alert rows include their tags (e.g. MITRE ATT&CK techniques)."""
+    root_analysis.event_time = local_time()
+    root_analysis.save()
+    alert = ALERT(root_analysis)
+
+    tag_one = Tag(name="mitre:T1566")
+    tag_two = Tag(name="mitre:T1059.001")
+    get_db().add_all([tag_one, tag_two])
+    get_db().flush()
+    get_db().add_all([
+        TagMapping(alert_id=alert.id, tag_id=tag_one.id),
+        TagMapping(alert_id=alert.id, tag_id=tag_two.id),
+    ])
+    get_db().commit()
+
+    with web_client.session_transaction() as sess:
+        sess['filters'] = []
+
+    result = web_client.get(url_for("analysis.export_alerts_to_csv"))
+    assert result.status_code == 200
+
+    csv_content = result.get_data(as_text=True)
+    assert 'Tags' in csv_content
+    assert 'mitre:T1566' in csv_content
+    assert 'mitre:T1059.001' in csv_content
 
 
 @pytest.mark.integration

@@ -42,7 +42,7 @@ from saq.constants import (
     DIRECTIVE_OCR,
     F_FILE,
     F_FQDN,
-    F_IPV4,
+    F_IP,
     FILE_SUBDIR,
 )
 from saq.util.hashing import is_sha256_hex
@@ -154,7 +154,7 @@ def _check_nrd_analyzer(test_context, monkeypatch):
 
 def _check_site_tagger(test_context, monkeypatch):
     """Runs SiteTagAnalyzer against a temp CSV containing one CIDR rule
-    that matches an F_IPV4 observable. Verifies the live analyzer's
+    that matches an F_IP observable. Verifies the live analyzer's
     delta is contract-clean — single tag added to the target observable,
     no children, no removals, no file observables.
     """
@@ -177,7 +177,7 @@ def _check_site_tagger(test_context, monkeypatch):
 
     root = create_root_analysis()
     root.initialize_storage()
-    obs = root.add_observable_by_spec(F_IPV4, "10.1.2.3")
+    obs = root.add_observable_by_spec(F_IP, "10.1.2.3")
 
     analyzer = SiteTagAnalyzer(
         context=test_context,

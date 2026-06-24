@@ -5,7 +5,7 @@ from typing import Type
 from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.configuration.config import get_config
-from saq.constants import F_ASSET, F_FQDN, F_HOSTNAME, F_IPV4, AnalysisExecutionResult
+from saq.constants import F_ASSET, F_FQDN, F_HOSTNAME, F_IP, AnalysisExecutionResult
 from saq.environment import get_global_runtime_settings
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -184,7 +184,7 @@ class DNSAnalyzer(AnalysisModule):
                         (ipv4,) = m.groups()
                         if ipv4 is not None:
                             logging.debug("hostname {} resolved to {}".format(observable.value, ipv4))
-                            analysis.add_observable_by_spec(F_IPV4, ipv4)
+                            analysis.add_observable_by_spec(F_IP, ipv4)
                             analysis.dns_resolved = True
                             if is_hostname(observable.value):
                                 analysis.dns_hostname = observable.value

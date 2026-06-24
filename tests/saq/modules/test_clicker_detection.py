@@ -6,7 +6,7 @@ import pytest
 
 from saq.analysis import RootAnalysis
 from saq.analysis.module_path import MODULE_PATH
-from saq.constants import DIRECTIVE_CRAWL, F_EMAIL_ADDRESS, F_FQDN, F_IPV4, F_URL
+from saq.constants import DIRECTIVE_CRAWL, F_EMAIL_ADDRESS, F_FQDN, F_IP, F_URL
 from saq.modules.clicker_detection import (
     SplunkClickerDetectionAnalysis,
     SplunkClickerDetectionAnalyzer,
@@ -42,7 +42,7 @@ SAFELINKS = {
     "use_index_time": False,
     "observable_mapping": [
         {"field": "AccountUpn", "type": "email_address", "display_type": "Clicker"},
-        {"field": "IPAddress", "type": "ipv4"},
+        {"field": "IPAddress", "type": "ip"},
     ],
     "event_mapping": {"timestamp": "Timestamp", "user": "AccountUpn", "action_type": "ActionType",
                       "url": "Url", "network_message_id": "NetworkMessageId"},
@@ -112,7 +112,7 @@ def test_url_hit_extracts_clickers_and_escalates(test_context):
         emails = [o for o in analysis.observables if o.type == F_EMAIL_ADDRESS]
         assert {o.value for o in emails} == {"clicker@example.com", "blocked@example.com"}
         assert all("Clicker" in o.display_type for o in emails)
-        assert any(o.type == F_IPV4 for o in analysis.observables)
+        assert any(o.type == F_IP for o in analysis.observables)
 
         # only the ClickAllowed row escalates
         assert analysis.has_detection_points()
