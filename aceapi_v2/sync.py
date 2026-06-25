@@ -6,6 +6,7 @@ from collections.abc import Callable, Coroutine
 from typing import Any, TypeVar
 
 from aceapi_v2.database import get_async_session
+from saq.database.pool import remove_all_sessions
 
 T = TypeVar("T")
 
@@ -26,6 +27,27 @@ def _get_loop() -> asyncio.AbstractEventLoop:
                 thread = threading.Thread(target=_loop.run_forever, daemon=True)
                 thread.start()
     return _loop
+
+
+async def run_db_in_thread(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+    """Run a sync get_db()-using function in a worker thread, resetting the
+    thread-local session afterward.
+
+    The synchronous scoped session (saq/database/pool.py get_db()) has no
+    per-request teardown in apiv2 the way the Flask apps do via
+    teardown_appcontext -> remove_all_sessions(). Without this, leftover
+    transaction state (or a stale connection) on a pooled worker thread's
+    session leaks to the next task that reuses the thread, eventually raising
+    PendingRollbackError. remove_all_sessions() calls scoped_session.remove(),
+    which only affects the calling worker thread's session.
+    """
+    def _wrapped() -> T:
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            remove_all_sessions()
+
+    return await asyncio.to_thread(_wrapped)
 
 
 def run_async(coro: Coroutine[Any, Any, T]) -> T:

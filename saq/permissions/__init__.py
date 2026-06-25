@@ -19,7 +19,7 @@ from .user import (
 )
 
 # Permission logic
-from .logic import user_has_permission
+from .logic import user_has_permission, user_has_permission_async
 
 __all__ = [
     # Group management
@@ -38,4 +38,5 @@ __all__ = [
     "UserPermission",
     # Permission logic
     "user_has_permission",
+    "user_has_permission_async",
 ]

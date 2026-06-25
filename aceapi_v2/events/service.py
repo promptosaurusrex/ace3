@@ -5,17 +5,18 @@ synchronous ``get_db()`` queries, so events cannot be serialized through an
 ``AsyncSession``-loaded instance. Following the pattern established in
 ``aceapi_v2/alerts/service.py``, the database work is done in synchronous
 helpers that use ``get_db()`` and is dispatched from the async service via
-``asyncio.to_thread`` so it never blocks the event loop. The sync helpers
-return fully-materialized dicts/strings, so nothing lazy-loads back in the
-async context.
+``run_db_in_thread`` so it never blocks the event loop and the worker thread's
+sync session is reset after each call. The sync helpers return
+fully-materialized dicts/strings, so nothing lazy-loads back in the async
+context.
 """
-
-import asyncio
 
 from fastapi import HTTPException
 
 from saq.csv_builder import CSV
 from saq.database import Event, EventStatus, get_db
+
+from aceapi_v2.sync import run_db_in_thread
 
 
 def _serialize_event(event: Event) -> dict:
@@ -130,14 +131,14 @@ def _export_events_to_csv_sync(event_ids: list[int]) -> str:
 
 async def get_open_events() -> list[dict]:
     """Return all events with status ``OPEN`` serialized as ``Event.json`` dicts."""
-    return await asyncio.to_thread(_get_open_events_sync)
+    return await run_db_in_thread(_get_open_events_sync)
 
 
 async def set_event_status(event_id: int, status_value: str) -> dict:
     """Set an event's status, returning the updated event. Raises 404/400."""
-    return await asyncio.to_thread(_set_event_status_sync, event_id, status_value)
+    return await run_db_in_thread(_set_event_status_sync, event_id, status_value)
 
 
 async def export_events_to_csv(event_ids: list[int]) -> str:
     """Return a CSV export of the given events."""
-    return await asyncio.to_thread(_export_events_to_csv_sync, event_ids)
+    return await run_db_in_thread(_export_events_to_csv_sync, event_ids)

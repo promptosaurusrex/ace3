@@ -1,6 +1,5 @@
 """Alert router for ACE API v2."""
 
-import asyncio
 import logging
 import os
 from datetime import datetime
@@ -12,6 +11,7 @@ from starlette.background import BackgroundTask
 
 from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.dependencies import get_current_auth, require_permission
+from aceapi_v2.sync import run_db_in_thread
 from aceapi_v2.alerts import service
 from aceapi_v2.alerts.schemas import BulkAddObservableRequest, BulkAddObservableResult
 
@@ -67,7 +67,7 @@ async def download_alert(
 ) -> FileResponse:
     """Download the full alert storage directory as a zip encrypted with password 'infected'."""
     logger.info("AUDIT: user %s downloading alert %s", auth.auth_name, alert_uuid)
-    zip_path = await asyncio.to_thread(service.create_encrypted_alert_zip, alert_uuid)
+    zip_path = await run_db_in_thread(service.create_encrypted_alert_zip, alert_uuid)
     return FileResponse(
         zip_path,
         media_type="application/zip",
@@ -87,7 +87,7 @@ async def view_alert_logs(
     Default: text/plain with inline disposition (renders in browser).
     With ?download=true, served as an attachment download.
     """
-    log_path = await asyncio.to_thread(service.resolve_alert_log_path, alert_uuid)
+    log_path = await run_db_in_thread(service.resolve_alert_log_path, alert_uuid)
     if download:
         return FileResponse(
             log_path,
