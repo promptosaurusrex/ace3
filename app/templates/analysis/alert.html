@@ -504,7 +504,7 @@
             <i class="toggle-icon bi bi-chevron-down" onclick="collapseTree(this)" title="Collapse / expand this section"></i>
             <span class="provenance-group-chip" title="{{ group.full_label }}">{{ group.label }}</span>
             {% for ts in group.trace_steps %}
-                <a class="provenance-trace-link" href="#trace-step-{{ ts.property_name }}" title="Jump to this step in the Correlation Trace below">
+                <a class="provenance-trace-link" href="#trace-step-{{ ts.property_name }}" title="Jump to this step in the Correlation Trace above">
                     <i class="bi bi-diagram-3"></i> View in Correlation Trace
                 </a>
             {% endfor %}

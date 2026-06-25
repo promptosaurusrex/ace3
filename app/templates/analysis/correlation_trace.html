@@ -434,6 +434,28 @@
 {% endmacro %}
 
 
+{#-- Collect identifiers of every transform that actually executed, walking nested
+     condition branch_steps. Used to mark which of the hunt's DEFINED steps
+     (hunt_provenance.steps lists them all) actually ran. We collect BOTH the
+     property_name (set only on a successful transform) and the step description
+     (its legend label — present even when the transform errored), so a step that
+     ran-but-errored still counts as executed. Appends into the passed-in namespace
+     so results accumulate across events / recursion. --#}
+{% macro collect_executed_props(steps, acc) %}
+    {%- for s in steps -%}
+        {%- if s.step.trace_type == "transform" -%}
+            {%- if s.step.property_name and s.step.property_name not in acc.props -%}
+                {%- set _ = acc.props.append(s.step.property_name) -%}
+            {%- endif -%}
+            {%- if s.description and s.description not in acc.descs -%}
+                {%- set _ = acc.descs.append(s.description) -%}
+            {%- endif -%}
+        {%- elif s.step.trace_type == "condition" and s.step.branch_steps -%}
+            {{- collect_executed_props(s.step.branch_steps, acc) -}}
+        {%- endif -%}
+    {%- endfor -%}
+{% endmacro %}
+
 {#-- =========================================================================
      Outer panel: only render if this alert has a correlation_trace
      ========================================================================= --#}
@@ -528,6 +550,23 @@
         {% endfor %}
     {% endfor %}
 
+    {# Identifiers (property names + descriptions) of transforms that actually ran
+       across all events, used to mark which Hunt-steps legend entries executed. #}
+    {% set _executed = namespace(props=[], descs=[]) %}
+    {% for et in event_traces %}{{ collect_executed_props(et.steps or [], _executed) }}{% endfor %}
+
+    {# Step indices that actually have an Analysis-Overview anchor to jump to — only
+       steps that produced observables get a provenance group (and thus a
+       #provenance-step-<index> target). A legend badge is a navigable link iff its
+       index is in this set. #}
+    {% set _anchored_steps = namespace(idx=[]) %}
+    {% set _prov_obs = (analysis.details.get('hunt_provenance') or {}).get('observables') or {} %}
+    {% for _uuid, _idxs in _prov_obs.items() %}
+        {% for _i in _idxs %}
+            {% if _i not in _anchored_steps.idx %}{% set _ = _anchored_steps.idx.append(_i) %}{% endif %}
+        {% endfor %}
+    {% endfor %}
+
 <div class="row">
     <div class="col">
         <div class="card mb-3">
@@ -560,23 +599,39 @@
                     {% endif %}
 
                     {#-- Hunt-step provenance legend: the bidirectional hub between this
-                         trace and the grouped Analysis Overview above. Each entry is the
-                         anchor target of that step-group's "View in Correlation Trace"
-                         link (id=trace-step-<property_name>), and itself links back up to
-                         the group (#provenance-step-<index>). --#}
+                         trace and the grouped Analysis Overview below. Lists every DEFINED
+                         hunt step; steps that ran are solid, steps that did not run are
+                         greyed. A step is a navigable link (down to its observable group)
+                         only when it produced observables — i.e. its index has a
+                         #provenance-step-<index> anchor. Steps with a property_name also
+                         carry id=trace-step-<property_name> so the group's "View in
+                         Correlation Trace" links resolve back up here. --#}
                     {% set _prov = analysis.details.get('hunt_provenance') %}
                     {% if _prov and _prov.get('steps') %}
                         {% set _prov_palette = ['rgba(255,99,71,0.55)','rgba(255,165,0,0.55)','rgba(230,200,0,0.55)','rgba(60,179,113,0.55)','rgba(30,144,255,0.55)','rgba(138,43,226,0.55)','rgba(199,21,133,0.55)'] %}
                         <div class="ct-provenance-legend d-flex flex-wrap align-items-center gap-2 mb-3">
                             <span class="text-body-secondary small"><i class="bi bi-signpost-split"></i> Hunt steps:</span>
                             {% for s in _prov.get('steps') %}
-                                <a {% if s.property_name %}id="trace-step-{{ s.property_name }}"{% endif %}
-                                   href="#provenance-step-{{ s.index }}"
-                                   class="badge ct-provenance-step"
-                                   style="--provenance-color: {{ _prov_palette[s.index % 7] }};"
-                                   title="Jump to this step's observables in the Analysis Overview above">
-                                   {{ s.label }} <i class="bi bi-arrow-up-short"></i>
-                                </a>
+                                {% set _ran = s.index == 0 or s.property_name in _executed.props or s.label in _executed.descs %}
+                                {% set _has_anchor = s.index in _anchored_steps.idx %}
+                                {% if _has_anchor %}
+                                    {#-- ran and produced observables: link down to its group --#}
+                                    <a {% if s.property_name %}id="trace-step-{{ s.property_name }}"{% endif %}
+                                       href="#provenance-step-{{ s.index }}"
+                                       class="badge ct-provenance-step"
+                                       style="--provenance-color: {{ _prov_palette[s.index % 7] }};"
+                                       title="Jump to this step's observables in the Analysis Overview below">
+                                       {{ s.label }} <i class="bi bi-arrow-down-short"></i>
+                                    </a>
+                                {% else %}
+                                    {#-- no observable group to jump to: plain badge. Greyed when it did not run. --#}
+                                    <span {% if s.property_name %}id="trace-step-{{ s.property_name }}"{% endif %}
+                                       class="badge ct-provenance-step{% if not _ran %} ct-provenance-step-skipped{% endif %}"
+                                       {% if _ran %}style="--provenance-color: {{ _prov_palette[s.index % 7] }};"{% endif %}
+                                       title="{{ 'did not run in this event' if not _ran else 'ran — no observables to jump to' }}">
+                                       {{ s.label }}
+                                    </span>
+                                {% endif %}
                             {% endfor %}
                         </div>
                     {% endif %}
@@ -642,7 +697,7 @@
                                     <li>
                                         <span class="badge text-bg-light text-dark">{{ se.event_type }}</span>
                                         {% if se.at_event_index is not none %}
-                                            at index <code>{{ se.at_event_index }}</code>
+                                            at <code>event #{{ se.at_event_index }}</code>
                                         {% endif %}
                                         {% if se.detail %}— {{ se.detail }}{% endif %}
                                     </li>

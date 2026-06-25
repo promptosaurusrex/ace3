@@ -810,6 +810,8 @@ class QueryHunt(Hunt):
                 max_result_count=self.max_result_count,
                 hunt_source_type=self.type,
                 correlate_replay=getattr(self, "_correlate_replay_results", None),
+                hunt_name=self.name,
+                hunt_uuid=self.uuid,
             )
             result = engine.execute(query_results)
             self.correlation_trace = result.trace

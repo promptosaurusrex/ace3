@@ -37,7 +37,9 @@ correlate:
     logic: [ condition | transform | action ] # required
 ```
 
-The `timeout` specifies the maximum amount of time that can be spent running the correlate logic. If this time expires before correlate logic can complete, a warning is logged and any remaining events are skipped (they fall through the processing.) The default timeout is 15m.
+The `timeout` specifies the maximum amount of time that can be spent running the correlate logic. The default timeout is 15m.
+
+If this time expires before correlate logic can complete — whether *between events* or *partway through a single event's steps* — a warning is logged (identifying the hunt by name and uuid), a stream-level `timeout` event is recorded, and each affected event's trace outcome is recorded as `timeout`. The affected event's remaining steps are skipped and it falls through to an **alert**: this is a fail-safe, so a timeout can never silently drop an event (and a partially-processed event is never mistaken for one that passed cleanly). If you need different behavior, reduce the work per event (e.g. `cache:` slow commands, run cheap `when` filters before slow transforms) or raise the `timeout` rather than relying on this fall-through.
 
 ### Conditions
 
@@ -158,6 +160,8 @@ The optional `timeout` setting controls how long to wait for the command to comp
 If any step fails for any reason — a command exits non-zero, a query source is unreachable, a command times out, an expression raises, an action raises — step processing for the affected event stops immediately and the event is alerted. The event's trace outcome is recorded as `error` and the error message is attached to the failing step's trace so it can be reviewed in the alert UI or CLI trace output.
 
 This is a fail-safe: the correlation pipeline can never silently drop an event as a result of an error. If you want different behavior for an expected failure mode, express it explicitly using `when` conditions rather than relying on errors.
+
+Note the two distinct timeouts: a *command-level* timeout (the `command.timeout` setting below) is one of the step failures above — it stops the event and records an `error` outcome. The *correlate-level* timeout (the `timeout` setting under [Correlate](#correlate)) is the overall run budget — when it expires the event is recorded with a `timeout` outcome instead. Both fall through to an alert.
 
 The `type` field specifies the type of the command. The following types are supported.
 

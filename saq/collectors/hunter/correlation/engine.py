@@ -92,9 +92,14 @@ class CorrelationEngine:
         max_result_count: Optional[int] = None,
         hunt_source_type: Optional[str] = None,
         correlate_replay: Optional[list[dict]] = None,
+        hunt_name: Optional[str] = None,
+        hunt_uuid: Optional[str] = None,
     ):
         self.config = correlate_config
         self.predefined_commands = predefined_commands or []
+        # hunt identity, used only to make timeout/diagnostic logs greppable per-hunt
+        self.hunt_name = hunt_name
+        self.hunt_uuid = hunt_uuid
         # the hunt's query window. stream transforms (and event transforms with no
         # resolvable per-event time field) anchor their relative time_range to it:
         # `before` extends before hunt_start_time, `after` extends after hunt_end_time.
@@ -146,7 +151,10 @@ class CorrelationEngine:
         while event_index < len(events):
             elapsed = datetime.datetime.now(datetime.timezone.utc) - start_time
             if elapsed >= self.timeout:
-                logging.warning("correlation timeout reached after %s, remaining events will fall through to alert", elapsed)
+                logging.warning(
+                    "correlation timeout reached after %s for %s, remaining events will fall through to alert",
+                    elapsed, self._hunt_label(),
+                )
                 trace.stream_events.append(StreamEvent(
                     event_type="timeout",
                     at_event_index=event_index,
@@ -224,6 +232,29 @@ class CorrelationEngine:
                 alert_events.append((event_index, event))
                 result.event_actions[event_index] = ActionResult(action_type="alert")
                 event_trace.outcome = "alert"
+            elif action_result.action_type == "timeout":
+                # The correlate timeout was reached partway through this event's
+                # steps. Make it visible — the per-step check used to truncate
+                # silently, so the event looked like a clean alert. Log a warning,
+                # record a stream event, and mark the (partial) trace's outcome as
+                # "timeout". The event still falls through to alert as a fail-safe
+                # (the pipeline never silently drops an event), but the outcome
+                # makes the skipped remainder — and its false-positive risk —
+                # explicit to the analyst.
+                elapsed = datetime.datetime.now(datetime.timezone.utc) - start_time
+                logging.warning(
+                    "correlation timeout reached after %s for %s while processing event %s, "
+                    "remaining steps skipped and event falls through to alert",
+                    elapsed, self._hunt_label(), event_index,
+                )
+                trace.stream_events.append(StreamEvent(
+                    event_type="timeout",
+                    at_event_index=event_index,
+                    detail=f"timeout after {elapsed} mid-event; remaining steps skipped",
+                ))
+                alert_events.append((event_index, event))
+                result.event_actions[event_index] = ActionResult(action_type="alert")
+                event_trace.outcome = "timeout"
 
             trace.event_traces.append(event_trace)
             event_index += 1
@@ -233,6 +264,16 @@ class CorrelationEngine:
         result.trace = trace
         result.captured_queries = self.query_recorder.export()
         return result
+
+    def _hunt_label(self) -> str:
+        """Human/greppable hunt identity for diagnostic logs (timeouts, etc.)."""
+        if self.hunt_name and self.hunt_uuid:
+            return f"hunt {self.hunt_name} (uuid={self.hunt_uuid})"
+        if self.hunt_name:
+            return f"hunt {self.hunt_name}"
+        if self.hunt_uuid:
+            return f"hunt uuid={self.hunt_uuid}"
+        return "correlate hunt"
 
     @staticmethod
     def _append_step_trace_on_error(se: "_StepError", trace_steps: Optional[list[StepTrace]]) -> None:
@@ -270,7 +311,12 @@ class CorrelationEngine:
 
             elapsed = datetime.datetime.now(datetime.timezone.utc) - start_time
             if elapsed >= self.timeout:
-                return None
+                # Return a "timeout" interrupt rather than a bare None so the
+                # enclosing condition's (partial) trace is preserved on the way up
+                # and execute() can record the timeout visibly. Previously this
+                # returned None, which silently truncated the event and made it
+                # look like a clean alert.
+                return ActionResult(action_type="timeout")
 
             if step.debug:
                 self._render_debug(step.debug, event, events)

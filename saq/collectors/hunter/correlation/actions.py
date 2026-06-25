@@ -13,14 +13,18 @@ _jinja_env = SandboxedEnvironment()
 @dataclass
 class ActionResult:
     """Result of executing an action."""
-    action_type: str  # filter, stop, discard, alert, log, continue
+    action_type: str  # filter, stop, discard, alert, log, timeout, continue
     queue_override: Optional[str] = None
     analysis_mode_override: Optional[str] = None
 
     @property
     def is_interrupt(self) -> bool:
-        """Returns True if this action interrupts event processing."""
-        return self.action_type in ("filter", "stop", "discard", "alert")
+        """Returns True if this action interrupts event processing.
+
+        "timeout" is not an authored action type — it is synthesized by the engine
+        when the correlate timeout is reached mid-event — but it interrupts the same
+        way so the partial trace propagates up and the event is handled visibly."""
+        return self.action_type in ("filter", "stop", "discard", "alert", "timeout")
 
     @property
     def is_stream_interrupt(self) -> bool:
