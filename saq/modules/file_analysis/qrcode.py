@@ -335,6 +335,18 @@ class QRCodeAnalyzer(AnalysisModule):
 
         return target_file_paths
 
+    def custom_requirement(self, observable) -> bool:
+        # this module declares valid_observable_types = F_FILE but only ever
+        # scans images and PDFs (see the gate in execute_analysis). gating here
+        # keeps every other file type (.eml, .html, headers, .msg, ...) from
+        # being scheduled and, since cache lookup happens after accepts(), from
+        # being cache-consulted at all — those lookups always missed and never
+        # produced a cacheable result, so they were pure overhead.
+        local_file_path = observable.full_path
+        if not os.path.exists(local_file_path) or os.path.getsize(local_file_path) == 0:
+            return False
+        return is_image(local_file_path) or is_pdf_file(local_file_path)
+
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
         from saq.modules.file_analysis.hash import FileHashAnalyzer
 

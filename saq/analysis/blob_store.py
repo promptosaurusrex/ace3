@@ -201,6 +201,17 @@ class BlobStore(ABC):
         backend (future) downloads to the dest path.
         """
 
+    def disk_usage_bytes(self) -> Optional[int]:
+        """Total bytes of locally-stored blobs, or None if not measurable.
+
+        Surfaced on the cache_stats heartbeat so blob-store growth is visible
+        (the MySQL table stats don't cover blob payload bytes on disk).
+        Two-tier backends report their LOCAL cache tier; the durable tier
+        (e.g. S3) is measured out-of-band via cloud metrics. Default None for
+        backends that can't cheaply answer.
+        """
+        return None
+
 
 class LocalHardlinkBlobStoreConfig(BlobStoreConfig):
     """Config for the local filesystem blob store backend."""
@@ -253,6 +264,18 @@ class LocalHardlinkBlobStore(BlobStore):
                 if len(name) != 64 or not _is_hex(name) or name[:self.SHARD_LEN] != shard:
                     continue
                 yield name, os.path.join(shard_dir, name)
+
+    def disk_usage_bytes(self) -> Optional[int]:
+        """Sum the on-disk size of every blob. O(blob count) stat walk —
+        cheap enough for the 15-minute heartbeat, and the hourly GC already
+        walks the same store."""
+        total = 0
+        for _sha256, path in self.iter_blobs():
+            try:
+                total += os.stat(path).st_size
+            except OSError:
+                continue
+        return total
 
     def put(self, data: Union[bytes, BinaryIO]) -> str:
         h = hashlib.sha256()

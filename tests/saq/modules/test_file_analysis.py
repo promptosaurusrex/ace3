@@ -536,6 +536,35 @@ def test_qrcode(datadir, test_context):
     assert file_observable.has_directive(DIRECTIVE_EXTRACT_URLS)
 
 @pytest.mark.unit
+def test_qrcode_custom_requirement(datadir, tmp_path, test_context):
+    """qrcode declares valid_observable_types = F_FILE but only scans images
+    and PDFs. custom_requirement gates out every other file type *before* the
+    engine consults the cache, so non-image/non-PDF files no longer incur a
+    cache lookup (which always missed and never produced a cacheable result)."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    text_path = tmp_path / "note.txt"
+    text_path.write_text("just some text, not an image or a pdf")
+    empty_path = tmp_path / "empty.bin"
+    empty_path.write_bytes(b"")
+
+    image_obs = root.add_file_observable(datadir / "2910293944.gif")
+    pdf_obs = root.add_file_observable(datadir / "sample_pdf_with_qr_code.pdf")
+    text_obs = root.add_file_observable(str(text_path))
+    empty_obs = root.add_file_observable(str(empty_path))
+
+    analyzer = QRCodeAnalyzer(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config(ANALYSIS_MODULE_QRCODE))
+
+    assert analyzer.custom_requirement(image_obs) is True
+    assert analyzer.custom_requirement(pdf_obs) is True
+    assert analyzer.custom_requirement(text_obs) is False
+    assert analyzer.custom_requirement(empty_obs) is False
+
+
+@pytest.mark.unit
 def test_qrcode_inverted(datadir, test_context):
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
