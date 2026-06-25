@@ -3483,9 +3483,9 @@ rdap_analyzer (network-bound) is expected to be strongly positive.
 the non-blocking delayed-analysis requeue shape with a `single_flight`
 opt-in flag, replacing the original blocking `wait_for_cache` poll loop.
 
-## Pre-3.5 cleanup: qrcode consult gate + blob-byte gauge (2026-06-25)
+## Pre-3.5 cleanup: qrcode consult gate + effective hit rate (2026-06-25)
 
-Three cleanups surfaced while reviewing the Phase 4 bake telemetry, landed
+Two cleanups surfaced while reviewing the Phase 4 bake telemetry, landed
 ahead of Phase 3.5 (which they don't depend on).
 
 **qrcode was cache-consulted for files it never scans.** `QRCodeAnalyzer`
@@ -3511,13 +3511,3 @@ Added an "Effective Cache Hit Rate" single-value tile and an
 `effective_hit_rate_pct = hits/(hits+writes)` column on the per-module tables
 (hit/miss, reality check, payoff). `writes` = `cache_write_count_insert`
 ≈ real-scan misses, so the metric reflects the workload actually scanned.
-
-**Blob-store byte gauge.** `collect_stats()` only summed the two MySQL tables
-(which plateau at ~1–2 GB); the blob payload bytes on the
-`LocalHardlinkBlobStore` filesystem — the only un-projected part of the
-steady-state footprint — were unmeasured. Added `BlobStore.disk_usage_bytes()`
-(base default `None`; `LocalHardlinkBlobStore` overrides via an `iter_blobs()`
-+ `os.stat` walk), surfaced as `blob_store_on_disk_bytes` on the `cache_stats`
-heartbeat. Two-tier backends (S3) should override to report their local cache
-tier; the durable tier stays a cloud-metrics concern (follow-up in the
-integration repo).

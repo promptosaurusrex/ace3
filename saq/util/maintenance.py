@@ -210,19 +210,15 @@ def emit_cache_stats() -> None:
     try:
         stats = collect_cache_stats()
         logging.info(
-            "cache_stats total_rows=%d total_on_disk_bytes=%d blob_refs_rows=%d "
-            "blob_store_on_disk_bytes=%s",
+            "cache_stats total_rows=%d total_on_disk_bytes=%d blob_refs_rows=%d",
             stats["total_rows"],
             stats["total_on_disk_bytes"],
             stats["blob_refs_rows"],
-            # %s, not %d: None when the backend can't measure on-disk bytes
-            stats["blob_store_on_disk_bytes"],
             # NOTE this was added to support timechart queries in Splunk
             extra={
                 "total_rows": stats["total_rows"],
                 "total_on_disk_bytes": stats["total_on_disk_bytes"],
                 "blob_refs_rows": stats["blob_refs_rows"],
-                "blob_store_on_disk_bytes": stats["blob_store_on_disk_bytes"],
             },
         )
     except Exception as e:

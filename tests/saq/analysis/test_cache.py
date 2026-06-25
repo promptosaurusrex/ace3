@@ -724,10 +724,6 @@ class TestCollectStats:
             assert after["total_rows"] >= before["total_rows"]
             assert after["blob_refs_rows"] >= before["blob_refs_rows"]
             assert after["total_on_disk_bytes"] >= before["total_on_disk_bytes"]
-            # blob payload bytes on disk are reported separately from the table
-            # stats; the default LocalHardlinkBlobStore always answers with an int
-            assert after["blob_store_on_disk_bytes"] is not None
-            assert after["blob_store_on_disk_bytes"] >= before["blob_store_on_disk_bytes"]
         finally:
             _delete_cache_row(delta_small.cache_key)
             _delete_cache_row(delta_big.cache_key)

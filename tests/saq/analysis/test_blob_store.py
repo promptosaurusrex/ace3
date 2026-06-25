@@ -131,29 +131,6 @@ class TestIterBlobs:
         assert list(blob_store.iter_blobs()) == []
 
 
-class TestDiskUsageBytes:
-
-    @pytest.mark.unit
-    def test_empty_store_is_zero(self, blob_store):
-        assert blob_store.disk_usage_bytes() == 0
-
-    @pytest.mark.unit
-    def test_sums_blob_sizes(self, blob_store):
-        payloads = [b"a", b"bb" * 100, b"ccc" * 1000]
-        for data in payloads:
-            blob_store.put(data)
-        assert blob_store.disk_usage_bytes() == sum(len(p) for p in payloads)
-
-    @pytest.mark.unit
-    def test_ignores_non_blob_files(self, blob_store):
-        # non-sha tempfile artifacts are skipped (same filter as iter_blobs)
-        sha = blob_store.put(b"real blob")
-        shard_dir = os.path.dirname(blob_store._path_for(sha))
-        with open(os.path.join(shard_dir, "tmpABCD.junk"), "wb") as f:
-            f.write(b"x" * 999)
-        assert blob_store.disk_usage_bytes() == len(b"real blob")
-
-
 class TestMaintainGlobal:
 
     @pytest.mark.unit

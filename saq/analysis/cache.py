@@ -449,16 +449,10 @@ def collect_stats() -> dict:
     cache_rows, cache_bytes = by_table.get("analysis_result_cache", (0, 0))
     blob_refs_rows, _ = by_table.get("blob_refs", (0, 0))
 
-    # blob payload bytes live on the filesystem, not in the MySQL tables above,
-    # so account for them separately (None when the backend can't cheaply
-    # measure them — e.g. a remote durable tier).
-    blob_store_on_disk_bytes = get_blob_store().disk_usage_bytes()
-
     return {
         "total_rows": cache_rows,
         "total_on_disk_bytes": cache_bytes,
         "blob_refs_rows": blob_refs_rows,
-        "blob_store_on_disk_bytes": blob_store_on_disk_bytes,
     }
 
 
