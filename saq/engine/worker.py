@@ -273,7 +273,12 @@ class Worker:
     # ------------------------------------------------------------------------
 
     def worker_loop(self, execution_mode: EngineExecutionMode):
-        
+
+        # forked workers inherit the parent's transaction id, so generate a fresh
+        # default for this process to distinguish its loop-level logs from siblings
+        from saq.logging import initialize_transaction_id
+        initialize_transaction_id()
+
         logging.info(
             "started worker {} loop on process {} with priority {}".format(
                 self.name, os.getpid(), self.config.analysis_mode_priority
@@ -384,58 +389,61 @@ class Worker:
     def execute(self, work_item: Union[RootAnalysis, DelayedAnalysisRequest]):
         """Execute a single work item using the AnalysisOrchestrator."""
 
-        logging.debug("got work item {}".format(work_item))
+        # correlate every log line for this work item under the root analysis uuid
+        from saq.logging import transaction_id
+        with transaction_id(work_item.uuid):
+            logging.debug("got work item {}".format(work_item))
 
-        # Create execution context for this work item
-        execution_context = EngineExecutionContext(work_item)
+            # Create execution context for this work item
+            execution_context = EngineExecutionContext(work_item)
 
-        # at this point the thing to work on is locked (using the locks database table)
-        # start a secondary thread that just keeps the lock open
-        if not self.config.single_threaded_mode:
-            if not self.lock_manager.start_keepalive(work_item.uuid):
-                logging.error("detected lock failure for work item {}".format(work_item))
-                self.current_execution_context = None
-                return
-
-        try:
-            work_dir = get_engine_config().work_dir
-
-            if (
-                # if the work target is a root analysis object,
-                isinstance(work_item, RootAnalysis)
-                # and it is not an alert,
-                and work_item.analysis_mode not in [ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED]
-                # and this system uses a work directory for analysis,
-                and work_dir
-                # and the storage directory is currently set to the main data directory
-                and work_item.storage_dir == storage_dir_from_uuid(work_item.uuid)
-            ):
-                logging.info(f"switching to work directory for {work_item}")
-                # then we move the storage directory to the work directory
-                # first we need to load it
-                work_item.load()
-                # then we can move it
-                self.analysis_orchestrator._relocate_storage_directory(workload_storage_dir(work_item.uuid), execution_context)
-                # and re-track to that new target location
-                self.tracking_message_manager.track_current_work_target(work_item)
-
-            # Use the AnalysisOrchestrator to handle the complete analysis lifecycle
-            success = self.analysis_orchestrator.orchestrate_analysis(execution_context)
-            
-            if not success:
-                logging.warning(f"analysis orchestration failed for {work_item}")
-
-        except Exception as e:
-            logging.error("error orchestrating analysis for {}: {}".format(work_item, e))
-            report_exception(execution_context)
-
-        finally:
-            # Clean up: stop keepalive and clear work target
+            # at this point the thing to work on is locked (using the locks database table)
+            # start a secondary thread that just keeps the lock open
             if not self.config.single_threaded_mode:
-                self.lock_manager.stop_keepalive()
-            self.workload_manager.clear_work_target(work_item)
-            # Clear the execution context
-            self.current_execution_context = None
+                if not self.lock_manager.start_keepalive(work_item.uuid):
+                    logging.error("detected lock failure for work item {}".format(work_item))
+                    self.current_execution_context = None
+                    return
+
+            try:
+                work_dir = get_engine_config().work_dir
+
+                if (
+                    # if the work target is a root analysis object,
+                    isinstance(work_item, RootAnalysis)
+                    # and it is not an alert,
+                    and work_item.analysis_mode not in [ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED]
+                    # and this system uses a work directory for analysis,
+                    and work_dir
+                    # and the storage directory is currently set to the main data directory
+                    and work_item.storage_dir == storage_dir_from_uuid(work_item.uuid)
+                ):
+                    logging.info(f"switching to work directory for {work_item}")
+                    # then we move the storage directory to the work directory
+                    # first we need to load it
+                    work_item.load()
+                    # then we can move it
+                    self.analysis_orchestrator._relocate_storage_directory(workload_storage_dir(work_item.uuid), execution_context)
+                    # and re-track to that new target location
+                    self.tracking_message_manager.track_current_work_target(work_item)
+
+                # Use the AnalysisOrchestrator to handle the complete analysis lifecycle
+                success = self.analysis_orchestrator.orchestrate_analysis(execution_context)
+
+                if not success:
+                    logging.warning(f"analysis orchestration failed for {work_item}")
+
+            except Exception as e:
+                logging.error("error orchestrating analysis for {}: {}".format(work_item, e))
+                report_exception(execution_context)
+
+            finally:
+                # Clean up: stop keepalive and clear work target
+                if not self.config.single_threaded_mode:
+                    self.lock_manager.stop_keepalive()
+                self.workload_manager.clear_work_target(work_item)
+                # Clear the execution context
+                self.current_execution_context = None
 
     def analysis_has_timed_out(self) -> bool:
         """Returns True if the current analysis has timed out (is stuck)."""

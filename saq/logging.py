@@ -1,5 +1,6 @@
 
 import contextlib
+import contextvars
 from datetime import datetime
 import logging
 import logging.config
@@ -7,6 +8,7 @@ import os
 import sys
 import threading
 from typing import Optional
+import uuid
 import yaml
 
 from fluent.handler import FluentRecordFormatter
@@ -152,6 +154,74 @@ def _install_suppression_filter():
             handler.addFilter(ThreadSuppressionFilter())
 
 
+# per-(process, thread, async-context) correlation id stamped onto every log
+# record by TransactionIdFilter. a ContextVar (not threading.local) so concurrent
+# asyncio tasks sharing a thread under uvicorn don't bleed ids into each other.
+# the literal default guarantees the attribute resolves even before any init call
+# has run -- the fluent format dict references %(transactionId)s and a record
+# reaching that handler without the attribute would raise.
+_DEFAULT_TRANSACTION_ID = "00000000-0000-0000-0000-000000000000"
+_transaction_id = contextvars.ContextVar("transactionId", default=_DEFAULT_TRANSACTION_ID)
+
+
+def initialize_transaction_id() -> str:
+    """generate a fresh uuid4 and set it as the current transaction id for this
+    process/thread/context. called at process startup so logs from distinct
+    processes are distinguishable. returns the new id"""
+    new_id = str(uuid.uuid4())
+    _transaction_id.set(new_id)
+    return new_id
+
+
+def get_transaction_id() -> str:
+    """return the transaction id in effect for the calling context, or the
+    process/thread default if none has been set"""
+    return _transaction_id.get()
+
+
+def set_transaction_id(new_id: str) -> contextvars.Token:
+    """set the transaction id for the calling context. returns the Token used to
+    restore the prior value (see transaction_id())"""
+    assert isinstance(new_id, str) and new_id
+    return _transaction_id.set(new_id)
+
+
+@contextlib.contextmanager
+def transaction_id(new_id: Optional[str]=None):
+    """set the transaction id for the duration of the with-block then restore the
+    prior value. generates a fresh uuid4 if none is passed. re-entrant safe:
+    nesting restores the value in effect before the block (via the ContextVar
+    Token). yields the id in effect inside the block"""
+    if new_id is None:
+        new_id = str(uuid.uuid4())
+
+    token = _transaction_id.set(new_id)
+    try:
+        yield new_id
+    finally:
+        _transaction_id.reset(token)
+
+
+class TransactionIdFilter(logging.Filter):
+    """logging filter that stamps the current transaction id onto every record as
+    record.transactionId so the fluent formatter's %(transactionId)s always
+    resolves. installed on the production root handlers by initialize_logging().
+    always returns True -- it annotates, it does not drop"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.transactionId = get_transaction_id()
+        return True
+
+
+def _install_transaction_id_filter():
+    """install a TransactionIdFilter on every handler attached to the root logger.
+    idempotent: a handler that already has the filter is skipped"""
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        if not any(isinstance(f, TransactionIdFilter) for f in handler.filters):
+            handler.addFilter(TransactionIdFilter())
+
+
 # base configuration for logging
 LOGGING_BASE_CONFIG = {
     'version': 1,
@@ -207,3 +277,7 @@ def initialize_logging(logging_config_path: str, log_sql: Optional[bool]=False, 
 
     # support supression filtering for production logging
     _install_suppression_filter()
+
+    # stamp a per-task transaction id onto every record for log correlation
+    _install_transaction_id_filter()
+    initialize_transaction_id()

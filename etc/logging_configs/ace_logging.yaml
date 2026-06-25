@@ -18,6 +18,7 @@ formatters:
       severity: '%(levelname)s'
       message: '%(message)s'
       logSource: '%(name)s'
+      transactionId: '%(transactionId)s'
 
 handlers:
   fluent:
