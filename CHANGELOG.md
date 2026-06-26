@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.70] - 2026-06-26
+
+- [Add Alert Unassign and Alert Quick Actions](https://github.com/ACE-Collective/ace3/pull/346)
+- [UX improvements for correlated hunts](https://github.com/ACE-Collective/ace3/pull/347)
+- [Case insensitive Phishkit searches](https://github.com/ACE-Collective/ace3/pull/348)
+- [Add transaction ID support for enhanced log correlation](https://github.com/ACE-Collective/ace3/pull/349)
+- [Adds custom_requirement to QR code module](https://github.com/ACE-Collective/ace3/pull/350)
+- [Fix apiv2 PendingRollbackError on database connections](https://github.com/ACE-Collective/ace3/pull/351)
+
 ## [3.0.69] - 2026-06-24
 
 - [fixed issue with work getting lost between restarts](https://github.com/ACE-Collective/ace3/pull/339)
