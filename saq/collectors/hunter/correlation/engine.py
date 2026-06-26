@@ -97,7 +97,6 @@ class CorrelationEngine:
     ):
         self.config = correlate_config
         self.predefined_commands = predefined_commands or []
-        # hunt identity, used only to make timeout/diagnostic logs greppable per-hunt
         self.hunt_name = hunt_name
         self.hunt_uuid = hunt_uuid
         # the hunt's query window. stream transforms (and event transforms with no
@@ -233,14 +232,6 @@ class CorrelationEngine:
                 result.event_actions[event_index] = ActionResult(action_type="alert")
                 event_trace.outcome = "alert"
             elif action_result.action_type == "timeout":
-                # The correlate timeout was reached partway through this event's
-                # steps. Make it visible — the per-step check used to truncate
-                # silently, so the event looked like a clean alert. Log a warning,
-                # record a stream event, and mark the (partial) trace's outcome as
-                # "timeout". The event still falls through to alert as a fail-safe
-                # (the pipeline never silently drops an event), but the outcome
-                # makes the skipped remainder — and its false-positive risk —
-                # explicit to the analyst.
                 elapsed = datetime.datetime.now(datetime.timezone.utc) - start_time
                 logging.warning(
                     "correlation timeout reached after %s for %s while processing event %s, "
@@ -311,11 +302,6 @@ class CorrelationEngine:
 
             elapsed = datetime.datetime.now(datetime.timezone.utc) - start_time
             if elapsed >= self.timeout:
-                # Return a "timeout" interrupt rather than a bare None so the
-                # enclosing condition's (partial) trace is preserved on the way up
-                # and execute() can record the timeout visibly. Previously this
-                # returned None, which silently truncated the event and made it
-                # look like a clean alert.
                 return ActionResult(action_type="timeout")
 
             if step.debug:

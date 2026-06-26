@@ -19,11 +19,8 @@ class ActionResult:
 
     @property
     def is_interrupt(self) -> bool:
-        """Returns True if this action interrupts event processing.
+        """Returns True if this action interrupts event processing."""
 
-        "timeout" is not an authored action type — it is synthesized by the engine
-        when the correlate timeout is reached mid-event — but it interrupts the same
-        way so the partial trace propagates up and the event is handled visibly."""
         return self.action_type in ("filter", "stop", "discard", "alert", "timeout")
 
     @property
