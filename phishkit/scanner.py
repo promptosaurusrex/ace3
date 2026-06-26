@@ -1334,6 +1334,7 @@ class Scanner:
         if page_source is None:
             print("could not get page source for warning bypass detection -- skipping")
             return False
+        page_source_lower = page_source.lower()
         for bypass in self.BYPASSES:
             bypass_type = bypass.get("type")
             searches = bypass.get("searches")
@@ -1345,7 +1346,7 @@ class Scanner:
                 continue
 
             for search in searches:
-                if search in page_source:
+                if search.lower() in page_source_lower:
                     print(f"detected bypass type {bypass_type} with search {search}")
 
                     # does this bypass have a handler?

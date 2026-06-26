@@ -430,6 +430,15 @@ class TestBypassWarnings:
         scanner._bypass_handlers["visual_checkbox_bypass"].assert_called_once()
 
     @pytest.mark.unit
+    def test_bypass_warnings_case_insensitive_match(self, scanner):
+        # config search string is "Verify you are human"; page renders it lowercased
+        sb = MagicMock()
+        sb.cdp.get_page_source.return_value = "please verify you are human to continue"
+        scanner._bypass_handlers["visual_checkbox_bypass"] = MagicMock()
+        assert scanner.bypass_warnings(sb) is True
+        scanner._bypass_handlers["visual_checkbox_bypass"].assert_called_once()
+
+    @pytest.mark.unit
     def test_bypass_warnings_unknown_handler(self, config_file):
         from scanner import Scanner
 
