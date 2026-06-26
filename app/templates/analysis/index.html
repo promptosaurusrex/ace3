@@ -7,7 +7,7 @@
 
 {% block control_panel %}
 <div class="col-md-auto">
-    <form class="form-horizontal" role="form" method="POST" action={{url_for('analysis.set_disposition')}}>
+    <form class="form-horizontal" role="form" method="POST" action={{url_for('analysis.set_disposition')}} data-action-bar>
         <input type="hidden" name="alert_uuid" value="{{alert.uuid}}"></input>
         <button type="submit" name="disposition" value="FALSE_POSITIVE" class="btn btn-success btn-sm"><span class="bi bi-check-circle"></span> FP</button>
         <button type="submit" name="disposition" value="IGNORE" class="btn btn-outline-dark btn-sm"><span class="bi bi-x-circle"></span> Ignore</button>

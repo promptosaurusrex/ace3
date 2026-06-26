@@ -53,6 +53,7 @@
 <!-- global ACE javascript code -->
 <script src="{{ url_for('static', filename='js/ace.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/remediation.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/shortcuts.js') }}?version={{ ACE_VERSION }}"></script>
 
 <!-- core css -->
 <!-- this needs to come last so we can do our CSS overrides -->
@@ -424,6 +425,7 @@
                 <div class="row">
                     <div class="col">
                         <select name="selected_user_id" class="form-control">
+                            <option value="">Unassigned</option>
                             {% for user in all_users | sort(attribute='gui_display') %}
                                 {% if user.enabled %}
                                     <option value="{{user.id}}">{{user.gui_display}}</option>

@@ -14,12 +14,16 @@ def assign_ownership():
     analysis_page = False
     alert_uuids = []
 
-    try:
-        owner_id = int(request.form['selected_user_id'])
-    except ValueError:
-        logging.warning(f"invalid user id: {request.form['selected_user_id']}")
-        flash("invalid user id: {0}".format(request.form['selected_user_id']))
-        return redirect(url_for('analysis.index'))
+    raw_user_id = request.form.get('selected_user_id', '')
+    unassign = raw_user_id == ''
+    owner_id = None
+    if not unassign:
+        try:
+            owner_id = int(raw_user_id)
+        except ValueError:
+            logging.warning(f"invalid user id: {raw_user_id}")
+            flash("invalid user id: {0}".format(raw_user_id))
+            return redirect(url_for('analysis.index'))
 
     if 'alert_uuid' in request.form:
         analysis_page = True
@@ -35,20 +39,24 @@ def assign_ownership():
 
     if len(alert_uuids):
         get_db().execute(GUIAlert.__table__.update().where(GUIAlert.uuid.in_(alert_uuids)).values(
-            owner_id=owner_id,
-            owner_time=datetime.now()))
+            owner_id=None if unassign else owner_id,
+            owner_time=None if unassign else datetime.now()))
         get_db().commit()
 
-    target_user = "unknown"
+    target_user = "unassigned" if unassign else "unknown"
 
-    try:
-        target_user = get_db().query(User).filter(User.id == int(request.form['selected_user_id'])).first()
-    except Exception as e:
-        logging.warning(f"unable to get target user: {e}")
+    if not unassign:
+        try:
+            target_user = get_db().query(User).filter(User.id == owner_id).first()
+        except Exception as e:
+            logging.warning(f"unable to get target user: {e}")
 
     logging.info(f"AUDIT: user {current_user} assigned ownership of alerts {','.join(alert_uuids)} to {target_user}")
 
-    flash("assigned ownership of {0} alert{1}".format(len(alert_uuids), "" if len(alert_uuids) == 1 else "s"))
+    if unassign:
+        flash("unassigned {0} alert{1}".format(len(alert_uuids), "" if len(alert_uuids) == 1 else "s"))
+    else:
+        flash("assigned ownership of {0} alert{1}".format(len(alert_uuids), "" if len(alert_uuids) == 1 else "s"))
     if analysis_page:
         return redirect(url_for('analysis.index', direct=alert_uuids[0]))
 
