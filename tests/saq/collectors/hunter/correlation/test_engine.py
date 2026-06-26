@@ -682,3 +682,126 @@ class TestCorrelateReplay:
         ).execute(events)
         assert len(splunk.calls) == 0
         assert replayed.events[0]["lookup"] == [{"found": True}]
+
+
+class _ClockAdvancingSource(QuerySource):
+    """A query source that consumes wall-clock time when queried, simulating a slow
+    backend. Used to drive the per-step correlate timeout deterministically: the
+    transform's query advances the (mocked) clock past the timeout so the *next*
+    per-step check trips."""
+    default_time_field = "_time"
+    default_time_format = "iso8601"
+
+    def __init__(self, clock, advance, results=None):
+        self.clock = clock
+        self.advance = advance
+        self.results = results or []
+        self.calls = []
+
+    def execute_query(self, query, start_time, end_time, timeout, source_options=None):
+        self.calls.append(query)
+        self.clock["t"] = self.clock["t"] + self.advance
+        return list(self.results)
+
+
+@pytest.mark.unit
+class TestTransformThenFilterAndTimeout:
+    """Regression coverage for the azure_sspr_spray production incident: a transform
+    followed by a filtering `when` inside a condition's execute list, and the correlate
+    timeout being surfaced visibly when it truncates an event partway through its steps.
+
+    Structure mirrors the hunt: condition(success) -> [log, transform(query->count),
+    when(count>0 -> filter)]."""
+
+    def _sspr_like_config(self, timeout="15m"):
+        return _make_config([
+            {
+                "when": {"type": "equals", "value": "yes", "property": "is_success"},
+                "execute": [
+                    {"action": {"type": "log", "log_message": "{{ _event.ip }} success"}},
+                    {
+                        "description": "Step: Filter if Azure Trusted Named Location",
+                        "transform": {
+                            "type": "event",
+                            "method": "property",
+                            "property_name": "correlate_trusted_location",
+                            "property_type": "list",
+                            "command": {
+                                "type": "query",
+                                "source": "splunk",
+                                "query": "search trusted ip={{ _event.ip }}",
+                                "time_range": {"before": "3d"},
+                            },
+                        },
+                    },
+                    {
+                        "when": {
+                            "type": "jinja",
+                            "value": "{{ (_event.correlate_trusted_location[0].count | int) > 0 }}",
+                        },
+                        "execute": [{"action": {"type": "filter", "log_message": "trusted"}}],
+                        "else": [{"action": {"type": "log", "log_message": "not trusted"}}],
+                    },
+                ],
+            },
+        ], timeout=timeout)
+
+    def test_filtering_condition_after_transform_runs(self, _clean_registry):
+        """The `when` filter following an event transform must execute: an event whose
+        trusted-location query returns count>0 is filtered, not alerted. (This is the
+        behavior the production trace appeared to violate — it was actually a timeout.)"""
+        splunk = _RecordingSource(results=[{"count": "1"}])
+        register_query_source("splunk", splunk)
+        engine = CorrelationEngine(
+            self._sspr_like_config(), [],
+            datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc),
+            hunt_source_type="splunk",
+        )
+        events = [{"_time": "2024-06-01T00:00:00+00:00", "ip": "1.2.3.4", "is_success": "yes"}]
+        result = engine.execute(events)
+
+        # filtered out -> no alert
+        assert result.events == []
+        et = result.trace.event_traces[0]
+        assert et.outcome == "filter"
+        # the outer condition's branch_steps must include the log, the transform, AND
+        # the trailing `when` (i.e. execution did not stop after the transform)
+        branch = et.steps[0].step.branch_steps
+        assert [s.step.trace_type for s in branch] == ["action", "transform", "condition"]
+        assert branch[2].step.branch_taken == "execute"  # count>0 -> filter branch
+
+    def test_midevent_timeout_is_visible_and_fails_safe(self, _clean_registry):
+        """A correlate timeout reached partway through an event must be surfaced, not
+        silent: outcome=timeout, a timeout stream_event is recorded, the partial trace
+        (log + transform, no `when`) is preserved, and the event still alerts."""
+        clock = {"t": datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc)}
+        # transform query consumes 20m; correlate timeout is 15m -> the next per-step
+        # check (the `when`) trips.
+        slow = _ClockAdvancingSource(clock, datetime.timedelta(minutes=20), results=[{"count": "1"}])
+        register_query_source("splunk", slow)
+        engine = CorrelationEngine(
+            self._sspr_like_config(timeout="15m"), [], clock["t"],
+            hunt_source_type="splunk", hunt_name="SSPR spray", hunt_uuid="abc-123",
+        )
+        events = [{"_time": "2024-06-01T00:00:00+00:00", "ip": "1.2.3.4", "is_success": "yes"}]
+
+        with patch("saq.collectors.hunter.correlation.engine.datetime") as mdt:
+            mdt.datetime.now.side_effect = lambda tz=None: clock["t"]
+            mdt.timezone = datetime.timezone
+            mdt.timedelta = datetime.timedelta
+            result = engine.execute(events)
+
+        # fail-safe: the event still becomes an alert (never silently dropped)
+        assert len(result.events) == 1
+        assert result.event_actions[0].action_type == "alert"
+        # but the outcome is explicitly a timeout, not a clean alert
+        et = result.trace.event_traces[0]
+        assert et.outcome == "timeout"
+        # a stream-level timeout event is recorded for visibility
+        assert any(se.event_type == "timeout" and se.at_event_index == 0
+                   for se in result.trace.stream_events)
+        # partial trace preserved: the log + transform ran, the `when` did not
+        branch = et.steps[0].step.branch_steps
+        assert [s.step.trace_type for s in branch] == ["action", "transform"]
+        # the transform's query did run once before the budget was exhausted
+        assert len(slow.calls) == 1

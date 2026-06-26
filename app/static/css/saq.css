@@ -431,9 +431,19 @@ ul.provenance-group.provenance-group-other {
   font-weight: 600;
   scroll-margin-top: 70px;
 }
-.ct-provenance-step:hover {
+/* Only anchor badges navigate — give just those the clickable hover affordance so
+   the plain <span> badges (steps with no group to jump to) don't look clickable. */
+a.ct-provenance-step:hover {
   filter: brightness(0.95);
   text-decoration: underline;
+}
+/* A defined hunt step that did not run in this event: muted/inactive. */
+.ct-provenance-step-skipped {
+  background-color: transparent;
+  color: #6c757d;
+  font-weight: 400;
+  border: 1px dashed #adb5bd;
+  opacity: 0.7;
 }
 
 .max-hit-observable {
