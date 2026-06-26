@@ -463,48 +463,51 @@ class Hunt:
         logging.warning(f"called cancel on hunt {self} but {self.type} does not support cancel")
 
     def execute_with_lock(self, execution_mode: ExecutionMode):
-        # we use this lock to determine if a hunt is running, and, to wait for execution to complete.
-        logging.debug(f"waiting for execution lock on {self}")
-        self.execution_lock.acquire()
+        # correlate every log line for this hunt run under a fresh transaction id
+        from saq.logging import transaction_id
+        with transaction_id():
+            # we use this lock to determine if a hunt is running, and, to wait for execution to complete.
+            logging.debug(f"waiting for execution lock on {self}")
+            self.execution_lock.acquire()
 
-        # remember the last time we started execution
-        #self.last_executed_time = local_time()
-
-        if execution_mode == ExecutionMode.CONTINUOUS:
-            # notify the manager that this is now executing
-            # this releases the manager thread to continue processing hunts
-            logging.debug(f"clearing barrier for {self}")
-            self.startup_barrier.wait()
-
-        submission_list = None
-        start_time = local_time()
-        result_status = "success"
-
-        try:
-            logging.info(f"executing {self}")
-            result = self.execute()
-            self.record_execution_time(local_time() - start_time)
             # remember the last time we started execution
-            self.last_executed_time = local_time()
-            return result
-        except RemoteApiError as e:
-            result_status = "remote_api_error"
-            logging.warning(f"{self} failed (remote API error): {e}")
-            self.record_hunt_exception(e)
-        except Exception as e:
-            result_status = "error"
-            logging.error(f"{self} failed: {e}")
-            report_exception()
-            self.record_hunt_exception(e)
-        finally:
-            end_time = local_time()
-            logging.info(
-                "completed hunt %s (uuid=%s, type=%s) status=%s started=%s completed=%s duration=%.2fs",
-                self.name, self.uuid, self.type, result_status, start_time, end_time,
-                (end_time - start_time).total_seconds(),
-            )
-            self.startup_barrier.reset()
-            self.execution_lock.release()
+            #self.last_executed_time = local_time()
+
+            if execution_mode == ExecutionMode.CONTINUOUS:
+                # notify the manager that this is now executing
+                # this releases the manager thread to continue processing hunts
+                logging.debug(f"clearing barrier for {self}")
+                self.startup_barrier.wait()
+
+            submission_list = None
+            start_time = local_time()
+            result_status = "success"
+
+            try:
+                logging.info(f"executing {self}")
+                result = self.execute()
+                self.record_execution_time(local_time() - start_time)
+                # remember the last time we started execution
+                self.last_executed_time = local_time()
+                return result
+            except RemoteApiError as e:
+                result_status = "remote_api_error"
+                logging.warning(f"{self} failed (remote API error): {e}")
+                self.record_hunt_exception(e)
+            except Exception as e:
+                result_status = "error"
+                logging.error(f"{self} failed: {e}")
+                report_exception()
+                self.record_hunt_exception(e)
+            finally:
+                end_time = local_time()
+                logging.info(
+                    "completed hunt %s (uuid=%s, type=%s) status=%s started=%s completed=%s duration=%.2fs",
+                    self.name, self.uuid, self.type, result_status, start_time, end_time,
+                    (end_time - start_time).total_seconds(),
+                )
+                self.startup_barrier.reset()
+                self.execution_lock.release()
 
     def execute(self):
         """Called to execute the hunt. Returns a list of zero or more saq.collector.Submission objects."""
