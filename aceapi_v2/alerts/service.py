@@ -1,6 +1,5 @@
 """Alert service for ACE API v2."""
 
-import asyncio
 import logging
 import os
 import subprocess
@@ -19,6 +18,7 @@ from saq.util import local_time
 from saq.util.uuid import is_uuid
 
 from aceapi_v2.alerts.schemas import BulkAddObservableResult
+from aceapi_v2.sync import run_db_in_thread
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +188,8 @@ async def bulk_add_observable(
 ) -> BulkAddObservableResult:
     """Add an observable to multiple alerts.
 
-    Runs sync filesystem operations in a thread pool via asyncio.to_thread().
+    Runs sync filesystem operations in a thread pool via run_db_in_thread(),
+    which resets the worker thread's sync session after each call.
     """
     logger.info(
         f"AUDIT: user {username} bulk-added observable "
@@ -203,7 +204,7 @@ async def bulk_add_observable(
     failed_details = {}
 
     for alert_uuid in alert_uuids:
-        failure_reason = await asyncio.to_thread(
+        failure_reason = await run_db_in_thread(
             _add_observable_to_alert, alert_uuid, o_type, o_value, o_time, valid_directives, username
         )
         if failure_reason is None:

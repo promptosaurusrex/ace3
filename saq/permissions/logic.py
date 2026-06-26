@@ -3,6 +3,34 @@ from saq.database.pool import get_db
 from saq.permissions.constants import ALLOW, DENY
 from fnmatch import fnmatchcase
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+
+def _evaluate_permission(user_perms, group_perms, major: str, minor: str) -> bool:
+    """Apply fnmatch over the fetched (major, minor, effect) rows. DENY overrides ALLOW.
+
+    Shared by the synchronous user_has_permission() and the async
+    user_has_permission_async() so both evaluate permissions identically.
+    """
+    # fnmatch: stored patterns (major/minor) against requested values
+    def matches(pattern_major: str, pattern_minor: str) -> bool:
+        return fnmatchcase(major, pattern_major) and fnmatchcase(minor, pattern_minor)
+
+    matched_effects = [
+        effect for (p_major, p_minor, effect) in user_perms if matches(p_major, p_minor)
+    ] + [
+        effect for (p_major, p_minor, effect) in group_perms if matches(p_major, p_minor)
+    ]
+
+    if not matched_effects:
+        return False
+
+    if DENY in matched_effects:
+        return False
+
+    return ALLOW in matched_effects
+
 
 def user_has_permission(
     user_id: int,
@@ -41,23 +69,51 @@ def user_has_permission(
             .all()
         )
 
-    # Apply fnmatch: stored patterns (major/minor) against requested values
-    def matches(pattern_major: str, pattern_minor: str) -> bool:
-        return fnmatchcase(major, pattern_major) and fnmatchcase(minor, pattern_minor)
+    return _evaluate_permission(user_perms, group_perms, major, minor)
 
-    matched_effects = [
-        effect for (p_major, p_minor, effect) in user_perms if matches(p_major, p_minor)
-    ] + [
-        effect for (p_major, p_minor, effect) in group_perms if matches(p_major, p_minor)
+
+async def user_has_permission_async(
+    session: AsyncSession,
+    user_id: int,
+    major: str,
+    minor: str,
+) -> bool:
+    """Async equivalent of user_has_permission() using an AsyncSession.
+
+    Used by the FastAPI apiv2 so the permission check runs on the per-request
+    async session instead of the synchronous thread-local get_db() session.
+    """
+    # Fetch all user permissions and filter via fnmatch (pattern in DB, value is requested)
+    user_perms = (
+        await session.execute(
+            select(
+                AuthUserPermission.major,
+                AuthUserPermission.minor,
+                AuthUserPermission.effect,
+            ).where(AuthUserPermission.user_id == user_id)
+        )
+    ).all()
+
+    # Group permissions
+    group_ids = [
+        r.group_id
+        for r in (
+            await session.execute(
+                select(AuthGroupUser.group_id).where(AuthGroupUser.user_id == user_id)
+            )
+        ).all()
     ]
 
-    # Evaluate effects where DENY overrides ALLOW among matched entries
-    effects = matched_effects
+    group_perms = []
+    if group_ids:
+        group_perms = (
+            await session.execute(
+                select(
+                    AuthGroupPermission.major,
+                    AuthGroupPermission.minor,
+                    AuthGroupPermission.effect,
+                ).where(AuthGroupPermission.group_id.in_(group_ids))
+            )
+        ).all()
 
-    if not effects:
-        return False
-
-    if DENY in effects:
-        return False
-
-    return ALLOW in effects
+    return _evaluate_permission(user_perms, group_perms, major, minor)

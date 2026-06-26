@@ -21,7 +21,7 @@ from aceapi_v2.auth import (
     verify_token,
 )
 from aceapi_v2.database import get_async_session
-from saq.permissions.logic import user_has_permission
+from saq.permissions.logic import user_has_permission_async
 
 # Security schemes - both will appear in Swagger UI "Authorize" dialog
 api_key_header = APIKeyHeader(
@@ -98,9 +98,10 @@ def require_permission(major: str, minor: str) -> Callable:
 
     async def permission_dependency(
         auth: Annotated[ApiAuthResult, Security(get_current_auth)],
+        session: Annotated[AsyncSession, Depends(get_async_session)],
     ) -> ApiAuthResult:
         if auth.auth_type == API_AUTH_TYPE_USER:
-            if not user_has_permission(auth.auth_user_id, major, minor):
+            if not await user_has_permission_async(session, auth.auth_user_id, major, minor):
                 logging.warning(
                     f"user {auth.auth_user_id} does not have permission {major}.{minor}"
                 )
