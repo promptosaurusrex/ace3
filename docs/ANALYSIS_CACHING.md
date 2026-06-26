@@ -3482,3 +3482,32 @@ rdap_analyzer (network-bound) is expected to be strongly positive.
 **Not in this pass**: §A9/Phase 3.5 remain design-only — rewritten here to
 the non-blocking delayed-analysis requeue shape with a `single_flight`
 opt-in flag, replacing the original blocking `wait_for_cache` poll loop.
+
+## Pre-3.5 cleanup: qrcode consult gate + effective hit rate (2026-06-25)
+
+Two cleanups surfaced while reviewing the Phase 4 bake telemetry, landed
+ahead of Phase 3.5 (which they don't depend on).
+
+**qrcode was cache-consulted for files it never scans.** `QRCodeAnalyzer`
+declares `valid_observable_types = F_FILE` but only ever scans images and
+PDFs (the type check lived *inside* `execute_analysis`). Because the executor
+consults the cache only after `accepts()` passes (`_check_module_acceptance`
+at `executor.py:1261` precedes `get_cached_delta` at `:1290`), every
+non-image/non-PDF file (`.eml`, `.html`, headers, `.msg`, …) incurred a cache
+lookup that always missed and — being an empty delta — never wrote a row.
+Production telemetry: qrcode `execs == misses == ~1.56M/day` with only ~37K
+writes (2.4% write/miss) vs OCR's 97.8%, i.e. ~1.53M wasted lookups/day. Its
+*effective* hit rate `hits/(hits+writes)` was ~88%, on par with OCR — the
+~15% raw rate was a denominator artifact. Fix: a `custom_requirement` on
+`QRCodeAnalyzer` that gates on image/PDF (cheap magic-byte / PIL header
+sniff) before scheduling, so those files are no longer routed or consulted.
+The image/PDF gate inside `execute_analysis` stays as a defensive check. OCR
+was left alone — identical code shape but it does not exhibit the firehose in
+practice.
+
+**Effective hit rate on the dashboard.** Every hit-rate panel computed
+`hits/(hits+misses)`, which understates any consult-broad/scan-narrow module.
+Added an "Effective Cache Hit Rate" single-value tile and an
+`effective_hit_rate_pct = hits/(hits+writes)` column on the per-module tables
+(hit/miss, reality check, payoff). `writes` = `cache_write_count_insert`
+≈ real-scan misses, so the metric reflects the workload actually scanned.
