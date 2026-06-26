@@ -154,12 +154,6 @@ def _install_suppression_filter():
             handler.addFilter(ThreadSuppressionFilter())
 
 
-# per-(process, thread, async-context) correlation id stamped onto every log
-# record by TransactionIdFilter. a ContextVar (not threading.local) so concurrent
-# asyncio tasks sharing a thread under uvicorn don't bleed ids into each other.
-# the literal default guarantees the attribute resolves even before any init call
-# has run -- the fluent format dict references %(transactionId)s and a record
-# reaching that handler without the attribute would raise.
 _DEFAULT_TRANSACTION_ID = "00000000-0000-0000-0000-000000000000"
 _transaction_id = contextvars.ContextVar("transactionId", default=_DEFAULT_TRANSACTION_ID)
 
