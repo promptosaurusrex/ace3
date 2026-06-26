@@ -8,11 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _evaluate_permission(user_perms, group_perms, major: str, minor: str) -> bool:
-    """Apply fnmatch over the fetched (major, minor, effect) rows. DENY overrides ALLOW.
-
-    Shared by the synchronous user_has_permission() and the async
-    user_has_permission_async() so both evaluate permissions identically.
-    """
+    """Apply fnmatch over the fetched (major, minor, effect) rows. DENY overrides ALLOW."""
     # fnmatch: stored patterns (major/minor) against requested values
     def matches(pattern_major: str, pattern_minor: str) -> bool:
         return fnmatchcase(major, pattern_major) and fnmatchcase(minor, pattern_minor)
@@ -78,11 +74,7 @@ async def user_has_permission_async(
     major: str,
     minor: str,
 ) -> bool:
-    """Async equivalent of user_has_permission() using an AsyncSession.
-
-    Used by the FastAPI apiv2 so the permission check runs on the per-request
-    async session instead of the synchronous thread-local get_db() session.
-    """
+    """Async equivalent of user_has_permission() using an AsyncSession."""
     # Fetch all user permissions and filter via fnmatch (pattern in DB, value is requested)
     user_perms = (
         await session.execute(
