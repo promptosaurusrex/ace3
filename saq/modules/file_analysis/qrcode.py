@@ -141,26 +141,20 @@ class QRCodeAnalyzer(AnalysisModule):
         identity into the cache key.
 
         zbarimg / gs / pdfinfo each affect what this module extracts, so a
-        package upgrade must invalidate cached results. A failed probe
-        omits that tool's key (staleness over key poisoning). The filter
-        file's *contents* change the module's output but only its *path*
-        sits in the config (and thus the config hash), so a content sha256
-        covers analyst edits. The hash (not an mtime+size fingerprint) keeps
-        the key deterministic across hosts — the filter ships from a git repo,
-        so its mtime is set per host at checkout/pull. pdfinfo prints its
-        version to stderr via ``-v``; probe_binary_version falls back to
-        stderr.
+        package upgrade must invalidate cached results.
         """
         result = {}
         for tool, args in (("zbarimg", None), ("gs", None), ("pdfinfo", ["-v"])):
             version = probe_binary_version(tool, args=args)
             if version is not None:
                 result[tool] = version
+
         filter_path = self.qrcode_filter_path
         if filter_path is not None:
             version = file_content_version(filter_path)
             if version is not None:
                 result["qrcode_filter_version"] = version
+
         return result
 
     def _get_pdf_page_count(self, pdf_path: str) -> Optional[int]:
@@ -336,15 +330,10 @@ class QRCodeAnalyzer(AnalysisModule):
         return target_file_paths
 
     def custom_requirement(self, observable) -> bool:
-        # this module declares valid_observable_types = F_FILE but only ever
-        # scans images and PDFs (see the gate in execute_analysis). gating here
-        # keeps every other file type (.eml, .html, headers, .msg, ...) from
-        # being scheduled and, since cache lookup happens after accepts(), from
-        # being cache-consulted at all — those lookups always missed and never
-        # produced a cacheable result, so they were pure overhead.
         local_file_path = observable.full_path
         if not os.path.exists(local_file_path) or os.path.getsize(local_file_path) == 0:
             return False
+
         return is_image(local_file_path) or is_pdf_file(local_file_path)
 
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
@@ -381,11 +370,7 @@ class QRCodeAnalyzer(AnalysisModule):
             qrcode_filter = QRCodeFilter(self.qrcode_filter_path)
             qrcode_filter.load()
 
-        # Scan each page/image for QR codes, processing results per-page.
-        # scan_failed tracks whether ANY scan attempt failed (None return:
-        # timeout or zbarimg error) as opposed to completing with no match
-        # (empty string) — a failed scan means "unknown", so the negative
-        # ("no QR code") result below must not be recorded for it.
+        # scan each page/image for QR codes, processing results per-page.
         normal_urls = []
         inverted_urls = []
         scan_failed = False
@@ -417,19 +402,11 @@ class QRCodeAnalyzer(AnalysisModule):
                 except Exception as e:
                     logging.error(f"unable to remove {target_file_path}: {e}")
 
-        # No QR code found and every scan completed cleanly: record a
-        # negative-result analysis. The constructor defaults (extracted_text
-        # None) already encode the negative, and generate_summary returns
-        # None for that shape so the empty analysis doesn't clutter the
-        # alert view. Recording the negative makes "this image has no QR
-        # code" a cacheable fact — without it the delta is empty (refused
-        # at cache write) and every recurrence of the image re-pays the
-        # double zbarimg scan (and gs render for PDFs). A failed scan
-        # deliberately records nothing, so a transient timeout is never
-        # cached as a negative.
+        # to properly support caching, we need to record a negative result if no QR codes were found
         if not normal_urls and not inverted_urls:
             if not scan_failed:
                 self.create_analysis(_file)
+
             return AnalysisExecutionResult.COMPLETED
 
         # Create analysis from results, preferring normal over inverted
