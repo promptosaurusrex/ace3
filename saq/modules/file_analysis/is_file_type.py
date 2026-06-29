@@ -3,7 +3,6 @@
 # 2/19/2018 - removed MSO file ext (relying on OLE format instead)
 # 6/29/2018 - https://docs.google.com/spreadsheets/d/1LXneVF8VxmOgkt2W_NG5Kl3lzWW45prE7gxtuPcO-4o/edit#gid=1950593040
 import logging
-import mmap
 import os
 import re
 from subprocess import PIPE, Popen
@@ -274,6 +273,8 @@ def is_x509(path):
 # on. Scanning for it directly avoids spawning unautoit, which reads/scans the
 # entire input and can take 200+s on a >1GB sample.
 RE_AUTOIT_MAGIC = re.compile(rb'AU3!EA0[56]')
+AUTOIT_MAGIC_LEN = 8  # len("AU3!EA06"); marker may straddle a chunk boundary
+AUTOIT_SCAN_CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB
 
 def is_autoit(path) -> bool:
     """Returns True/False if the given file path is an AutoIt compiled executable"""
@@ -284,13 +285,20 @@ def is_autoit(path) -> bool:
     if not is_pe_file(path) and not path.lower().endswith(".au3"):
         return False
 
+    # Stream the file in fixed-size chunks rather than reading/mmap-ing the whole
+    # thing, so memory stays bounded (~chunk size) even for multi-GB inputs. The
+    # marker is a fixed 8 bytes, so we carry the trailing 7 bytes of each chunk
+    # forward to catch a marker that straddles a chunk boundary.
     try:
-        if os.path.getsize(path) == 0:
-            return False
-
         with open(path, 'rb') as fp:
-            with mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-                return RE_AUTOIT_MAGIC.search(mm) is not None
+            carry = b''
+            while True:
+                chunk = fp.read(AUTOIT_SCAN_CHUNK_SIZE)
+                if not chunk:
+                    return False
+                if RE_AUTOIT_MAGIC.search(carry + chunk):
+                    return True
+                carry = chunk[-(AUTOIT_MAGIC_LEN - 1):]
     except Exception as e:
         logging.debug(f"is_autoit failed for {path}: {e}")
         return False
