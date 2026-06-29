@@ -58,6 +58,50 @@ def _load_resource_limits(config_path: str | None = None) -> dict:
     return merged
 
 
+# Frozen scanner image content id for ACE's analysis cache key.
+_scanner_image: "dict | None" = None
+
+
+def _inspect_scanner_image() -> dict:
+    """inspect the scanner image and return its identity dict.
+
+    returns ``{"image_url": ..., "image_id": ...}`` where ``image_id`` is the
+    content id (``{{.Id}}``) of the exact image this worker would ``docker run``
+    for a scan, or None when the image is absent locally or docker inspect is
+    unavailable.
+    """
+    image_url = os.environ.get("ACE3_PHISHKIT_IMAGE_URL", "phishkit")
+    image_id = None
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", image_url, "--format", "{{.Id}}"],
+            capture_output=True, text=True, timeout=5, check=True,
+        )
+        image_id = result.stdout.strip() or None
+    except Exception as e:
+        logger.warning("unable to inspect phishkit image %s: %s", image_url, e)
+
+    return {"image_url": image_url, "image_id": image_id}
+
+
+def get_scanner_image_id() -> dict:
+    """Returns the scanner image identity ID."""
+    global _scanner_image
+    if _scanner_image is not None and _scanner_image.get("image_id"):
+        return _scanner_image
+
+    value = _inspect_scanner_image()
+    if value.get("image_id"):
+        _scanner_image = value
+
+    return value
+
+
+def _reset_scanner_image_cache_for_tests() -> None:
+    global _scanner_image
+    _scanner_image = None
+
+
 def _force_stop_container(name: str) -> None:
     """Best-effort kill and remove a scanner container. Silent if already gone."""
     try:
@@ -162,6 +206,16 @@ def _start_reaper(**_):
         logger.exception("initial reaper sweep failed: %s", e)
     threading.Thread(target=_reaper_loop, args=(max_age, interval),
                      daemon=True, name="phishkit-reaper").start()
+
+
+@worker_ready.connect
+def _warm_scanner_image_cache(**_):
+    try:
+        # go ahead and store at startup instead of waiting for first request
+        result = get_scanner_image_id()
+        logger.info("phishkit scanner image id resolved: %s", result.get("image_id"))
+    except Exception as e:
+        logger.warning("failed to resolve scanner image id at startup: %s", e)
 
 
 @worker_shutting_down.connect
@@ -492,28 +546,18 @@ app.conf.task_soft_time_limit = _scanner_timeout_hint * 2 + 60
 app.conf.task_time_limit = _scanner_timeout_hint * 2 + 120
 
 @app.task
-def ping() -> dict:
-    """Health check that also reports the scanner image identity.
+def ping() -> str:
+    return "pong"
 
-    Returns the image content id (``docker inspect ... {{.Id}}``) of the exact
-    image this worker would ``docker run`` for a scan. ACE folds that id into the
-    phishkit cache key's ``extended_version`` so a scanner rebuild invalidates
-    cached results — even under a floating ``:latest`` tag, since ``{{.Id}}`` is a
-    content hash that changes on every rebuild. ``image_id`` is None when the
-    image is not present locally or ``docker inspect`` is unavailable; the caller
-    degrades the cache key gracefully rather than treating that as fatal.
+
+@app.task
+def scanner_image_id() -> dict:
+    """Report the scanner image identity for ACE's analysis cache key.
+
+    Returns ``{"image_url": ..., "image_id": ...}`` for the exact image this
+    worker would ``docker run`` for a scan. 
     """
-    image_url = os.environ.get("ACE3_PHISHKIT_IMAGE_URL", "phishkit")
-    image_id = None
-    try:
-        result = subprocess.run(
-            ["docker", "inspect", image_url, "--format", "{{.Id}}"],
-            capture_output=True, text=True, timeout=5, check=True,
-        )
-        image_id = result.stdout.strip() or None
-    except Exception as e:
-        logger.warning("ping: unable to inspect phishkit image %s: %s", image_url, e)
-    return {"status": "pong", "image_url": image_url, "image_id": image_id}
+    return get_scanner_image_id()
 
 # immediate subdirectories of these are aged out by maintain_files
 PHISHKIT_DATA_DIRS = ("/phishkit/input", "/phishkit/output")

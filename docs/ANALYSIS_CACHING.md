@@ -42,7 +42,7 @@ section with the full design.
 | **Delayed modules** | Cacheable: final-cycle delta is merged with prior cycles' recorded deltas at write time; mid-delay cycles never cached (COMPLETED gate). | open question 3 |
 | **Config guards** | `cache_ttl` mutually exclusive with `wide_diff` and with `is_grouped_by_time` (pydantic validators); CI contract lint per opt-in (removals / relationship scope / file specs blob-backable for `file_capable` modules, no files otherwise). | §A6, §A1 |
 | **Lifecycle** | Daily partition maintenance (drop > `partition_retention_days`=35, reorganize catchall, provision ahead); read-time `expires_at` filter owns precision; blob GC is a separate grace-period sweep. No row DELETEs anywhere. File blobs ride the same `blob_refs`/GC mechanism as spilled details. | §A8 |
-| **Opt-ins (core)** | `rdap_analyzer` 7d; `nrd_analyzer` 24h + DB-file `extended_version`; `site_tagger` 30d + CSV `extended_version`; **`ocr` 7d + tesseract-version `extended_version`; `qrcode` 7d + zbarimg/gs/pdfinfo versions + filter-file content sha256** (Phase 4); **`phishkit_analyzer` 6h + `extended_version` = scanner-config content hash + running scanner image id via extended `pk_ping`** (2026-06-29). OCR/QR also cache **negative results** (clean scan, nothing found → summary-less analysis recorded; scan *failures* record nothing and are never cached). Phishkit caches **partial/timeout results on purpose** (a timeout is usually the target site blocking our crawl — a stable property — not transient noise; staleness is bounded by the 6h TTL). | Phase 3/4 notes, §A4, phishkit opt-in notes |
+| **Opt-ins (core)** | `rdap_analyzer` 7d; `nrd_analyzer` 24h + DB-file `extended_version`; `site_tagger` 30d + CSV `extended_version`; **`ocr` 7d + tesseract-version `extended_version`; `qrcode` 7d + zbarimg/gs/pdfinfo versions + filter-file content sha256** (Phase 4); **`phishkit_analyzer` 6h + `extended_version` = scanner-config content hash + running scanner image id via the dedicated `scanner_image_id` task** (2026-06-29). OCR/QR also cache **negative results** (clean scan, nothing found → summary-less analysis recorded; scan *failures* record nothing and are never cached). Phishkit caches **partial/timeout results on purpose** (a timeout is usually the target site blocking our crawl — a stable property — not transient noise; staleness is bounded by the 6h TTL). | Phase 3/4 notes, §A4, phishkit opt-in notes |
 | **Metrics** | Per-(root, module) fields on the per-root summary event: hit/miss/write counts, lookup latency (**hits + misses**), write latency/bytes. `cache_stats` heartbeat (15 min) from partition statistics. | PR #242 notes |
 | **Not implemented** | Phase 3.5 single-flight dedup (redesigned 2026-06-10: non-blocking, delayed-analysis requeue, `single_flight` opt-in — §A9). Deliberately re-sequenced after Phase 4; it has no dependents. Yara opt-in deferred — not for version reasons (the ruleset under `signature_dir` IS fingerprintable, nrd-style): its filtered output depends on file name and observable meta-tags, which sit outside the content-keyed cache; its SANDBOX directive lands on the *redirection target* (cross-observable, unreplayable); and a local yss socket scan is cheaper than a cache hit anyway. | §A9, Phase 4 notes |
 
@@ -2826,10 +2826,28 @@ mailboxes). It is opted in with `cache_ttl: 21600` (6h) in
   production, so keying on the tag string would never invalidate. Instead the
   manager — which already has the Docker socket and shells out to the `docker`
   CLI — reports `docker inspect <image> --format '{{.Id}}'` (a content hash that
-  changes on every rebuild) through an extended `pk_ping`; the module folds it
-  in via `get_phishkit_scanner_version()`, memoized in-process (~5 min TTL) so
-  cache *hits* don't pay a celery roundtrip. On a ping/inspect failure the key
-  degrades to config-hash-only (last-known value retained to avoid flapping).
+  changes on every rebuild) through a dedicated `scanner_image_id` celery task
+  (the worker's `ping` stays a pure `"pong"` health check). The id is **cached
+  only on the worker**: it resolves the `docker inspect` **once at startup**
+  (warmed via `@worker_ready`) and freezes it for its process lifetime — frozen
+  only on the first *successful* probe, so a docker-not-ready-at-boot blip
+  re-probes rather than pinning a permanent None. The module's
+  `get_phishkit_scanner_version()` is an un-memoized passthrough that calls the
+  task on each cache-key computation; there is **no client-side memo** because the
+  task already returns the frozen dict with no subprocess, so the only per-call
+  cost is a cheap celery roundtrip (negligible against a multi-second scan, and on
+  a replay hit just part of the lookup). Freezing at startup is correct here
+  because the id only changes on a scanner
+  rebuild, which coincides with a manager restart: the **manager image bakes in
+  `scanner.py` + `Dockerfile.phishkit`** (`phishkit/Dockerfile` `COPY`s both), so
+  a scanner code/Dockerfile change rebuilds the manager too, and releases restart
+  the whole system. The one caveat — a scanner-dependency-only change
+  (`requirements.phishkit.txt`, the Ubuntu base, or the floating Chrome deb)
+  deployed via a *rolling* `up --build` that does not recreate the manager —
+  leaves the frozen id stale until the next manager restart, bounded meanwhile by
+  the 6h `cache_ttl` (the same staleness ceiling the feature already accepts). On
+  a query/inspect failure the key degrades to config-hash-only (last-known value
+  retained to avoid flapping).
 - **Partial/timeout results are cached on purpose.** A phishkit timeout is
   overwhelmingly the target site *detecting and blocking* the automated crawl —
   a stable property of its anti-bot behavior, not transient network noise that a

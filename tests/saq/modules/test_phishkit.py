@@ -1607,52 +1607,32 @@ def _drive_phishkit_scan(monkeypatch, out_dir, *, interrupted=False,
 
 
 @pytest.mark.unit
-def test_phishkit_get_scanner_version_memoized(monkeypatch):
-    """get_phishkit_scanner_version pings once per TTL window — cache hits must
-    not pay a celery roundtrip on every analysis."""
-    saq.phishkit._reset_scanner_version_cache_for_tests()
+def test_phishkit_get_scanner_version_delegates_to_worker(monkeypatch):
+    """get_phishkit_scanner_version is an un-memoized passthrough: it returns the
+    worker task's dict on each call (the id is cached on the worker side, not
+    here)."""
     calls = []
 
-    def fake_ping():
+    def fake_scanner_image():
         calls.append(1)
-        return {"status": "pong", "image_url": "phishkit:latest", "image_id": "sha256:aaa"}
+        return {"image_url": "phishkit:latest", "image_id": "sha256:aaa"}
 
-    monkeypatch.setattr("saq.phishkit.ping_phishkit", fake_ping)
-    try:
-        first = saq.phishkit.get_phishkit_scanner_version()
-        second = saq.phishkit.get_phishkit_scanner_version()
-        assert first == second == {"status": "pong", "image_url": "phishkit:latest", "image_id": "sha256:aaa"}
-        assert len(calls) == 1  # memoized within the TTL
-    finally:
-        saq.phishkit._reset_scanner_version_cache_for_tests()
+    monkeypatch.setattr("saq.phishkit.get_phishkit_scanner_image", fake_scanner_image)
+    first = saq.phishkit.get_phishkit_scanner_version()
+    second = saq.phishkit.get_phishkit_scanner_version()
+    assert first == second == {"image_url": "phishkit:latest", "image_id": "sha256:aaa"}
+    assert len(calls) == 2  # no client-side memo — delegates every call
 
 
 @pytest.mark.unit
-def test_phishkit_get_scanner_version_fallback_on_failure(monkeypatch):
-    """A ping failure with no prior value yields {} (key degrades to
-    config-hash-only). After a success, a later failure keeps serving the
-    last-known value rather than flapping the key."""
-    saq.phishkit._reset_scanner_version_cache_for_tests()
-
+def test_phishkit_get_scanner_version_returns_empty_on_failure(monkeypatch):
+    """A query failure yields {} without raising, so extended_version omits the
+    scanner_image key (degrades to config-hash-only)."""
     def boom():
         raise RuntimeError("broker down")
 
-    monkeypatch.setattr("saq.phishkit.ping_phishkit", boom)
-    try:
-        assert saq.phishkit.get_phishkit_scanner_version() == {}
-    finally:
-        saq.phishkit._reset_scanner_version_cache_for_tests()
-
-    # prime a success, then expire the memo and fail: last-known is retained
-    monkeypatch.setattr("saq.phishkit.ping_phishkit",
-                        lambda: {"image_id": "sha256:bbb"})
-    assert saq.phishkit.get_phishkit_scanner_version() == {"image_id": "sha256:bbb"}
-    saq.phishkit._scanner_version_cache = (-1.0, {"image_id": "sha256:bbb"})  # force-expire
-    monkeypatch.setattr("saq.phishkit.ping_phishkit", boom)
-    try:
-        assert saq.phishkit.get_phishkit_scanner_version() == {"image_id": "sha256:bbb"}
-    finally:
-        saq.phishkit._reset_scanner_version_cache_for_tests()
+    monkeypatch.setattr("saq.phishkit.get_phishkit_scanner_image", boom)
+    assert saq.phishkit.get_phishkit_scanner_version() == {}
 
 
 @pytest.mark.integration

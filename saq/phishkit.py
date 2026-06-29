@@ -1,7 +1,6 @@
 import logging
 import os
 import shutil
-import time
 from typing import Optional, Union
 import uuid
 
@@ -20,50 +19,26 @@ def initialize_phishkit():
         "broker_url": f"pyamqp://{rabbitmq_user}:{rabbitmq_password}@{rabbitmq_host}//"
     })
 
-def ping_phishkit() -> dict:
+def ping_phishkit() -> str:
     from phishkit.phishkit import ping as pk_ping
     result = pk_ping.delay()
     return result.get(timeout=5)
 
 
-# Memoized scanner-version cache for cache-key extended_version use:
-# (monotonic_deadline, value). The scanner image only changes on rebuild, so a
-# coarse TTL keeps the celery ping off the hot path — cache hits don't re-ping
-# every analysis. See docs/ANALYSIS_CACHING.md (phishkit opt-in).
-_scanner_version_cache: Optional[tuple[float, dict]] = None
-_SCANNER_VERSION_TTL_SECONDS = 300
+def get_phishkit_scanner_image() -> dict:
+    from phishkit.phishkit import scanner_image_id as pk_scanner_image_id
+    result = pk_scanner_image_id.delay()
+    return result.get(timeout=5)
 
 
 def get_phishkit_scanner_version() -> dict:
-    """Scanner identity dict for the phishkit cache key, memoized with a short TTL.
-
-    Returns the ``pk_ping`` payload (notably ``image_id`` — the running scanner
-    image's content hash). On a ping failure, returns the last-known value if we
-    have one, else ``{}`` so the caller omits the ``scanner_image`` key. This
-    avoids key-flapping: the key degrades to config-hash-only (stable) rather
-    than oscillating between two values. Never raises.
-    """
-    global _scanner_version_cache
-    now = time.monotonic()
-    if _scanner_version_cache is not None and now < _scanner_version_cache[0]:
-        return _scanner_version_cache[1]
-
+    """Scanner identity dict for the phishkit cache key."""
     try:
-        value = ping_phishkit()
-        if not isinstance(value, dict):
-            value = {}
+        value = get_phishkit_scanner_image()
+        return value if isinstance(value, dict) else {}
     except Exception as e:
-        logging.warning("get_phishkit_scanner_version: phishkit ping failed: %s", e)
-        # keep serving the last-known value (if any) rather than flapping the key
-        return _scanner_version_cache[1] if _scanner_version_cache is not None else {}
-
-    _scanner_version_cache = (now + _SCANNER_VERSION_TTL_SECONDS, value)
-    return value
-
-
-def _reset_scanner_version_cache_for_tests() -> None:
-    global _scanner_version_cache
-    _scanner_version_cache = None
+        logging.warning("get_phishkit_scanner_version: phishkit scanner image query failed: %s", e)
+        return {}
 
 def _copy_files(source_dir: str, output_dir: str) -> list[str]:
     """Copy all files from source_dir into output_dir, preserving relative paths."""

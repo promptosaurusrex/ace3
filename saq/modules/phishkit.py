@@ -275,10 +275,7 @@ class PhishkitAnalyzer(AnalysisModule):
           patterns, body-skip rules, waits) — an analyst edit re-keys without a
           redeploy.
         - ``scanner_image``: the running scanner image's content id (``{{.Id}}``
-          via a memoized ``pk_ping``). A floating ``:latest`` tag never changes,
-          but the underlying image id does on every rebuild, so this is the
-          signal that catches scanner/Chrome upgrades.
-
+          via ``scanner_image_id`` worker task).
         Each key is omitted on probe failure (accept staleness, bounded by the
         short ``cache_ttl``, over poisoning the key with a transient failure).
         The key is computed before the scan, so both inputs are statically
