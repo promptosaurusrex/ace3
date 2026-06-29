@@ -268,6 +268,14 @@ def is_x509(path):
     return False
 
 
+# Compiled AutoIt embeds the literal ASCII marker AU3!EA06 (current AutoIt v3)
+# or AU3!EA05 (older versions) on disk -- the same marker the unautoit tool keys
+# on. Scanning for it directly avoids spawning unautoit, which reads/scans the
+# entire input and can take 200+s on a >1GB sample.
+RE_AUTOIT_MAGIC = re.compile(rb'AU3!EA0[56]')
+AUTOIT_MAGIC_LEN = 8  # len("AU3!EA06"); marker may straddle a chunk boundary
+AUTOIT_SCAN_CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB
+
 def is_autoit(path) -> bool:
     """Returns True/False if the given file path is an AutoIt compiled executable"""
 
@@ -277,13 +285,23 @@ def is_autoit(path) -> bool:
     if not is_pe_file(path) and not path.lower().endswith(".au3"):
         return False
 
-    p = Popen(['unautoit', 'list', path], stdin=PIPE, stdout=PIPE, stderr=PIPE)
-    stdout, stderr = p.communicate()
-
-    if not stderr and b'autoit script' in stdout.lower():
-        return True
-
-    return False
+    # Stream the file in fixed-size chunks rather than reading/mmap-ing the whole
+    # thing, so memory stays bounded (~chunk size) even for multi-GB inputs. The
+    # marker is a fixed 8 bytes, so we carry the trailing 7 bytes of each chunk
+    # forward to catch a marker that straddles a chunk boundary.
+    try:
+        with open(path, 'rb') as fp:
+            carry = b''
+            while True:
+                chunk = fp.read(AUTOIT_SCAN_CHUNK_SIZE)
+                if not chunk:
+                    return False
+                if RE_AUTOIT_MAGIC.search(carry + chunk):
+                    return True
+                carry = chunk[-(AUTOIT_MAGIC_LEN - 1):]
+    except Exception as e:
+        logging.debug(f"is_autoit failed for {path}: {e}")
+        return False
 
 def is_dotnet(path) -> bool:
     """Returns True/False if the given file path is a .NET executable"""

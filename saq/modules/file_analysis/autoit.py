@@ -3,6 +3,7 @@ import os
 from subprocess import PIPE, Popen
 from typing import override
 from saq.analysis.analysis import Analysis
+from saq.analysis.observable import Observable
 from saq.constants import F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis.is_file_type import is_autoit
@@ -95,16 +96,20 @@ class AutoItAnalyzer(AnalysisModule):
     def valid_observable_types(self):
         return F_FILE
 
+    def custom_requirement(self, observable: Observable) -> bool:
+        local_file_path = observable.full_path
+        if not os.path.exists(local_file_path) or os.path.getsize(local_file_path) == 0:
+            return False
+
+        return is_autoit(local_file_path)
+
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
         local_file_path = _file.full_path
         if not os.path.exists(local_file_path):
             logging.error(f"cannot find local file path {local_file_path}")
             return AnalysisExecutionResult.COMPLETED
 
-        if not is_autoit(local_file_path):
-            logging.debug(f'{local_file_path} is not an autoit executable')
-            return AnalysisExecutionResult.COMPLETED
-
+        # custom_requirement already confirmed this is an autoit file
         _file.add_tag('autoit')
 
         analysis = self.create_analysis(_file)
