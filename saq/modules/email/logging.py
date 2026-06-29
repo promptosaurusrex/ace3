@@ -43,6 +43,7 @@ class FluentBitTags(BaseModel):
     main: str = Field(..., description="the main tag for fluent-bit logging")
     urls: Optional[str] = Field(default=None, description="(optional) send extracted urls to a separate log source")
     headers: Optional[str] = Field(default=None, description="(optional) send extracted headers to a separate log source")
+    lookalike: Optional[str] = Field(default=None, description="(optional) send look-a-like domain telemetry to a separate log source")
 
 class EmailLoggingConfig(AnalysisModuleConfig):
     splunk_log_enabled: bool = Field(..., description="whether to enable splunk logging")
@@ -50,6 +51,8 @@ class EmailLoggingConfig(AnalysisModuleConfig):
     json_logging_enabled: bool = Field(..., description="whether to enable JSON logging")
     json_log_path_format: str = Field(..., description="the path to the JSON log file")
     brocess_logging_enabled: bool = Field(..., description="whether to enable brocess logging")
+    thread_recording_enabled: bool = Field(default=False, description="whether to record email conversation (thread) data to brocess")
+    lookalike_telemetry_enabled: bool = Field(default=False, description="whether to compute and emit look-a-like domain telemetry")
     fluent_bit_tags: FluentBitTags = Field(..., description="the tags to use for fluent-bit logging")
     fluent_bit_logging_enabled: bool = Field(..., description="whether to enable fluent-bit logging")
     fluent_bit_hostname: str = Field(..., description="the hostname of the fluent-bit server")
@@ -82,6 +85,7 @@ class EmailLoggingAnalyzer(AnalysisModule):
         self.fluent_bit_main_sender: Optional[sender.FluentSender] = None
         self.fluent_bit_urls_sender: Optional[sender.FluentSender] = None
         self.fluent_bit_headers_sender: Optional[sender.FluentSender] = None
+        self.fluent_bit_lookalike_sender: Optional[sender.FluentSender] = None
 
         if self.config.fluent_bit_logging_enabled:
             self.fluent_bit_main_sender = sender.FluentSender(
@@ -99,6 +103,12 @@ class EmailLoggingAnalyzer(AnalysisModule):
                 self.fluent_bit_headers_sender = sender.FluentSender(
                     self.config.fluent_bit_tags.headers,
                     host=self.config.fluent_bit_hostname)
+
+            if self.config.fluent_bit_tags.lookalike:
+                self.fluent_bit_lookalike_sender = sender.FluentSender(
+                    self.config.fluent_bit_tags.lookalike,
+                    host=self.config.fluent_bit_hostname,
+                    port=self.config.fluent_bit_port)
 
     def verify_environment(self):
         if self.splunk_log_enabled:
@@ -218,6 +228,13 @@ class EmailLoggingAnalyzer(AnalysisModule):
                 logging.error(f"unable to create fluent-bit log export for {email_file}: {e}")
                 report_exception()
 
+        if self.config.thread_recording_enabled or self.config.lookalike_telemetry_enabled:
+            try:
+                self.export_lookalike_telemetry(entry.copy(), analysis)
+            except Exception as e:
+                logging.error(f"unable to create lookalike telemetry for {email_file}: {e}")
+                report_exception()
+
         return True
 
     def export_to_json(self, entry: dict) -> bool:
@@ -273,6 +290,102 @@ class EmailLoggingAnalyzer(AnalysisModule):
         self.fluent_bit_main_sender.emit(None, entry)
         return True
 
+    def export_lookalike_telemetry(self, entry: dict, analysis) -> bool:
+        """Record the email into the thread store and emit look-a-like domain telemetry to fluent-bit."""
+        from saq.modules.email.conversation import (
+            derive_thread_context,
+            get_established_domains,
+            get_thread_message_count,
+            record_thread,
+        )
+        from saq.domain_similarity import compare_domains, domain_attributes
+
+        context = derive_thread_context(analysis)
+        if not context.thread_id or not context.message_id:
+            logging.debug("no thread/message id for %s - skipping lookalike telemetry", entry.get("message_id"))
+            return False
+
+        # compute + emit telemetry against PRIOR messages (before recording this one)
+        if self.config.lookalike_telemetry_enabled and self.fluent_bit_lookalike_sender:
+            established = get_established_domains(context)
+
+            # one representative record per established domain (a thread can hold several roles per domain)
+            reference_by_domain = {}
+            for thread_domain in established:
+                reference_by_domain.setdefault(thread_domain.domain, thread_domain)
+
+            senders_payload = []
+            for sender_participant in context.senders:
+                attributes = domain_attributes(sender_participant.domain)
+                senders_payload.append({
+                    "address": sender_participant.address,
+                    "role": sender_participant.role,
+                    "domain": attributes["domain"],
+                    "punycode": attributes["punycode"],
+                    "mixed_script": attributes["mixed_script"],
+                })
+
+            comparisons = []
+            for sender_participant in context.senders:
+                for reference in reference_by_domain.values():
+                    result = compare_domains(sender_participant.domain, reference.domain)
+                    comparisons.append({
+                        "suspect_domain": result.suspect,
+                        "suspect_role": sender_participant.role,
+                        "reference_domain": result.reference,
+                        "reference_address": reference.address,
+                        "reference_role": reference.role,
+                        "reference_first_seen": str(reference.firstseendate) if reference.firstseendate else None,
+                        "is_identical": result.is_identical,
+                        "skeleton_equal": result.skeleton_equal,
+                        "damerau_levenshtein": result.damerau_levenshtein,
+                        "jaro_winkler": result.jaro_winkler,
+                        "techniques": result.techniques,
+                        "is_similar": result.is_similar,
+                    })
+
+            record = {
+                "timestamp": self._entry_timestamp(entry),
+                "message_id": context.message_id,
+                "thread_id": context.thread_id,
+                "thread_method": context.thread_method,
+                "thread_message_count": get_thread_message_count(context.thread_id),
+                "normalized_subject": context.normalized_subject,
+                "senders": senders_payload,
+                "established_domains": [{
+                    "domain": d.domain,
+                    "address": d.address,
+                    "role": d.role,
+                    "first_seen": str(d.firstseendate) if d.firstseendate else None,
+                } for d in established],
+                "comparisons": comparisons,
+                # summary fields for cheap hunting without unpacking the comparisons array
+                "comparison_count": len(comparisons),
+                "any_similar": any(c["is_similar"] for c in comparisons),
+                "any_mixed_script": any(s["mixed_script"] for s in senders_payload),
+                "max_jaro_winkler": max((c["jaro_winkler"] for c in comparisons), default=0.0),
+                "min_damerau_levenshtein": min((c["damerau_levenshtein"] for c in comparisons), default=None),
+            }
+
+            self.fluent_bit_lookalike_sender.emit(None, record)
+
+        # record this message so later messages in the thread can compare against it
+        if self.config.thread_recording_enabled:
+            record_thread(context)
+
+        return True
+
+    @staticmethod
+    def _entry_timestamp(entry: dict) -> Optional[str]:
+        """Return the unix timestamp string for a log entry, matching the other exporters' date handling."""
+        if entry.get("timestamp"):
+            return entry["timestamp"]
+
+        try:
+            return str(datetime.strptime(entry["date"], '%Y-%m-%d %H:%M:%S.%f %z').timestamp())
+        except (KeyError, TypeError, ValueError):
+            return None
+
     def export_to_splunk(self, entry):
         """Exports the logging information to a directory suitable for a splunk heavy forwarder."""
 
@@ -297,6 +410,7 @@ class EmailLoggingAnalyzer(AnalysisModule):
         entry_keys.remove('thread_index')
         entry_keys.remove('refereneces')
         entry_keys.remove('x_sender')
+        entry_keys.remove('in_reply_to')
 
         # NOTE we need to make the date first
         # NOTE we also need to make archive_path last :(

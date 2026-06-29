@@ -3,6 +3,7 @@ beautifulsoup4
 black
 celery[redis]
 certifi
+confusable-homoglyphs
 construct
 croniter
 cryptography
@@ -24,6 +25,7 @@ hexdump
 html2text
 idna
 iptools
+jellyfish
 Jinja2
 ldap3
 LnkParse3
