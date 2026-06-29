@@ -16,8 +16,9 @@ from saq.environment import get_base_dir
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
+from saq.modules.tool_version import file_content_version
 from saq.observables.file import FileObservable
-from saq.phishkit import get_async_scan_result, scan_file, scan_url
+from saq.phishkit import get_async_scan_result, get_phishkit_scanner_version, scan_file, scan_url
 from saq.proxy import proxy_string_for_seleniumbase
 from saq.util.filesystem import create_temporary_directory
 from saq.util.strings import format_item_list_for_summary
@@ -263,6 +264,31 @@ class PhishkitAnalyzer(AnalysisModule):
     @property
     def valid_observable_types(self):
         return [F_URL, F_FILE]
+
+    @property
+    def extended_version(self) -> dict[str, str]:
+        """Inputs (besides the observable value) that change scanner output,
+        mixed into the cache key so a change invalidates stale entries.
+
+        Two signals:
+        - ``phishkit_config``: content hash of the scanner YAML (bypasses, deny
+          patterns, body-skip rules, waits) — an analyst edit re-keys without a
+          redeploy.
+        - ``scanner_image``: the running scanner image's content id (``{{.Id}}``
+          via ``scanner_image_id`` worker task).
+        Each key is omitted on probe failure (accept staleness, bounded by the
+        short ``cache_ttl``, over poisoning the key with a transient failure).
+        The key is computed before the scan, so both inputs are statically
+        derivable from local state — never from a scan result.
+        """
+        result: dict[str, str] = {}
+        config_version = file_content_version(self._yaml_config_path)
+        if config_version is not None:
+            result["phishkit_config"] = config_version
+        scanner = get_phishkit_scanner_version()
+        if scanner.get("image_id"):
+            result["scanner_image"] = scanner["image_id"]
+        return result
 
     def custom_requirement(self, observable: Observable) -> bool:
         """Custom requirement for phishkit analysis.
@@ -563,7 +589,12 @@ class PhishkitAnalyzer(AnalysisModule):
             try:
                 analysis.job_id = scan_url(observable.value, analysis.output_dir, is_async=True, scanner_timeout=self.config.scanner_timeout, proxy=self._proxy_string, proxy_fallback_to_direct=self.config.proxy_fallback_to_direct, config_path=self.config.config_path)
                 self._emit_scan_dispatched(observable, analysis)
-                self.delay_analysis(observable, analysis, seconds=5, timeout_seconds=max(self.config.scanner_timeout, 60) * 2 + 30)
+                # return the INCOMPLETE result so the executor sees the module as
+                # delayed on this cycle (matches the F_FILE branch below). The
+                # delay is already registered by delay_analysis regardless, but
+                # returning COMPLETED here triggers a redundant cycle-1 cache
+                # write attempt that put_cached_delta then refuses.
+                return self.delay_analysis(observable, analysis, seconds=5, timeout_seconds=max(self.config.scanner_timeout, 60) * 2 + 30)
 
             except Exception as e:
                 error_msg = f"failed to scan URL {observable.value}: {str(e)}"

@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 from typing import Optional, Union
@@ -22,6 +23,22 @@ def ping_phishkit() -> str:
     from phishkit.phishkit import ping as pk_ping
     result = pk_ping.delay()
     return result.get(timeout=5)
+
+
+def get_phishkit_scanner_image() -> dict:
+    from phishkit.phishkit import scanner_image_id as pk_scanner_image_id
+    result = pk_scanner_image_id.delay()
+    return result.get(timeout=5)
+
+
+def get_phishkit_scanner_version() -> dict:
+    """Scanner identity dict for the phishkit cache key."""
+    try:
+        value = get_phishkit_scanner_image()
+        return value if isinstance(value, dict) else {}
+    except Exception as e:
+        logging.warning("get_phishkit_scanner_version: phishkit scanner image query failed: %s", e)
+        return {}
 
 def _copy_files(source_dir: str, output_dir: str) -> list[str]:
     """Copy all files from source_dir into output_dir, preserving relative paths."""

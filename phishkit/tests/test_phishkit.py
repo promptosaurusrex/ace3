@@ -1307,3 +1307,85 @@ class TestScanUrlPartial:
                 phishkit_mod.scan_url.run(
                     "https://example.com", timeout=10, config_path="etc/phishkit_config.yaml"
                 )
+
+
+# ---------------------------------------------------------------------------
+# scanner_image_id task + worker-side freeze (ACE analysis cache key support).
+# The id is resolved once at startup and frozen for the worker lifetime, so
+# `docker inspect` stays entirely off the per-call path (the scanner image only
+# changes on a rebuild, which here coincides with a manager restart). Frozen only
+# on the first *successful* probe. See docs/ANALYSIS_CACHING.md (phishkit opt-in).
+# ---------------------------------------------------------------------------
+
+class TestScannerImageId:
+
+    @staticmethod
+    def _inspect_result(image_id):
+        result = MagicMock()
+        result.stdout = image_id + "\n"
+        return result
+
+    @pytest.mark.unit
+    def test_scanner_image_id_task_returns_parsed_id(self):
+        import phishkit as phishkit_mod
+        phishkit_mod._reset_scanner_image_cache_for_tests()
+        try:
+            with patch.object(phishkit_mod.subprocess, "run",
+                              return_value=self._inspect_result("sha256:aaa")):
+                result = phishkit_mod.scanner_image_id.run()
+            assert result["image_id"] == "sha256:aaa"
+            assert result["image_url"]  # defaults to "phishkit"
+        finally:
+            phishkit_mod._reset_scanner_image_cache_for_tests()
+
+    @pytest.mark.unit
+    def test_docker_inspect_runs_once_after_first_success(self):
+        """the core guarantee: once resolved, repeated calls return the frozen id
+        without ever re-shelling docker inspect."""
+        import phishkit as phishkit_mod
+        phishkit_mod._reset_scanner_image_cache_for_tests()
+        try:
+            with patch.object(phishkit_mod.subprocess, "run",
+                              return_value=self._inspect_result("sha256:aaa")) as mock_run:
+                first = phishkit_mod.get_scanner_image_id()
+                second = phishkit_mod.get_scanner_image_id()
+            assert first == second
+            assert first["image_id"] == "sha256:aaa"
+            assert mock_run.call_count == 1  # frozen after the first success
+        finally:
+            phishkit_mod._reset_scanner_image_cache_for_tests()
+
+    @pytest.mark.unit
+    def test_first_probe_failure_does_not_freeze_then_freezes_on_success(self):
+        """a failed first probe (e.g. docker not ready at boot) must NOT freeze:
+        the next call re-probes, and once it succeeds the id freezes."""
+        import phishkit as phishkit_mod
+        phishkit_mod._reset_scanner_image_cache_for_tests()
+        try:
+            with patch.object(phishkit_mod.subprocess, "run",
+                              side_effect=FileNotFoundError("docker not ready")):
+                assert phishkit_mod.get_scanner_image_id()["image_id"] is None
+            # docker comes up: the next call re-probes and resolves the id
+            with patch.object(phishkit_mod.subprocess, "run",
+                              return_value=self._inspect_result("sha256:ready")) as mock_run:
+                assert phishkit_mod.get_scanner_image_id()["image_id"] == "sha256:ready"
+                # now frozen: a further call does not re-probe
+                assert phishkit_mod.get_scanner_image_id()["image_id"] == "sha256:ready"
+                assert mock_run.call_count == 1
+        finally:
+            phishkit_mod._reset_scanner_image_cache_for_tests()
+
+    @pytest.mark.unit
+    def test_inspect_failure_degrades_to_none_without_raising(self):
+        """with no resolved value, a docker inspect failure returns image_id=None
+        and never raises (the cache key degrades to config-hash-only)."""
+        import phishkit as phishkit_mod
+        phishkit_mod._reset_scanner_image_cache_for_tests()
+        try:
+            with patch.object(phishkit_mod.subprocess, "run",
+                              side_effect=RuntimeError("docker down")):
+                result = phishkit_mod.get_scanner_image_id()
+            assert result["image_id"] is None  # degraded, not raised
+            assert result["image_url"]
+        finally:
+            phishkit_mod._reset_scanner_image_cache_for_tests()

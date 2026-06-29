@@ -221,8 +221,14 @@ class ModuleExecutionSnapshot:
         after: "ModuleExecutionSnapshot",
         module: "AnalysisModule",
         observable: "Observable",
+        is_resuming_delayed_module: bool = False,
     ) -> ModuleExecutionDelta:
-        """Compute the delta between two snapshots."""
+        """Compute the delta between two snapshots.
+
+        ``is_resuming_delayed_module`` is the executor's signal that this cycle
+        is the resumption of a delayed-analysis module's own delay (see the
+        analysis-capture note below).
+        """
         target_diff = _diff_observable_state(before.target_observable, after.target_observable)
 
         # New observables added to the root
@@ -264,12 +270,22 @@ class ModuleExecutionSnapshot:
 
         # Compute module path — capture analysis_dict in two cases:
         #   (1) slot transitioned absent→present (the original case)
-        #   (2) slot present in both, but `delayed` transitioned True→False
-        #       (delayed-analysis module just completed — Phase 3 Step 3.0)
+        #   (2) slot present in both, and the delayed-analysis module just
+        #       completed (delayed→completed — Phase 3 Step 3.0)
         # Without case (2), delayed-analysis modules emit a captured analysis
         # only on the partial first call (which is refused at cache write
         # time because delayed=True), and the final post-delay completion
         # produces an empty analysis_dict.
+        #
+        # Case (2) cannot rely on observing `delayed` flip True→False within
+        # this snapshot window: the orchestrator resets analysis.delayed=False
+        # when it loads the DelayedAnalysisRequest, *before* the executor takes
+        # this resuming cycle's before-snapshot (analysis_orchestrator.py). So
+        # the before-snapshot already shows delayed=False and the transition is
+        # invisible here. We therefore key off the executor's
+        # is_resuming_delayed_module signal: on the completing cycle the slot is
+        # present and no longer delayed → capture. A still-delayed intermediate
+        # re-check (module re-delayed) has is_delayed=True → not captured.
         module_path = _get_module_path(module)
         analysis_dict = None
         if module_path is not None:
@@ -281,7 +297,9 @@ class ModuleExecutionSnapshot:
             elif before_present and after_present:
                 was_delayed = before.target_observable.analysis_delayed.get(module_path, False)
                 is_delayed = after.target_observable.analysis_delayed.get(module_path, False)
-                capture = was_delayed and not is_delayed
+                capture = (was_delayed and not is_delayed) or (
+                    is_resuming_delayed_module and not is_delayed
+                )
             if capture:
                 analysis_obj = observable.get_analysis(module_path)
                 if analysis_obj and analysis_obj is not None and analysis_obj is not False:

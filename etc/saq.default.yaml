@@ -2013,6 +2013,15 @@ analysis_module_phishkit_analyzer:
   # proxy: myproxy
   # if true, retry without proxy when a proxy-related error is detected
   proxy_fallback_to_direct: true
+  # Cache scan results keyed on the URL/file value + extended_version (scanner
+  # YAML content hash + running scanner image id). 6h is intentionally short:
+  # phishkit scans live, ephemeral phishing infrastructure, and a campaign burst
+  # arrives within hours — long enough to dedup the burst (the first scan fills
+  # the cache, the rest replay it), short enough to re-scan before the verdict
+  # goes stale. Partial/timeout results ARE cached on purpose (a timeout is
+  # usually the site blocking our crawl, a stable property — re-scanning just
+  # reproduces the block). See docs/ANALYSIS_CACHING.md (phishkit opt-in).
+  cache_ttl: 21600  # 6 hours
 
 # TAG PRIORITIES AND SETTINGS
 # valid values are
