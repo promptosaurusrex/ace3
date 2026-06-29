@@ -168,6 +168,8 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
         cursor = db.cursor()
         cursor.execute("""DELETE FROM httplog""")
         cursor.execute("""DELETE FROM smtplog""")
+        cursor.execute("""DELETE FROM email_thread_message""")
+        cursor.execute("""DELETE FROM email_thread_domain""")
         db.commit()
         # TODO instead of using harded values pull the limits from the config
         cursor.execute("""INSERT INTO httplog ( host, numconnections, firstconnectdate ) 

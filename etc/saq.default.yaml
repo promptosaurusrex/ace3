@@ -1323,6 +1323,12 @@ analysis_module_email_logger:
   # this enabled updating the smtplog table of the brocess database
   # which is used for various heuristic-based phishing detections
   brocess_logging_enabled: true
+  # this enables recording per-message metadata and per-thread participant domains into the brocess
+  # email_thread_message / email_thread_domain tables, used to reconstruct email conversations (threads)
+  thread_recording_enabled: true
+  # this enables computing look-a-like (BEC) domain similarity telemetry per email and emitting it to the
+  # dedicated fluent-bit "lookalike" source (see fluent_bit_tags below)
+  lookalike_telemetry_enabled: true
   # this enables JSON logging to a file, suitable for any logging system that supports JSON
   json_logging_enabled: false
 
@@ -1331,10 +1337,12 @@ analysis_module_email_logger:
   # the hostname of the fluent-bit server
   fluent_bit_hostname: fluent-bit
   fluent_bit_port: 24224
-  fluent_bit_tags: 
+  fluent_bit_tags:
     main: phishfinder-main
     urls: phishfinder-urls
     headers: phishfinder-headers
+    # dedicated source for look-a-like domain telemetry (one record per email)
+    lookalike: phishfinder-lookalike
 
   # JSON logging file path relative to DATA_DIR
   # the file name is passed through strftime

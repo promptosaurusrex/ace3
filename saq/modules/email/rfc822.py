@@ -1217,6 +1217,7 @@ class EmailAnalyzer(AnalysisModule):
             'cc': cc,
             'bcc': bcc,
             'message_id': email_details[KEY_MESSAGE_ID] if KEY_MESSAGE_ID in email_details else None,
+            'in_reply_to': decode_rfc2822(target_email['in-reply-to']) if 'in-reply-to' in target_email else None,
             'subject': email_details.get(KEY_DECODED_SUBJECT) or email_details.get(KEY_SUBJECT),
             'subject_raw': email_details[KEY_SUBJECT] if KEY_SUBJECT in email_details else None,
             'path': path,

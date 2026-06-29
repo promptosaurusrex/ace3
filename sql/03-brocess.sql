@@ -103,6 +103,65 @@ CREATE TABLE `smtplog` (
   PRIMARY KEY (`source`,`destination`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
 /*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `email_thread_message`
+--
+-- records per-message metadata used to reconstruct email conversations (threads). identifiers such as
+-- message-id / thread-id have no hard length limit (RFC 5322), so they are stored full-length as TEXT
+-- and indexed via fixed-width BINARY(32) SHA-256 hash columns (UNHEX(SHA2(value, 256)))
+--
+
+DROP TABLE IF EXISTS `email_thread_message`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `email_thread_message` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `insert_date` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `thread_id` text NOT NULL,
+  `thread_id_hash` binary(32) NOT NULL,
+  `message_id` text NOT NULL,
+  `message_id_hash` binary(32) NOT NULL,
+  `in_reply_to` text DEFAULT NULL,
+  `normalized_subject` text DEFAULT NULL,
+  `normalized_subject_hash` binary(32) DEFAULT NULL,
+  `from_address` text DEFAULT NULL,
+  `from_domain` text DEFAULT NULL,
+  `direction` tinyint(4) DEFAULT NULL,
+  `message_date` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_thread_message` (`thread_id_hash`,`message_id_hash`),
+  KEY `idx_thread_date` (`thread_id_hash`,`message_date`),
+  KEY `idx_subject` (`normalized_subject_hash`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `email_thread_domain`
+--
+-- denormalized participant domains seen in each thread, used as the "established in-thread domains"
+-- that a newly-arriving sender domain is compared against for look-a-like detection. entry_hash keeps
+-- the per-thread uniqueness key fixed-width so domain/address can stay arbitrary-length TEXT.
+--
+
+DROP TABLE IF EXISTS `email_thread_domain`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `email_thread_domain` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `thread_id` text NOT NULL,
+  `thread_id_hash` binary(32) NOT NULL,
+  `domain` text NOT NULL,
+  `address` text NOT NULL,
+  `role` varchar(16) NOT NULL,
+  `entry_hash` binary(32) NOT NULL,
+  `numseen` bigint(20) DEFAULT 1,
+  `firstseendate` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_thread_domain` (`thread_id_hash`,`entry_hash`),
+  KEY `idx_thread` (`thread_id_hash`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+/*!40101 SET character_set_client = @saved_cs_client */;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
 /*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
