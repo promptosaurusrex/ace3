@@ -492,8 +492,28 @@ app.conf.task_soft_time_limit = _scanner_timeout_hint * 2 + 60
 app.conf.task_time_limit = _scanner_timeout_hint * 2 + 120
 
 @app.task
-def ping() -> str:
-    return "pong"
+def ping() -> dict:
+    """Health check that also reports the scanner image identity.
+
+    Returns the image content id (``docker inspect ... {{.Id}}``) of the exact
+    image this worker would ``docker run`` for a scan. ACE folds that id into the
+    phishkit cache key's ``extended_version`` so a scanner rebuild invalidates
+    cached results — even under a floating ``:latest`` tag, since ``{{.Id}}`` is a
+    content hash that changes on every rebuild. ``image_id`` is None when the
+    image is not present locally or ``docker inspect`` is unavailable; the caller
+    degrades the cache key gracefully rather than treating that as fatal.
+    """
+    image_url = os.environ.get("ACE3_PHISHKIT_IMAGE_URL", "phishkit")
+    image_id = None
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", image_url, "--format", "{{.Id}}"],
+            capture_output=True, text=True, timeout=5, check=True,
+        )
+        image_id = result.stdout.strip() or None
+    except Exception as e:
+        logger.warning("ping: unable to inspect phishkit image %s: %s", image_url, e)
+    return {"status": "pong", "image_url": image_url, "image_id": image_id}
 
 # immediate subdirectories of these are aged out by maintain_files
 PHISHKIT_DATA_DIRS = ("/phishkit/input", "/phishkit/output")

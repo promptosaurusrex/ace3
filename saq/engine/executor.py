@@ -1409,7 +1409,7 @@ class AnalysisExecutor:
                             snapshot_after = ModuleExecutionSnapshot.wide(root, work_item.observable, analysis_module)
                         else:
                             snapshot_after = ModuleExecutionSnapshot.narrow(root, work_item.observable, analysis_module)
-                        delta = ModuleExecutionSnapshot.diff(snapshot_before, snapshot_after, analysis_module, work_item.observable)
+                        delta = ModuleExecutionSnapshot.diff(snapshot_before, snapshot_after, analysis_module, work_item.observable, is_resuming_delayed_module)
                         delta.execution_time_ms = (time.monotonic_ns() - delta_start_ns) // 1_000_000
 
                         # Compute the cache key before recording: the recorded

@@ -34,15 +34,18 @@ from saq.analysis.snapshot import ModuleExecutionSnapshot
 from saq.configuration.config import get_analysis_module_config, get_config
 from saq.constants import (
     ANALYSIS_MODULE_OCR,
+    ANALYSIS_MODULE_PHISHKIT_ANALYZER,
     ANALYSIS_MODULE_QRCODE,
     ANALYSIS_MODULE_SITE_TAGGER,
     ANALYSIS_MODULE_NRD_ANALYZER,
     ANALYSIS_MODULE_RDAP_ANALYZER,
     AnalysisExecutionResult,
+    DIRECTIVE_CRAWL,
     DIRECTIVE_OCR,
     F_FILE,
     F_FQDN,
     F_IP,
+    F_URL,
     FILE_SUBDIR,
 )
 from saq.util.hashing import is_sha256_hex
@@ -274,6 +277,95 @@ def _check_qrcode(test_context, monkeypatch):
     return delta, root
 
 
+def _check_phishkit(test_context, monkeypatch):
+    """Drives PhishkitAnalyzer through its REAL delayed lifecycle with the celery
+    scan mocked: cycle 1 (execute_analysis) dispatches and delays (INCOMPLETE);
+    the orchestrator's delayed-flag reset is simulated; cycle 2
+    (continue_analysis, resuming) harvests a fixture output dir and completes.
+    The merged delta is the real cache shape — the completed analysis, a file
+    observable (captured ``dom.html``), and an extracted URL observable.
+    Phishkit is the first delayed *and* file-producing cacheable module, so this
+    exercises that intersection.
+    """
+    import os
+    import tempfile
+
+    from saq.analysis.module_execution_delta import merge_module_execution_deltas
+    from saq.modules.phishkit import PhishkitAnalyzer, PhishkitAnalysis
+
+    out_dir = tempfile.mkdtemp()
+    # dom.html is a non-special output file → becomes a file observable, and its
+    # MARKER URL line drives URL-observable extraction. exit.code is consumed,
+    # not turned into an observable.
+    dom_path = os.path.join(out_dir, "dom.html")
+    with open(dom_path, "w") as fp:
+        fp.write("<html></html>\nMARKER URL: https://example.com/next-stage\n")
+    exit_code_path = os.path.join(out_dir, "exit.code")
+    with open(exit_code_path, "w") as fp:
+        fp.write("0")
+    output_files = [exit_code_path, dom_path]
+
+    def fake_delay(self, observable, analysis, **kwargs):
+        analysis.delayed = True
+        return AnalysisExecutionResult.INCOMPLETE
+
+    monkeypatch.setattr(
+        "saq.modules.phishkit.scan_url",
+        lambda url, output_dir, **kwargs: "contract-job",
+    )
+    monkeypatch.setattr(
+        "saq.modules.phishkit.get_async_scan_result",
+        lambda job_id, output_dir, timeout=1: output_files,
+    )
+    monkeypatch.setattr(
+        "saq.modules.phishkit.PhishkitAnalyzer.delay_analysis", fake_delay,
+    )
+    monkeypatch.setattr(
+        "saq.modules.phishkit.create_temporary_directory",
+        lambda: out_dir,
+    )
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    obs = root.add_observable_by_spec(F_URL, "https://example.com/phish")
+    obs.add_directive(DIRECTIVE_CRAWL)
+
+    analyzer = PhishkitAnalyzer(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+    )
+    analyzer.root = root
+
+    # cycle 1: dispatch + delay
+    before1 = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+    assert analyzer.execute_analysis(obs) == AnalysisExecutionResult.INCOMPLETE
+    after1 = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+    delta_a = ModuleExecutionSnapshot.diff(before1, after1, analyzer, obs,
+                                           is_resuming_delayed_module=False)
+    root.record_module_execution(delta_a.without_analysis_details())
+    analysis = obs.get_and_load_analysis(PhishkitAnalysis)
+    assert analysis is not None
+
+    # orchestrator clears the delay flag before the resuming cycle's snapshot
+    analysis.delayed = False
+
+    # cycle 2 (resume): harvest + complete
+    before2 = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+    assert analyzer.continue_analysis(obs, analysis) == AnalysisExecutionResult.COMPLETED
+    after2 = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+    delta_b = ModuleExecutionSnapshot.diff(before2, after2, analyzer, obs,
+                                           is_resuming_delayed_module=True)
+
+    prior = [d for d in root.module_executions
+             if d.module_path == delta_b.module_path
+             and d.observable_uuid == delta_b.observable_uuid
+             and not d.from_cache_hit
+             and (d.analysis is None or d.analysis.get("delayed"))]
+    delta = merge_module_execution_deltas(prior, delta_b)
+    assert delta.has_file_observables, "phishkit contract check failed to produce a file"
+    return delta, root
+
+
 class ContractCheck(NamedTuple):
     runner: Callable  # callable(test_context, monkeypatch) -> (delta, root)
     file_capable: bool  # True: module may spawn file observables (Phase 4)
@@ -292,6 +384,7 @@ CONTRACT_CHECKERS: dict[str, ContractCheck] = {
     "analysis_module_rdap_analyzer": ContractCheck(_check_rdap_analyzer, file_capable=False),
     "analysis_module_ocr": ContractCheck(_check_ocr, file_capable=True),
     "analysis_module_qrcode": ContractCheck(_check_qrcode, file_capable=True),
+    "analysis_module_phishkit_analyzer": ContractCheck(_check_phishkit, file_capable=True),
 }
 
 

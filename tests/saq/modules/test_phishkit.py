@@ -25,6 +25,11 @@ from saq.modules.phishkit import (
     SCAN_TYPE_FILE
 )
 from saq.modules.file_analysis import FileTypeAnalysis
+import saq.phishkit
+from saq.analysis.blob_store import LocalHardlinkBlobStore, LocalHardlinkBlobStoreConfig
+from saq.analysis.cache import apply_delta, generate_cache_key, get_cached_delta, put_cached_delta
+from saq.analysis.module_execution_delta import merge_module_execution_deltas
+from saq.analysis.snapshot import ModuleExecutionSnapshot
 from tests.saq.helpers import create_root_analysis
 from tests.saq.test_util import create_test_context
 
@@ -301,10 +306,12 @@ def test_phishkit_analyzer_execute_analysis_url_success(monkeypatch, test_contex
     
     monkeypatch.setattr("saq.modules.phishkit.scan_url", mock_scan_url)
     
-    # Mock delay_analysis to avoid delayed execution issues
-    def mock_delay_analysis(*args, **kwargs):
-        pass
-    
+    # Mock delay_analysis to mimic the real contract (flag delayed, return
+    # INCOMPLETE) without registering an actual delayed request.
+    def mock_delay_analysis(self, observable, analysis, **kwargs):
+        analysis.delayed = True
+        return AnalysisExecutionResult.INCOMPLETE
+
     monkeypatch.setattr("saq.modules.phishkit.PhishkitAnalyzer.delay_analysis", mock_delay_analysis)
     
     # Mock create_temporary_directory
@@ -317,9 +324,10 @@ def test_phishkit_analyzer_execute_analysis_url_success(monkeypatch, test_contex
         get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
         context=create_test_context(root=root))
     result = analyzer.execute_analysis(url_observable)
-    
-    assert result == AnalysisExecutionResult.COMPLETED
-    
+
+    # F_URL returns the delay result (INCOMPLETE) — the scan completes on resume.
+    assert result == AnalysisExecutionResult.INCOMPLETE
+
     analysis = url_observable.get_and_load_analysis(PhishkitAnalysis)
     assert analysis is not None
     assert analysis.job_id == "test-job-123"
@@ -398,10 +406,12 @@ def test_phishkit_analyzer_execute_analysis_url_with_crawl_directive(monkeypatch
     
     monkeypatch.setattr("saq.modules.phishkit.scan_url", mock_scan_url)
     
-    # Mock delay_analysis to avoid delayed execution issues
-    def mock_delay_analysis(*args, **kwargs):
-        pass
-    
+    # Mock delay_analysis to mimic the real contract (flag delayed, return
+    # INCOMPLETE) without registering an actual delayed request.
+    def mock_delay_analysis(self, observable, analysis, **kwargs):
+        analysis.delayed = True
+        return AnalysisExecutionResult.INCOMPLETE
+
     monkeypatch.setattr("saq.modules.phishkit.PhishkitAnalyzer.delay_analysis", mock_delay_analysis)
     
     # Mock create_temporary_directory
@@ -414,9 +424,9 @@ def test_phishkit_analyzer_execute_analysis_url_with_crawl_directive(monkeypatch
         get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
         context=create_test_context(root=root))
     result = analyzer.execute_analysis(url_observable)
-    
-    assert result == AnalysisExecutionResult.COMPLETED
-    
+
+    assert result == AnalysisExecutionResult.INCOMPLETE
+
     analysis = url_observable.get_and_load_analysis(PhishkitAnalysis)
     assert analysis is not None
     assert analysis.job_id == "test-job-456"
@@ -1502,3 +1512,252 @@ def test_phishkit_analyzer_file_scan_passes_proxy(monkeypatch, test_context):
     finally:
         if os.path.exists(test_file_path):
             os.unlink(test_file_path)
+
+
+# ----------------------------------------------------------------------
+# Caching (analysis-result cache opt-in): extended_version, scanner-version
+# helper, and a write→replay round-trip across the delayed × file-producing
+# path. See docs/ANALYSIS_CACHING.md (phishkit opt-in).
+# ----------------------------------------------------------------------
+
+def _drive_phishkit_scan(monkeypatch, out_dir, *, interrupted=False,
+                         url="https://example.com/phish"):
+    """Drive PhishkitAnalyzer through its REAL delayed lifecycle and return
+    (analyzer, root, observable, merged_delta) — the delta the executor would
+    cache.
+
+    Phishkit is delayed: cycle 1 (execute_analysis) creates a delayed
+    placeholder analysis and returns INCOMPLETE; the engine resumes it later and
+    cycle 2 (continue_analysis) harvests the scan and completes. Crucially we
+    reproduce the orchestrator resetting ``analysis.delayed = False`` *before*
+    the resuming cycle's before-snapshot (analysis_orchestrator.py) and pass
+    ``is_resuming_delayed_module=True`` to the resuming diff — the exact
+    conditions under which the completed analysis must still be captured. An
+    earlier version of this helper mocked delay_analysis to a no-op, which left
+    delayed=False and hid the capture bug.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    dom_path = os.path.join(out_dir, "dom.html")
+    with open(dom_path, "w") as fp:
+        fp.write("<html></html>\nMARKER URL: https://evil.example/next-stage\n")
+    exit_code_path = os.path.join(out_dir, "exit.code")
+    with open(exit_code_path, "w") as fp:
+        fp.write("143" if interrupted else "0")
+    files = [exit_code_path, dom_path]
+    if interrupted:
+        metrics_path = os.path.join(out_dir, "metrics.json")
+        with open(metrics_path, "w") as fp:
+            json.dump({"interrupted": True}, fp)
+        files.append(metrics_path)
+
+    def fake_delay(self, observable, analysis, **kwargs):
+        # mimic the real delay_analysis: register the resume (no-op here),
+        # flag the analysis delayed, return INCOMPLETE.
+        analysis.delayed = True
+        analysis.completed = False
+        return AnalysisExecutionResult.INCOMPLETE
+
+    monkeypatch.setattr("saq.modules.phishkit.scan_url",
+                        lambda u, o, **k: "job-xyz")
+    monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result",
+                        lambda j, o, timeout=1: files)
+    monkeypatch.setattr("saq.modules.phishkit.PhishkitAnalyzer.delay_analysis",
+                        fake_delay)
+    monkeypatch.setattr("saq.modules.phishkit.create_temporary_directory",
+                        lambda: out_dir)
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    obs = root.add_observable_by_spec(F_URL, url)
+    obs.add_directive(DIRECTIVE_CRAWL)
+    analyzer = PhishkitAnalyzer(
+        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+        context=create_test_context(root=root))
+
+    # cycle 1: dispatch + delay (delayed placeholder analysis captured via the
+    # absent→present path).
+    before1 = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+    assert analyzer.execute_analysis(obs) == AnalysisExecutionResult.INCOMPLETE
+    after1 = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+    delta_a = ModuleExecutionSnapshot.diff(before1, after1, analyzer, obs,
+                                           is_resuming_delayed_module=False)
+    root.record_module_execution(delta_a.without_analysis_details())
+    analysis = obs.get_and_load_analysis(PhishkitAnalysis)
+    assert analysis is not None and analysis.delayed
+
+    # the orchestrator clears the delay flag before the resuming cycle's snapshot
+    analysis.delayed = False
+
+    # cycle 2 (resume): harvest + complete. The completed analysis must be
+    # captured even though delayed is already False (is_resuming_delayed_module).
+    before2 = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+    assert analyzer.continue_analysis(obs, analysis) == AnalysisExecutionResult.COMPLETED
+    after2 = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+    delta_b = ModuleExecutionSnapshot.diff(before2, after2, analyzer, obs,
+                                           is_resuming_delayed_module=True)
+
+    # merge prior delayed-cycle deltas exactly as the executor does
+    prior = [d for d in root.module_executions
+             if d.module_path == delta_b.module_path
+             and d.observable_uuid == delta_b.observable_uuid
+             and not d.from_cache_hit
+             and (d.analysis is None or d.analysis.get("delayed"))]
+    merged = merge_module_execution_deltas(prior, delta_b)
+    return analyzer, root, obs, merged
+
+
+@pytest.mark.unit
+def test_phishkit_get_scanner_version_memoized(monkeypatch):
+    """get_phishkit_scanner_version pings once per TTL window — cache hits must
+    not pay a celery roundtrip on every analysis."""
+    saq.phishkit._reset_scanner_version_cache_for_tests()
+    calls = []
+
+    def fake_ping():
+        calls.append(1)
+        return {"status": "pong", "image_url": "phishkit:latest", "image_id": "sha256:aaa"}
+
+    monkeypatch.setattr("saq.phishkit.ping_phishkit", fake_ping)
+    try:
+        first = saq.phishkit.get_phishkit_scanner_version()
+        second = saq.phishkit.get_phishkit_scanner_version()
+        assert first == second == {"status": "pong", "image_url": "phishkit:latest", "image_id": "sha256:aaa"}
+        assert len(calls) == 1  # memoized within the TTL
+    finally:
+        saq.phishkit._reset_scanner_version_cache_for_tests()
+
+
+@pytest.mark.unit
+def test_phishkit_get_scanner_version_fallback_on_failure(monkeypatch):
+    """A ping failure with no prior value yields {} (key degrades to
+    config-hash-only). After a success, a later failure keeps serving the
+    last-known value rather than flapping the key."""
+    saq.phishkit._reset_scanner_version_cache_for_tests()
+
+    def boom():
+        raise RuntimeError("broker down")
+
+    monkeypatch.setattr("saq.phishkit.ping_phishkit", boom)
+    try:
+        assert saq.phishkit.get_phishkit_scanner_version() == {}
+    finally:
+        saq.phishkit._reset_scanner_version_cache_for_tests()
+
+    # prime a success, then expire the memo and fail: last-known is retained
+    monkeypatch.setattr("saq.phishkit.ping_phishkit",
+                        lambda: {"image_id": "sha256:bbb"})
+    assert saq.phishkit.get_phishkit_scanner_version() == {"image_id": "sha256:bbb"}
+    saq.phishkit._scanner_version_cache = (-1.0, {"image_id": "sha256:bbb"})  # force-expire
+    monkeypatch.setattr("saq.phishkit.ping_phishkit", boom)
+    try:
+        assert saq.phishkit.get_phishkit_scanner_version() == {"image_id": "sha256:bbb"}
+    finally:
+        saq.phishkit._reset_scanner_version_cache_for_tests()
+
+
+@pytest.mark.integration
+def test_phishkit_extended_version_includes_config_and_image(monkeypatch, test_context):
+    """extended_version mixes the scanner YAML content hash and the running
+    image id (both statically derivable before the scan)."""
+    monkeypatch.setattr("saq.modules.phishkit.get_phishkit_scanner_version",
+                        lambda: {"image_id": "sha256:cafef00d"})
+    analyzer = PhishkitAnalyzer(
+        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+        context=test_context)
+    ev = analyzer.extended_version
+    assert ev["scanner_image"] == "sha256:cafef00d"
+    assert "phishkit_config" in ev and len(ev["phishkit_config"]) == 64  # sha256 hex
+
+
+@pytest.mark.integration
+def test_phishkit_extended_version_omits_image_when_unavailable(monkeypatch, test_context):
+    """When the image id can't be resolved the key degrades gracefully to the
+    config hash alone — it does not poison the key with a sentinel."""
+    monkeypatch.setattr("saq.modules.phishkit.get_phishkit_scanner_version",
+                        lambda: {})
+    analyzer = PhishkitAnalyzer(
+        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+        context=test_context)
+    ev = analyzer.extended_version
+    assert "scanner_image" not in ev
+    assert "phishkit_config" in ev
+
+
+@pytest.mark.integration
+def test_phishkit_extended_version_image_change_changes_key(monkeypatch, tmp_path):
+    """A scanner rebuild (new image id) must re-key, even under the floating
+    :latest tag whose URL string never changes."""
+    analyzer, root, obs, _ = _drive_phishkit_scan(monkeypatch, str(tmp_path / "s"))
+    monkeypatch.setattr("saq.modules.phishkit.get_phishkit_scanner_version",
+                        lambda: {"image_id": "sha256:v1"})
+    key_v1 = generate_cache_key(obs, analyzer)
+    monkeypatch.setattr("saq.modules.phishkit.get_phishkit_scanner_version",
+                        lambda: {"image_id": "sha256:v2"})
+    key_v2 = generate_cache_key(obs, analyzer)
+    assert key_v1 and key_v2 and key_v1 != key_v2
+
+
+@pytest.mark.integration
+def test_phishkit_cache_write_and_replay(monkeypatch, tmp_path):
+    """A successful scan's delta writes a file-backed cache row, and a fresh
+    analysis of the same URL replays it: the captured dom.html is materialized
+    and the extracted URL observable is reproduced, without re-scanning. This
+    exercises the delayed × file-producing path end to end."""
+    monkeypatch.setattr("saq.modules.phishkit.get_phishkit_scanner_version",
+                        lambda: {"image_id": "sha256:deadbeef"})
+    blob_store = LocalHardlinkBlobStore(
+        LocalHardlinkBlobStoreConfig(root_dir=str(tmp_path / "blobs")))
+
+    analyzer, root, obs, delta = _drive_phishkit_scan(monkeypatch, str(tmp_path / "scan"))
+    delta.cache_key = generate_cache_key(obs, analyzer)
+    assert delta.cache_key is not None
+    # Regression: the completed analysis must survive the delayed-merge into the
+    # cached delta (the bug cached analysis=None, losing the PhishkitAnalysis).
+    assert delta.analysis is not None, "delayed-module merge lost the analysis object"
+
+    write = put_cached_delta(delta, analyzer, blob_store, root=root)
+    assert write is not None  # non-empty, file-backed delta accepted
+
+    # fresh root + same URL → cache hit → replay (no module run)
+    root2 = create_root_analysis(analysis_mode="test_single")
+    root2.initialize_storage()
+    obs2 = root2.add_observable_by_spec(F_URL, obs.value)
+    lookup = get_cached_delta(obs2, analyzer, blob_store)
+    assert lookup.delta is not None, f"expected cache hit, got miss: {lookup.miss_reason}"
+    apply_delta(root2, obs2, lookup.delta, blob_store)
+
+    # The replay must recreate the PhishkitAnalysis node and nest the extracted
+    # observables UNDER it — not dump them at root (the original-bug symptom).
+    replayed = obs2.get_and_load_analysis(PhishkitAnalysis)
+    assert replayed is not None, "replay did not recreate the PhishkitAnalysis node"
+    child_files = [o for o in replayed.observables if o.type == F_FILE]
+    assert any(o.file_name == "dom.html" for o in child_files), \
+        "dom.html not materialized as a child of PhishkitAnalysis"
+    assert any(o.type == F_URL and o.value == "https://evil.example/next-stage"
+               for o in replayed.observables), \
+        "extracted URL not nested under PhishkitAnalysis on replay"
+    # and it is NOT a loose root-level observable
+    assert not any(o.type == F_URL and o.value == "https://evil.example/next-stage"
+                   for o in root2.observables), \
+        "extracted URL leaked to root instead of nesting under the analysis"
+
+
+@pytest.mark.integration
+def test_phishkit_partial_scan_is_cached(monkeypatch, tmp_path):
+    """A partial/interrupted scan is cached on purpose (a timeout is usually the
+    site blocking our crawl — a stable property; re-scanning reproduces it).
+    Staleness is bounded by the short cache_ttl, not a skip-hook. Assert the
+    interrupted delta is non-empty and accepted by put_cached_delta."""
+    monkeypatch.setattr("saq.modules.phishkit.get_phishkit_scanner_version",
+                        lambda: {"image_id": "sha256:deadbeef"})
+    blob_store = LocalHardlinkBlobStore(
+        LocalHardlinkBlobStoreConfig(root_dir=str(tmp_path / "blobs")))
+
+    analyzer, root, obs, delta = _drive_phishkit_scan(
+        monkeypatch, str(tmp_path / "scan"), interrupted=True)
+    analysis = obs.get_and_load_analysis(PhishkitAnalysis)
+    assert "partial scan" in analysis.scan_result
+
+    delta.cache_key = generate_cache_key(obs, analyzer)
+    write = put_cached_delta(delta, analyzer, blob_store, root=root)
+    assert write is not None  # partial results are cached, not refused

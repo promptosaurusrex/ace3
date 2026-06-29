@@ -1,8 +1,10 @@
 # Per-Module Analysis Diff Tracking & Caching
 
 Status: Phases 1–3, the Phase 2.5 write-only bake, a capture/replay hardening
-pass (2026-06-10 — see Part II), and Phase 4 (file-observable caching +
-tool-version helper + OCR/QR opt-ins, 2026-06-12) have shipped. Phase 3.5
+pass (2026-06-10 — see Part II), Phase 4 (file-observable caching +
+tool-version helper + OCR/QR opt-ins, 2026-06-12), and the phishkit opt-in
+(2026-06-29 — first delayed *and* file-producing cached module; see the
+Phishkit opt-in notes in Part II) have shipped. Phase 3.5
 (single-flight dedup) is designed but not yet implemented — deliberately
 re-sequenced to land *after* Phase 4 (it is a work-dedup optimization with no
 dependents; file-observable support unblocked the modules we most wanted
@@ -40,7 +42,7 @@ section with the full design.
 | **Delayed modules** | Cacheable: final-cycle delta is merged with prior cycles' recorded deltas at write time; mid-delay cycles never cached (COMPLETED gate). | open question 3 |
 | **Config guards** | `cache_ttl` mutually exclusive with `wide_diff` and with `is_grouped_by_time` (pydantic validators); CI contract lint per opt-in (removals / relationship scope / file specs blob-backable for `file_capable` modules, no files otherwise). | §A6, §A1 |
 | **Lifecycle** | Daily partition maintenance (drop > `partition_retention_days`=35, reorganize catchall, provision ahead); read-time `expires_at` filter owns precision; blob GC is a separate grace-period sweep. No row DELETEs anywhere. File blobs ride the same `blob_refs`/GC mechanism as spilled details. | §A8 |
-| **Opt-ins (core)** | `rdap_analyzer` 7d; `nrd_analyzer` 24h + DB-file `extended_version`; `site_tagger` 30d + CSV `extended_version`; **`ocr` 7d + tesseract-version `extended_version`; `qrcode` 7d + zbarimg/gs/pdfinfo versions + filter-file content sha256** (Phase 4). OCR/QR also cache **negative results** (clean scan, nothing found → summary-less analysis recorded; scan *failures* record nothing and are never cached). | Phase 3/4 notes, §A4 |
+| **Opt-ins (core)** | `rdap_analyzer` 7d; `nrd_analyzer` 24h + DB-file `extended_version`; `site_tagger` 30d + CSV `extended_version`; **`ocr` 7d + tesseract-version `extended_version`; `qrcode` 7d + zbarimg/gs/pdfinfo versions + filter-file content sha256** (Phase 4); **`phishkit_analyzer` 6h + `extended_version` = scanner-config content hash + running scanner image id via extended `pk_ping`** (2026-06-29). OCR/QR also cache **negative results** (clean scan, nothing found → summary-less analysis recorded; scan *failures* record nothing and are never cached). Phishkit caches **partial/timeout results on purpose** (a timeout is usually the target site blocking our crawl — a stable property — not transient noise; staleness is bounded by the 6h TTL). | Phase 3/4 notes, §A4, phishkit opt-in notes |
 | **Metrics** | Per-(root, module) fields on the per-root summary event: hit/miss/write counts, lookup latency (**hits + misses**), write latency/bytes. `cache_stats` heartbeat (15 min) from partition statistics. | PR #242 notes |
 | **Not implemented** | Phase 3.5 single-flight dedup (redesigned 2026-06-10: non-blocking, delayed-analysis requeue, `single_flight` opt-in — §A9). Deliberately re-sequenced after Phase 4; it has no dependents. Yara opt-in deferred — not for version reasons (the ruleset under `signature_dir` IS fingerprintable, nrd-style): its filtered output depends on file name and observable meta-tags, which sit outside the content-keyed cache; its SANDBOX directive lands on the *redirection target* (cross-observable, unreplayable); and a local yss socket scan is cheaper than a cache hit anyway. | §A9, Phase 4 notes |
 
@@ -607,7 +609,8 @@ confidence criteria.
   depends on the file's *name* and the observable's *meta-tags*, which are
   outside the content-keyed cache, and its sandbox directive lands on a
   *different* observable — see the Phase 4 implementation notes for the
-  full breakdown. Phishkit opt-in is downstream (integration repo).
+  full breakdown. **Phishkit opt-in shipped 2026-06-29 in core**
+  (`saq/modules/phishkit.py`) — see the "Phishkit opt-in" notes in Part II.
 - See "Phase 4 implementation notes" in Part II for as-built detail and
   known limitations (shared-inode immutability assumption, mixed-version
   fleet behavior).
@@ -2792,7 +2795,51 @@ the Step 3.6 tool-version helper shipped in the same change.
     and (d) payoff is marginal — a local yss socket scan costs
     milliseconds, comparable to or cheaper than a cache hit's DB
     round-trip + decode + replay (§A1's "cheap enough to re-run" case).
-    *Phishkit*: integration-repo opt-in, unblocked by this phase.
+    *Phishkit*: opted in 2026-06-29 in **core** (not downstream — the module
+    lives in `saq/modules/phishkit.py`). See the "Phishkit opt-in" notes below.
+
+### Phishkit opt-in notes (as built, 2026-06-29)
+
+Phishkit is the highest-payoff cache candidate (a multi-second-to-minutes
+browser crawl) and the most herd-prone (one phishing URL blasted to many
+mailboxes). It is opted in with `cache_ttl: 21600` (6h) in
+`etc/saq.default.yaml`. Notable points:
+
+- **Why plain caching, not single-flight (§A9).** Engine workers do not pick up
+  all copies of a campaign at once — arrivals stagger. The first scan fills the
+  cache; the rest of the burst arrives late enough to replay it. Single-flight
+  would only dedup the 1–2 genuinely-concurrent scans at the front of a burst —
+  negligible against replaying the rest. Phase 3.5 stays parked.
+- **First delayed *and* file-producing cached module.** It exercises the
+  intersection of the Phase 3 delayed path (celery submit + multi-cycle poll,
+  cached only on the COMPLETED final cycle with prior cycles merged via
+  `merge_module_execution_deltas()`) and the Phase 4 file-blob path (captured
+  `dom.html`/`requests.json`/screenshots blob-backed; extracted URL observables
+  replayed). Covered by `_check_phishkit` in the CI contract lint
+  (`file_capable=True`) and a write→replay round-trip in `test_phishkit.py`.
+- **`extended_version` (`saq/modules/phishkit.py`).** Two statically-derivable
+  signals (the cache key is computed *before* the scan, so neither can come from
+  a scan result): `phishkit_config` = `file_content_version()` of the scanner
+  YAML (an analyst edit re-keys without a redeploy), and `scanner_image` = the
+  running scanner image's content id. The image id is the genuine fix for the
+  invalidation gap: `ACE3_PHISHKIT_IMAGE_URL` is a constant `phishkit:latest` in
+  production, so keying on the tag string would never invalidate. Instead the
+  manager — which already has the Docker socket and shells out to the `docker`
+  CLI — reports `docker inspect <image> --format '{{.Id}}'` (a content hash that
+  changes on every rebuild) through an extended `pk_ping`; the module folds it
+  in via `get_phishkit_scanner_version()`, memoized in-process (~5 min TTL) so
+  cache *hits* don't pay a celery roundtrip. On a ping/inspect failure the key
+  degrades to config-hash-only (last-known value retained to avoid flapping).
+- **Partial/timeout results are cached on purpose.** A phishkit timeout is
+  overwhelmingly the target site *detecting and blocking* the automated crawl —
+  a stable property of its anti-bot behavior, not transient network noise that a
+  retry would fix. Caching the partial result gives the rest of a campaign the
+  same answer a fresh scan would and stops us re-hammering a site that is
+  fingerprinting us. So there is **no `is_result_cacheable` skip-hook**;
+  staleness (including a cached partial) is bounded by the short 6h TTL.
+- **Size guard.** `dom.html`/`requests.json` are normally KB-to-low-MB. A heavy
+  crawl that exceeds `analysis_cache.file_blob_max_bytes` (16 MiB/file) hits the
+  `file_too_large` write-refusal and simply re-runs live — graceful, not a bug.
 
 ---
 
@@ -3215,10 +3262,12 @@ the stored delta instead of executing. Shipped as Steps 3.0–3.8 (the outline's
   telemetry call sites were converted to `extra=`, and the field `module=` was
   renamed to `module_name=` (Python's `LogRecord` reserves `module`).
 
-**Explicitly NOT in PR #211** (and still unshipped today): phishkit read-side
-opt-in; the tool-version `extended_version` helper (`saq/modules/tool_version.py`
-does not exist — deferred to Phase 4 with the OCR/QR opt-ins); and Phase 3.5
-single-flight dedup (no `analysis_cache_pending` table or `claim_pending`).
+**Explicitly NOT in PR #211** (status as of PR #211): phishkit read-side opt-in
+(*since shipped 2026-06-29 — see the Phishkit opt-in notes*); the tool-version
+`extended_version` helper (`saq/modules/tool_version.py` did not yet exist —
+*since shipped in Phase 4 with the OCR/QR opt-ins*); and Phase 3.5 single-flight
+dedup (no `analysis_cache_pending` table or `claim_pending` — *still unshipped,
+deliberately parked; see §A9*).
 
 **Files touched:** `saq/analysis/cache.py`, `saq/analysis/module_execution_delta.py`,
 `saq/analysis/snapshot.py`, `saq/engine/executor.py`, `saq/logging.py`,
