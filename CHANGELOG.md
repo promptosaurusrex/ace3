@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.71] - 2026-06-29
+
+- [Phishkit analysis caching](https://github.com/ACE-Collective/ace3/pull/356)
+- [look-alike domain detection support for improved BEC detection](https://github.com/ACE-Collective/ace3/pull/357)
+- [Makes is_autoit check much more efficient](https://github.com/ACE-Collective/ace3/pull/358)
+
 ## [3.0.70] - 2026-06-26
 
 - [Add Alert Unassign and Alert Quick Actions](https://github.com/ACE-Collective/ace3/pull/346)
