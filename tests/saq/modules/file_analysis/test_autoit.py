@@ -146,27 +146,51 @@ class TestAutoItAnalyzer:
         result = analyzer.execute_analysis(file_observable)
         assert result == AnalysisExecutionResult.COMPLETED
     
-    def test_execute_analysis_not_autoit_file(self, root_analysis, tmpdir):
+    def test_custom_requirement_not_autoit_file(self, root_analysis, tmpdir):
         analyzer = AutoItAnalyzer(
             context=create_test_context(root=root_analysis),
             config=get_analysis_module_config(ANALYSIS_MODULE_AUTOIT))
-        
-        # create a non-autoit file
+
+        # create a non-autoit file -- the gating now lives in custom_requirement
         test_file = tmpdir / "test.txt"
         test_file.write("this is not an autoit file")
-        
+
         file_observable = root_analysis.add_file_observable(str(test_file))
-        
-        result = analyzer.execute_analysis(file_observable)
-        assert result == AnalysisExecutionResult.COMPLETED
-        
-        # should not have created any analysis
-        analysis = file_observable.get_analysis(AutoItAnalysis)
-        assert analysis is None
-        
-        # should not have added autoit tag
-        assert not file_observable.has_tag("autoit")
-    
+
+        assert analyzer.custom_requirement(file_observable) is False
+
+    def test_custom_requirement_autoit_file(self, root_analysis, datadir):
+        analyzer = AutoItAnalyzer(
+            context=create_test_context(root=root_analysis),
+            config=get_analysis_module_config(ANALYSIS_MODULE_AUTOIT))
+
+        file_observable = root_analysis.add_file_observable(str(datadir / "UGtZgHHT.au3"))
+
+        assert analyzer.custom_requirement(file_observable) is True
+
+    def test_custom_requirement_missing_file(self, root_analysis, tmpdir):
+        analyzer = AutoItAnalyzer(
+            context=create_test_context(root=root_analysis),
+            config=get_analysis_module_config(ANALYSIS_MODULE_AUTOIT))
+
+        test_file = tmpdir / "gone.exe"
+        test_file.write("temp content")
+        file_observable = root_analysis.add_file_observable(str(test_file))
+        os.remove(str(test_file))
+
+        assert analyzer.custom_requirement(file_observable) is False
+
+    def test_custom_requirement_empty_file(self, root_analysis, tmpdir):
+        analyzer = AutoItAnalyzer(
+            context=create_test_context(root=root_analysis),
+            config=get_analysis_module_config(ANALYSIS_MODULE_AUTOIT))
+
+        test_file = tmpdir / "empty.exe"
+        test_file.write("")
+        file_observable = root_analysis.add_file_observable(str(test_file))
+
+        assert analyzer.custom_requirement(file_observable) is False
+
     def test_execute_analysis_autoit_file(self, root_analysis, datadir, tmpdir, monkeypatch):
         analyzer = AutoItAnalyzer(
             context=create_test_context(root=root_analysis),

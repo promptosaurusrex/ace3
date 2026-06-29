@@ -115,6 +115,17 @@ def test_is_autoit_au3(datadir, tmp_path):
 
 
 @pytest.mark.unit
+def test_is_autoit_empty_file(tmp_path):
+    # an empty file clears the .au3 extension guard but cannot be memory-mapped,
+    # so the size check must short-circuit to False
+    target_path = str(tmp_path / 'empty.au3')
+    with open(target_path, 'wb') as fp:
+        fp.write(b'')
+
+    assert is_autoit(target_path) is False
+
+
+@pytest.mark.unit
 def test_is_lnk(datadir, tmp_path):
     # Decode the test data file...
     with open(datadir / 'hello_world.exe.hex') as f:

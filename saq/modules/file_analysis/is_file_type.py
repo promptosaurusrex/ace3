@@ -3,6 +3,7 @@
 # 2/19/2018 - removed MSO file ext (relying on OLE format instead)
 # 6/29/2018 - https://docs.google.com/spreadsheets/d/1LXneVF8VxmOgkt2W_NG5Kl3lzWW45prE7gxtuPcO-4o/edit#gid=1950593040
 import logging
+import mmap
 import os
 import re
 from subprocess import PIPE, Popen
@@ -268,6 +269,11 @@ def is_x509(path):
     return False
 
 
+# Compiled AutoIt embeds the literal ASCII marker AU3!EA06 (current AutoIt v3)
+# or AU3!EA05 (older versions) on disk -- the same marker the unautoit tool keys
+# on.
+RE_AUTOIT_MAGIC = re.compile(rb'AU3!EA0[56]')
+
 def is_autoit(path) -> bool:
     """Returns True/False if the given file path is an AutoIt compiled executable"""
 
@@ -277,13 +283,16 @@ def is_autoit(path) -> bool:
     if not is_pe_file(path) and not path.lower().endswith(".au3"):
         return False
 
-    p = Popen(['unautoit', 'list', path], stdin=PIPE, stdout=PIPE, stderr=PIPE)
-    stdout, stderr = p.communicate()
+    try:
+        if os.path.getsize(path) == 0:
+            return False
 
-    if not stderr and b'autoit script' in stdout.lower():
-        return True
-
-    return False
+        with open(path, 'rb') as fp:
+            with mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                return RE_AUTOIT_MAGIC.search(mm) is not None
+    except Exception as e:
+        logging.debug(f"is_autoit failed for {path}: {e}")
+        return False
 
 def is_dotnet(path) -> bool:
     """Returns True/False if the given file path is a .NET executable"""
