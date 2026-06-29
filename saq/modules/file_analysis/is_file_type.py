@@ -271,7 +271,8 @@ def is_x509(path):
 
 # Compiled AutoIt embeds the literal ASCII marker AU3!EA06 (current AutoIt v3)
 # or AU3!EA05 (older versions) on disk -- the same marker the unautoit tool keys
-# on.
+# on. Scanning for it directly avoids spawning unautoit, which reads/scans the
+# entire input and can take 200+s on a >1GB sample.
 RE_AUTOIT_MAGIC = re.compile(rb'AU3!EA0[56]')
 
 def is_autoit(path) -> bool:
