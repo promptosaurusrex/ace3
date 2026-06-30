@@ -261,7 +261,7 @@ ORDER BY
 @login_required
 def new_alert_observable():
     index = request.args['index']
-    directives = {directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in GUI_DIRECTIVES}
+    directives = {directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in sorted(GUI_DIRECTIVES)}
     return render_template('analysis/new_alert_observable.html', directives=directives, index=index, observable_types=run_async(get_observable_types()))
 
 # I can't remember why this is named /file
@@ -292,7 +292,7 @@ ORDER BY
         cursor.execute(sql, (None, ANALYSIS_MODE_CORRELATION,))
         available_nodes = cursor.fetchall()
 
-    directives = {directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in GUI_DIRECTIVES}
+    directives = {directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in sorted(GUI_DIRECTIVES)}
 
     date = datetime.now().strftime("%m-%d-%Y %H:%M:%S")
     return render_template('analysis/analyze_file.html',
