@@ -391,6 +391,84 @@ def test_phishkit_custom_requirement_file_requires_render_directive(test_context
 
 
 @pytest.mark.integration
+def test_phishkit_custom_requirement_file_rejects_non_html_pdf(test_context):
+    """A rendered correlation-mode file that is neither html nor pdf is rejected by
+    custom_requirement *before* a cache lookup happens, so phishkit stops recording a
+    wasted cache miss on every rendered attachment it would immediately skip anyway."""
+    root = create_root_analysis(analysis_mode='correlation')
+    root.initialize_storage()
+
+    # a non-html/pdf attachment (image) that still carries the render directive
+    with tempfile.NamedTemporaryFile(mode='wb', suffix='.png', delete=False) as f:
+        f.write(b'\x89PNG\r\n\x1a\n' + b'\x00' * 32)
+        test_file_path = f.name
+
+    try:
+        file_observable = root.add_file_observable(test_file_path)
+        file_observable.add_directive(DIRECTIVE_RENDER)
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+
+        assert analyzer.custom_requirement(file_observable) is False
+    finally:
+        if os.path.exists(test_file_path):
+            os.unlink(test_file_path)
+
+
+@pytest.mark.integration
+def test_phishkit_custom_requirement_file_accepts_content_pdf_wrong_extension(test_context):
+    """A real PDF whose name lacks a .pdf extension is still accepted by
+    custom_requirement via the cheap magic-byte sniff, matching the mime branch of the
+    execute_analysis gate that would otherwise be missed pre-cache."""
+    root = create_root_analysis(analysis_mode='correlation')
+    root.initialize_storage()
+
+    # PDF content but a non-valid extension
+    with tempfile.NamedTemporaryFile(mode='wb', suffix='.dat', delete=False) as f:
+        f.write(b'%PDF-1.7\n%\xe2\xe3\xcf\xd3\n')
+        test_file_path = f.name
+
+    try:
+        file_observable = root.add_file_observable(test_file_path)
+        file_observable.add_directive(DIRECTIVE_RENDER)
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+
+        assert analyzer.custom_requirement(file_observable) is True
+    finally:
+        if os.path.exists(test_file_path):
+            os.unlink(test_file_path)
+
+
+@pytest.mark.integration
+def test_phishkit_custom_requirement_file_rejects_empty_file(test_context):
+    """An empty rendered file is rejected by custom_requirement (mirrors the qrcode
+    existence/size guard) so we never sniff or cache-lookup a zero-byte file."""
+    root = create_root_analysis(analysis_mode='correlation')
+    root.initialize_storage()
+
+    with tempfile.NamedTemporaryFile(mode='wb', suffix='.pdf', delete=False) as f:
+        test_file_path = f.name  # left empty
+
+    try:
+        file_observable = root.add_file_observable(test_file_path)
+        file_observable.add_directive(DIRECTIVE_RENDER)
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+
+        assert analyzer.custom_requirement(file_observable) is False
+    finally:
+        if os.path.exists(test_file_path):
+            os.unlink(test_file_path)
+
+
+@pytest.mark.integration
 def test_phishkit_analyzer_execute_analysis_url_with_crawl_directive(monkeypatch, test_context):
     """Test URL analysis with crawl directive."""
     root = create_root_analysis(analysis_mode='test_single')
