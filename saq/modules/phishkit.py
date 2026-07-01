@@ -496,6 +496,18 @@ class PhishkitAnalyzer(AnalysisModule):
         else:
             analysis.scan_result = f"successfully scanned {observable}"
 
+        # The URL phishkit was told to crawl is written into dom.html as the
+        # top-level "MARKER URL:" line and also appears among the requests.json
+        # entries. Re-promoting it below would re-parent the scanned URL under
+        # its own PhishkitAnalysis (add_observable_by_spec dedupes by value, so
+        # the observable becomes its own descendant), giving it a spurious
+        # PhishkitAnalysis *ancestor*. Observable-modifier crawl rules that gate
+        # on "no PhishkitAnalysis ancestor" rely on the scanned URL not appearing
+        # above itself, so skip it in both promotion passes below. Only the input
+        # URL is skipped; every genuinely discovered URL (redirects, CDN,
+        # second-stage) is still added.
+        scanned_url_value = URL(observable.value).value if observable.type == F_URL else None
+
         # extract URL observables from MARKER URL entries in dom.html
         dom_path = os.path.join(analysis.output_dir, "dom.html")
         if os.path.exists(dom_path):
@@ -505,7 +517,7 @@ class PhishkitAnalyzer(AnalysisModule):
                         match = re.match(r"MARKER URL: (.+)$", line.strip())
                         if match:
                             url = URL(match.group(1).strip())
-                            if url.value and not url.value.startswith("file:///"):
+                            if url.value and url.value != scanned_url_value and not url.value.startswith("file:///"):
                                 obs = analysis.add_observable_by_spec(F_URL, url.value)
                                 if obs:
                                     obs.display_type = "Phishkit Request URL"
@@ -534,7 +546,7 @@ class PhishkitAnalyzer(AnalysisModule):
                     if raw_url.startswith(("file:///", "data:", "blob:")):
                         continue
                     url = URL(raw_url)
-                    if not url.value:
+                    if not url.value or url.value == scanned_url_value:
                         continue
                     obs = analysis.add_observable_by_spec(F_URL, url.value)
                     if obs:

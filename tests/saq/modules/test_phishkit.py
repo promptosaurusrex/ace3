@@ -1104,6 +1104,76 @@ def test_phishkit_analyzer_continue_analysis_extracts_requests_json_urls(monkeyp
 
 
 @pytest.mark.unit
+def test_phishkit_analyzer_continue_analysis_skips_scanned_url_self_reference(monkeypatch, test_context):
+    """The scanned URL appears as its own top-level MARKER URL in dom.html (and as
+    the initial navigation in requests.json), but must NOT be re-promoted as a
+    child observable. Re-adding it would re-parent the scanned URL under its own
+    PhishkitAnalysis (add_observable_by_spec dedupes by value, making the
+    observable its own descendant), giving it a self-referential PhishkitAnalysis
+    ancestor and breaking the "no PhishkitAnalysis ancestor" guard used by the
+    NRD / RDAP crawl rules. Genuinely discovered URLs are still promoted.
+    """
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    scanned = "https://l3cwy5ly93.essencedesigns.de/l/iFoz5AyHD_Q"
+    url_observable = root.add_observable_by_spec(F_URL, scanned)
+    analysis = PhishkitAnalysis()
+    analysis.job_id = "test-job-self-ref"
+    analysis.output_dir = "/tmp/test-output"
+    url_observable.add_analysis(analysis)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # dom.html: the top-level MARKER URL is the scanned URL itself, plus a
+        # genuinely discovered redirect target.
+        dom_file = os.path.join(temp_dir, "dom.html")
+        with open(dom_file, "w") as f:
+            f.write(f"\n\nMARKER URL: {scanned}\n\n")
+            f.write("<html>redirected</html>\n")
+            f.write("\n\nMARKER URL: https://cdn.example.com/next.html\n\n")
+
+        # requests.json: the scanned URL again (initial navigation) plus a
+        # discovered second-stage endpoint.
+        requests_file = os.path.join(temp_dir, "requests.json")
+        with open(requests_file, "w") as f:
+            json.dump([
+                {"type": "request", "url": scanned},  # initial navigation -- must be skipped
+                {"type": "request", "url": "https://blocked.example.com/step2"},
+            ], f)
+
+        exit_code_file = os.path.join(temp_dir, "exit.code")
+        with open(exit_code_file, "w") as f:
+            f.write("0")
+
+        output_files = [exit_code_file, dom_file, requests_file]
+        analysis.output_dir = temp_dir
+
+        monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result",
+                            lambda job_id, output_dir, timeout=1: output_files)
+
+        added_urls = []
+        original_add = analysis.add_observable_by_spec
+        def tracking_add(o_type, o_value, **kwargs):
+            if o_type == F_URL:
+                added_urls.append(o_value)
+            return original_add(o_type, o_value, **kwargs)
+        monkeypatch.setattr(analysis, "add_observable_by_spec", tracking_add)
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+        result = analyzer.continue_analysis(url_observable, analysis)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        # the scanned URL is skipped in BOTH passes; only discovered URLs promoted
+        assert scanned not in added_urls
+        assert added_urls == [
+            "https://cdn.example.com/next.html",
+            "https://blocked.example.com/step2",
+        ]
+
+
+@pytest.mark.unit
 def test_phishkit_analyzer_continue_analysis_partial_on_interrupt(monkeypatch, test_context):
     """A timed-out scan still flushes partial requests.json/metrics.json.
 
