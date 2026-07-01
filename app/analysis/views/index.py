@@ -594,7 +594,7 @@ def index():
         User=User,
         db=get_db(),
         current_time=datetime.now(),
-        directives={directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in GUI_DIRECTIVES},
+        directives={directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in sorted(GUI_DIRECTIVES)},
         display_tree=display_tree,
         provenance_groups=provenance_groups,
         provenance_attributed_uuids=provenance_attributed_uuids,

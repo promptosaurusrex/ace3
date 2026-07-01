@@ -28,7 +28,7 @@ async def get_valid_observables(session: AsyncSession) -> list[dict]:
 
 async def get_valid_directives() -> list[dict]:
     items = []
-    for directive in VALID_DIRECTIVES:
+    for directive in sorted(VALID_DIRECTIVES):
         try:
             items.append(
                 {"name": directive, "description": DIRECTIVE_DESCRIPTIONS[directive]}
