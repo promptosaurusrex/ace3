@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
@@ -163,6 +164,56 @@ class TestGetCachedDelta:
             assert result.delta.analysis["details"] == {"foo": "bar"}
         finally:
             _delete_cache_row(delta.cache_key)
+
+    @pytest.mark.integration
+    def test_hit_components_decompose_lookup_ms(self, blob_store):
+        """lookup_ms is decomposed into db_ms/decode_ms/blob_ms (the timed
+        region) plus the separately-measured key_ms. The three in-region
+        buckets must never exceed lookup_ms (no double counting; each is a
+        floored sub-interval, and the region also holds untimed work), and
+        key_ms is measured for every lookup."""
+        module = _make_module()
+        obs = _make_observable()
+        delta = _make_delta(
+            module,
+            analysis={
+                "module_path": "saq.modules.test:Dummy",
+                "details": {"foo": "bar"},
+                "completed": True,
+                "delayed": False,
+            },
+        )
+        try:
+            assert put_cached_delta(delta, module, blob_store) is not None
+            result = get_cached_delta(obs, module, blob_store)
+            assert result.delta is not None
+            for component in (result.key_ms, result.db_ms, result.decode_ms, result.blob_ms):
+                assert component >= 0
+            assert result.db_ms + result.decode_ms + result.blob_ms <= result.lookup_ms
+        finally:
+            _delete_cache_row(delta.cache_key)
+
+    @pytest.mark.integration
+    def test_key_ms_measures_extended_version_cost(self, blob_store):
+        """key_ms captures generate_cache_key — which probes each module's
+        extended_version. A module with a deliberately slow extended_version
+        yields key_ms > 0 even on a miss (key computation runs before the
+        lookup_ms timer and is reported separately)."""
+
+        class _SlowExtendedVersionModule:
+            def __init__(self):
+                self.config = SimpleNamespace(name=f"slow_{uuid4().hex[:8]}")
+                self.version = 1
+                self.cache_ttl = timedelta(hours=1)
+
+            @property
+            def extended_version(self):
+                time.sleep(0.01)  # 10 ms — dwarfs ms-granularity flooring
+                return {"tool": "1.0"}
+
+        result = get_cached_delta(_make_observable(), _SlowExtendedVersionModule(), blob_store)
+        assert result.miss_reason == "not_found"
+        assert result.key_ms >= 1
 
     @pytest.mark.integration
     def test_analysis_tags_round_trip(self, blob_store):

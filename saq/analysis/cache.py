@@ -34,6 +34,7 @@ import os
 import shutil
 import tempfile
 import time
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, NamedTuple, Optional
 
 import zstandard
@@ -140,8 +141,14 @@ def generate_cache_key(observable: "Observable", module) -> Optional[str]:
     _update("module", module.config.name)
     _update("version", str(module.version))
     _update("config", _config_hash(module))
-    for key in sorted(module.extended_version):
-        _update(f"ext:{key}", module.extended_version[key])
+    # extended_version is an un-memoized property: each access re-probes the
+    # module's external tools (e.g. qrcode shells out to zbarimg/gs/pdfinfo and
+    # hashes its filter file). Evaluate it exactly once — accessing it per key
+    # rebuilt it O(keys) times and dominated cache-key (hence lookup) latency
+    # for tool-heavy modules.
+    ext = module.extended_version
+    for key in sorted(ext):
+        _update(f"ext:{key}", ext[key])
     return h.hexdigest()
 
 
@@ -584,11 +591,25 @@ class CacheLookupResult(NamedTuple):
     ``"n/a"`` when no lookup happened). Used by the executor to populate
     the per-(root, module) telemetry on cache hits without re-deriving
     the key.
+
+    ``lookup_ms`` decomposes into three components measured within the
+    timed region: ``db_ms`` (the SELECT), ``decode_ms`` (zstd decompress +
+    JSON parse + ``ModuleExecutionDelta.from_dict``), and ``blob_ms``
+    (spilled-details inline + per-file ``blob_store.exists`` — the S3 cost).
+    These three sum to ``lookup_ms``. ``key_ms`` is measured SEPARATELY and
+    is NOT part of ``lookup_ms``: ``generate_cache_key`` (which probes each
+    module's external tools) runs before the ``lookup_ms`` timer starts, so
+    it was previously invisible. True per-lookup cost ≈ ``lookup_ms +
+    key_ms``. All four default to 0 for non-attempt returns.
     """
     delta: Optional[ModuleExecutionDelta]
     miss_reason: Optional[str]
     lookup_ms: int
     cache_key_prefix: str
+    key_ms: int = 0
+    db_ms: int = 0
+    decode_ms: int = 0
+    blob_ms: int = 0
 
 
 def get_cached_delta(
@@ -604,20 +625,43 @@ def get_cached_delta(
     All exceptions are caught — cache lookup is best-effort and must
     never propagate into the executor.
     """
+    # generate_cache_key probes each module's external tools (e.g. qrcode
+    # shells out to zbarimg/gs/pdfinfo), so it can be the dominant per-lookup
+    # cost. It runs before lookup_start_ns below, so it is NOT part of
+    # lookup_ms — key_ms captures it separately for the payoff breakdown.
+    key_start_ns = time.monotonic_ns()
     cache_key = generate_cache_key(observable, module)
+    key_ms = (time.monotonic_ns() - key_start_ns) // 1_000_000
     if cache_key is None:
-        return CacheLookupResult(None, None, 0, "n/a")
+        return CacheLookupResult(None, None, 0, "n/a", key_ms)
 
     if not get_config().analysis_cache.enabled:
-        return CacheLookupResult(None, None, 0, "n/a")
+        return CacheLookupResult(None, None, 0, "n/a", key_ms)
 
     module_name = getattr(getattr(module, "config", None), "name", "<unknown>")
-    observable_type = getattr(observable, "type", "<unknown>")
     cache_key_prefix = cache_key[:12]
     lookup_start_ns = time.monotonic_ns()
 
+    # db_ms + decode_ms + blob_ms sum to lookup_ms; each _timed block adds the
+    # elapsed ms of exactly one measured call to its bucket.
+    comp = {"db_ms": 0, "decode_ms": 0, "blob_ms": 0}
+
     def _elapsed_ms() -> int:
         return (time.monotonic_ns() - lookup_start_ns) // 1_000_000
+
+    @contextmanager
+    def _timed(bucket: str):
+        start_ns = time.monotonic_ns()
+        try:
+            yield
+        finally:
+            comp[bucket] += (time.monotonic_ns() - start_ns) // 1_000_000
+
+    def _result(delta, miss_reason) -> CacheLookupResult:
+        return CacheLookupResult(
+            delta, miss_reason, _elapsed_ms(), cache_key_prefix,
+            key_ms, comp["db_ms"], comp["decode_ms"], comp["blob_ms"],
+        )
 
     try:
         # The cache is append-only, so several non-expired rows can share a
@@ -627,26 +671,28 @@ def get_cached_delta(
         # longer TTL keep a later expires_at than any new row and shadow
         # fresher results until they expire.) The clustered PK is
         # (cache_key, created_at), so this is an index-order read.
-        row = get_db(DB_ANALYSIS_RESULT_CACHE).execute(
-            select(
-                AnalysisResultCache.delta_zstd,
-                AnalysisResultCache.has_blob_refs,
-            )
-            .where(
-                AnalysisResultCache.cache_key == cache_key,
-                AnalysisResultCache.expires_at > func.now(),
-            )
-            .order_by(AnalysisResultCache.created_at.desc())
-            .limit(1)
-        ).first()
+        with _timed("db_ms"):
+            row = get_db(DB_ANALYSIS_RESULT_CACHE).execute(
+                select(
+                    AnalysisResultCache.delta_zstd,
+                    AnalysisResultCache.has_blob_refs,
+                )
+                .where(
+                    AnalysisResultCache.cache_key == cache_key,
+                    AnalysisResultCache.expires_at > func.now(),
+                )
+                .order_by(AnalysisResultCache.created_at.desc())
+                .limit(1)
+            ).first()
 
         if row is None:
-            return CacheLookupResult(None, "not_found", _elapsed_ms(), cache_key_prefix)
+            return _result(None, "not_found")
 
         delta_zstd, has_blob_refs = row
         try:
-            delta_json = zstandard.ZstdDecompressor().decompress(delta_zstd)
-            delta_dict = json.loads(delta_json.decode("utf-8"))
+            with _timed("decode_ms"):
+                delta_json = zstandard.ZstdDecompressor().decompress(delta_zstd)
+                delta_dict = json.loads(delta_json.decode("utf-8"))
         except Exception:
             logging.warning(
                 "failed to decode cached delta module_name=%s cache_key_prefix=%s",
@@ -656,7 +702,7 @@ def get_cached_delta(
                     "cache_key_prefix": cache_key_prefix,
                 },
             )
-            return CacheLookupResult(None, "decode_error", _elapsed_ms(), cache_key_prefix)
+            return _result(None, "decode_error")
 
         # Step 3.4 legacy-shape guard: pre-Step-3.1 rows wrote
         # `analysis` dicts without a `details` key. Treat as miss so the
@@ -664,11 +710,12 @@ def get_cached_delta(
         # Step-3.1-shaped row, which then wins the created_at ordering above.
         analysis_in_dict = delta_dict.get("analysis")
         if isinstance(analysis_in_dict, dict) and "details" not in analysis_in_dict:
-            return CacheLookupResult(None, "legacy_no_details", _elapsed_ms(), cache_key_prefix)
+            return _result(None, "legacy_no_details")
 
         if has_blob_refs:
             try:
-                _inline_blob_refs(delta_dict, blob_store)
+                with _timed("blob_ms"):
+                    _inline_blob_refs(delta_dict, blob_store)
             except BlobNotFound as e:
                 logging.warning(
                     "cached delta references missing blob module_name=%s "
@@ -680,10 +727,11 @@ def get_cached_delta(
                         "sha256": str(e),
                     },
                 )
-                return CacheLookupResult(None, "blob_missing", _elapsed_ms(), cache_key_prefix)
+                return _result(None, "blob_missing")
 
         try:
-            delta = ModuleExecutionDelta.from_dict(delta_dict)
+            with _timed("decode_ms"):
+                delta = ModuleExecutionDelta.from_dict(delta_dict)
         except Exception:
             logging.warning(
                 "failed to deserialize cached delta module_name=%s cache_key_prefix=%s",
@@ -693,7 +741,7 @@ def get_cached_delta(
                     "cache_key_prefix": cache_key_prefix,
                 },
             )
-            return CacheLookupResult(None, "decode_error", _elapsed_ms(), cache_key_prefix)
+            return _result(None, "decode_error")
 
         # Phase 4: a file-bearing delta is only usable if every produced
         # file's blob still exists (GC, deployment mismatch, or a failed
@@ -713,8 +761,10 @@ def get_cached_delta(
                         "cache_key_prefix": cache_key_prefix,
                     },
                 )
-                return CacheLookupResult(None, "decode_error", _elapsed_ms(), cache_key_prefix)
-            if not blob_store.exists(spec.value):
+                return _result(None, "decode_error")
+            with _timed("blob_ms"):
+                blob_exists = blob_store.exists(spec.value)
+            if not blob_exists:
                 logging.warning(
                     "cached delta references missing file blob module_name=%s "
                     "cache_key_prefix=%s sha256=%s",
@@ -725,29 +775,16 @@ def get_cached_delta(
                         "sha256": spec.value,
                     },
                 )
-                return CacheLookupResult(None, "blob_missing", _elapsed_ms(), cache_key_prefix)
+                return _result(None, "blob_missing")
 
-        # Step 3.4 cache-key recomputation: must match by construction;
-        # mismatch indicates corruption (different module identity stored
-        # against this key, or a key-generation regression). Log but
-        # proceed — the row is presumed good enough for replay.
-        recomputed = generate_cache_key(observable, module)
-        if recomputed != cache_key:
-            recomputed_prefix = (recomputed or "")[:12]
-            logging.warning(
-                "cache_key mismatch on lookup module_name=%s observable_type=%s "
-                "stored_prefix=%s recomputed_prefix=%s",
-                module_name, observable_type,
-                cache_key_prefix, recomputed_prefix,
-                extra={
-                    "module_name": module_name,
-                    "observable_type": observable_type,
-                    "stored_prefix": cache_key_prefix,
-                    "recomputed_prefix": recomputed_prefix,
-                },
-            )
-
-        return CacheLookupResult(delta, None, _elapsed_ms(), cache_key_prefix)
+        # NOTE: an earlier build recomputed generate_cache_key() here and
+        # compared it against `cache_key` as a self-check. That comparison is
+        # a tautology within a single lookup — both derive from the same
+        # (observable, module) — so it never fired, while paying a second full
+        # extended_version rebuild (re-probing the module's external tools) on
+        # the hot path. Dropped: `cache_key` from the initial computation is
+        # authoritative for this lookup.
+        return _result(delta, None)
 
     except Exception:
         logging.warning(
@@ -758,7 +795,7 @@ def get_cached_delta(
                 "cache_key_prefix": cache_key_prefix,
             },
         )
-        return CacheLookupResult(None, "decode_error", _elapsed_ms(), cache_key_prefix)
+        return _result(None, "decode_error")
 
 
 def apply_delta(

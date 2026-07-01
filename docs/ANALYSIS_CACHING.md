@@ -3305,12 +3305,27 @@ the existing per-root summary event** (`record_execution_statistics` in
 `saq/engine/executor.py`). Each `(root, module)` row gained:
 
 `exec_count`, `cache_hit_count`, `cache_miss_count`, `cache_write_count_insert`,
-`cache_lookup_ms_sum` / `cache_lookup_ms_max`, `cache_write_ms_sum` /
-`cache_write_ms_max`, `cache_write_bytes_uncompressed_sum` /
+`cache_lookup_ms_sum` / `cache_lookup_ms_max`, `cache_lookup_key_ms_sum` /
+`cache_lookup_db_ms_sum` / `cache_lookup_decode_ms_sum` / `cache_lookup_blob_ms_sum`,
+`cache_write_ms_sum` / `cache_write_ms_max`, `cache_write_bytes_uncompressed_sum` /
 `cache_write_bytes_compressed_sum`, plus `alert_type`, `is_alert`, `queue`.
 
 Cache fields are only attached when the (root, module) actually had cache
 activity, so non-cacheable modules pay no byte cost.
+
+> **`lookup_ms` breakdown (2026-07-01):** `cache_lookup_ms_sum` is decomposed
+> into four component sums so the payoff panel can show *where* a module's
+> lookup cost goes. `cache_lookup_db_ms_sum` (the SELECT),
+> `cache_lookup_decode_ms_sum` (zstd decompress + JSON + `from_dict`), and
+> `cache_lookup_blob_ms_sum` (spilled-details inline + per-file
+> `blob_store.exists` — the S3 round-trip cost) are sub-intervals of the timed
+> region and together stay `<= cache_lookup_ms_sum` (each is floored to whole ms
+> and the region also holds untimed glue). `cache_lookup_key_ms_sum` is
+> **separate and additive**: `generate_cache_key` (which probes each module's
+> external tools via `extended_version`) runs *before* the `lookup_ms` timer, so
+> it was previously invisible — true per-lookup cost ≈
+> `cache_lookup_ms_sum + cache_lookup_key_ms_sum`. Stack the four per module to
+> tell blob-store I/O (S3) apart from cache-key/tool-probe cost apart from DB.
 
 > **Semantics change (2026-06-10):** `cache_lookup_ms_sum`/`_max` now
 > accumulate on **misses as well as hits** (and are emitted whenever there

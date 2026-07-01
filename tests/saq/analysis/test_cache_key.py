@@ -125,6 +125,36 @@ class TestCacheKeySensitivity:
         assert k1 != k2
 
 
+class TestCacheKeyExtendedVersionEvaluatedOnce:
+    """extended_version is an un-memoized property that re-probes the module's
+    external tools on every access (e.g. qrcode shells out to zbarimg/gs/pdfinfo
+    and hashes its filter file). generate_cache_key must evaluate it exactly
+    once — accessing it per key rebuilt it O(keys) times and dominated
+    cache-lookup latency for tool-heavy modules."""
+
+    @pytest.mark.unit
+    def test_extended_version_accessed_once_per_call(self):
+        calls = {"n": 0}
+        payload = {"tool_a": "1.0", "tool_b": "2.0", "tool_c": "3.0"}
+
+        class _CountingModule:
+            config = SimpleNamespace(name="counting_module")
+            version = 1
+            cache_ttl = timedelta(hours=1)
+
+            @property
+            def extended_version(self):
+                calls["n"] += 1
+                return payload
+
+        key = generate_cache_key(_make_observable(), _CountingModule())
+        assert calls["n"] == 1
+        # and the key is byte-identical to the multi-key snapshot it derives from
+        assert key == generate_cache_key(
+            _make_observable(), _make_module(name="counting_module", extended_version=payload)
+        )
+
+
 class _SubclassConfig(AnalysisModuleConfig):
     """Stand-in for a module-specific config (get_config_class pattern)."""
     api_endpoint: str = "https://api.example.com/"

@@ -175,6 +175,14 @@ class AnalysisExecutionContext:
         self.cache_write_count_insert: dict[str, int] = {}
         self.cache_lookup_ms_sum: dict[str, int] = {}
         self.cache_lookup_ms_max: dict[str, int] = {}
+        # lookup_ms decomposed: key_ms is the (separately measured) cache-key /
+        # tool-probe cost; db/decode/blob sum to lookup_ms. Lets the payoff panel
+        # show whether a module's lookup cost is DB, deserialization, blob-store
+        # I/O (S3 exists()), or cache-key computation.
+        self.cache_lookup_key_ms_sum: dict[str, int] = {}
+        self.cache_lookup_db_ms_sum: dict[str, int] = {}
+        self.cache_lookup_decode_ms_sum: dict[str, int] = {}
+        self.cache_lookup_blob_ms_sum: dict[str, int] = {}
         self.cache_write_ms_sum: dict[str, int] = {}
         self.cache_write_ms_max: dict[str, int] = {}
         self.cache_write_bytes_uncompressed_sum: dict[str, int] = {}
@@ -199,6 +207,34 @@ class AnalysisExecutionContext:
     def cancel_analysis(self):
         """Cancel the current analysis."""
         self._cancel_analysis_flag = True
+
+    def record_cache_lookup(self, module_name: str, result) -> None:
+        """Accumulate a cache lookup's latency into the per-module aggregates.
+
+        Called for BOTH hits and misses (a miss's lookup time is pure overhead
+        on top of the live run — see the cache-miss handling in the executor).
+        ``result`` is a ``CacheLookupResult``; ``lookup_ms`` gets both a sum and
+        a max, the four components only sums (they drive the per-component
+        averages the payoff panel breaks lookup cost down by).
+        """
+        self.cache_lookup_ms_sum[module_name] = (
+            self.cache_lookup_ms_sum.get(module_name, 0) + result.lookup_ms
+        )
+        self.cache_lookup_ms_max[module_name] = max(
+            self.cache_lookup_ms_max.get(module_name, 0), result.lookup_ms
+        )
+        self.cache_lookup_key_ms_sum[module_name] = (
+            self.cache_lookup_key_ms_sum.get(module_name, 0) + result.key_ms
+        )
+        self.cache_lookup_db_ms_sum[module_name] = (
+            self.cache_lookup_db_ms_sum.get(module_name, 0) + result.db_ms
+        )
+        self.cache_lookup_decode_ms_sum[module_name] = (
+            self.cache_lookup_decode_ms_sum.get(module_name, 0) + result.decode_ms
+        )
+        self.cache_lookup_blob_ms_sum[module_name] = (
+            self.cache_lookup_blob_ms_sum.get(module_name, 0) + result.blob_ms
+        )
 
     def record_execution_statistics(self, elapsed_time: float, stats_dir: str):
         """Records the execution statistics for the analysis.
@@ -271,6 +307,12 @@ class AnalysisExecutionContext:
                     if hits or misses:
                         payload["cache_lookup_ms_sum"] = self.cache_lookup_ms_sum.get(key, 0)
                         payload["cache_lookup_ms_max"] = self.cache_lookup_ms_max.get(key, 0)
+                        # lookup_ms decomposed: db+decode+blob sum to lookup_ms;
+                        # key_ms is the separate cache-key/tool-probe cost.
+                        payload["cache_lookup_key_ms_sum"] = self.cache_lookup_key_ms_sum.get(key, 0)
+                        payload["cache_lookup_db_ms_sum"] = self.cache_lookup_db_ms_sum.get(key, 0)
+                        payload["cache_lookup_decode_ms_sum"] = self.cache_lookup_decode_ms_sum.get(key, 0)
+                        payload["cache_lookup_blob_ms_sum"] = self.cache_lookup_blob_ms_sum.get(key, 0)
                     if inserts:
                         payload["cache_write_ms_sum"] = self.cache_write_ms_sum.get(key, 0)
                         payload["cache_write_ms_max"] = self.cache_write_ms_max.get(key, 0)
@@ -1086,8 +1128,7 @@ class AnalysisExecutor:
         root: RootAnalysis,
         observable: Observable,
         module: AnalysisModuleInterface,
-        delta,
-        lookup_ms: int,
+        lookup_result,
     ) -> None:
         """Replay a cached delta and record cache-hit attribution + metrics.
 
@@ -1098,11 +1139,12 @@ class AnalysisExecutor:
         apply here, because cache consultation is itself information
         worth keeping.
 
-        ``lookup_ms`` is the wall time the caller spent in
-        ``get_cached_delta`` (DB SELECT + zstd decompress + deserialize +
-        any blob fetch). Combined with ``replay_ms`` it gives the total
-        cost of a hit — for cheap modules like whois the lookup is the
-        larger half, so ``replay_ms`` alone would understate it.
+        ``lookup_result`` is the ``CacheLookupResult`` from
+        ``get_cached_delta``; ``lookup_result.lookup_ms`` is the wall time the
+        caller spent there (DB SELECT + zstd decompress + deserialize + any
+        blob fetch). Combined with ``replay_ms`` it gives the total cost of a
+        hit — for cheap modules like whois the lookup is the larger half, so
+        ``replay_ms`` alone would understate it.
 
         Bumps ``context.cache_hit_count`` and the lookup latency
         accumulators so the per-(root, module) metrics emitted at root
@@ -1114,13 +1156,14 @@ class AnalysisExecutor:
         purpose: both are bounded by live module wall time, and replay
         completes in milliseconds.
         """
+        delta = lookup_result.delta
         replay_start_ns = time.monotonic_ns()
         apply_delta(root, observable, delta, blob_store=get_blob_store())
         replay_ms = (time.monotonic_ns() - replay_start_ns) // 1_000_000
 
         attribution_delta = delta.with_cache_hit_metadata(
             executed_at=datetime.now(UTC),
-            execution_time_ms=lookup_ms + replay_ms,
+            execution_time_ms=lookup_result.lookup_ms + replay_ms,
             root_uuid=root.uuid,
             observable_uuid=observable.uuid,
         ).without_analysis_details()
@@ -1130,12 +1173,7 @@ class AnalysisExecutor:
         context.cache_hit_count[module_name] = (
             context.cache_hit_count.get(module_name, 0) + 1
         )
-        context.cache_lookup_ms_sum[module_name] = (
-            context.cache_lookup_ms_sum.get(module_name, 0) + lookup_ms
-        )
-        context.cache_lookup_ms_max[module_name] = max(
-            context.cache_lookup_ms_max.get(module_name, 0), lookup_ms
-        )
+        context.record_cache_lookup(module_name, lookup_result)
 
     def _maybe_write_cache_delta(
         self,
@@ -1293,7 +1331,7 @@ class AnalysisExecutor:
                     if lookup_result.delta is not None:
                         self._apply_cached_delta(
                             context, root, work_item.observable, analysis_module,
-                            lookup_result.delta, lookup_result.lookup_ms,
+                            lookup_result,
                         )
                         self._process_generated_analysis(
                             AnalysisExecutionResult.COMPLETED, root, work_item,
@@ -1314,14 +1352,7 @@ class AnalysisExecutor:
                         context.cache_miss_count[module_name] = (
                             context.cache_miss_count.get(module_name, 0) + 1
                         )
-                        context.cache_lookup_ms_sum[module_name] = (
-                            context.cache_lookup_ms_sum.get(module_name, 0)
-                            + lookup_result.lookup_ms
-                        )
-                        context.cache_lookup_ms_max[module_name] = max(
-                            context.cache_lookup_ms_max.get(module_name, 0),
-                            lookup_result.lookup_ms,
-                        )
+                        context.record_cache_lookup(module_name, lookup_result)
                 except Exception:
                     logging.warning(
                         "cache replay failed module_name=%s observable_uuid=%s "
