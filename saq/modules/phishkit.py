@@ -360,6 +360,31 @@ class PhishkitAnalyzer(AnalysisModule):
         except Exception as e:
             logging.error(f"failed to send scan_outcome to fluent-bit for {observable}: {e}")
 
+    def on_cache_hit(self, root, observable: Observable) -> None:
+        """A cached PhishkitAnalysis was replayed instead of running a live scan.
+        The replayed analysis carries the original scan's metrics, so emit a
+        dedicated ``cache_served`` event recording exactly the bytes and scan
+        time this cache hit avoided. A distinct event name + ``saved_*`` fields
+        (not scan_outcome's ``total_bytes_downloaded``) keep replay events out of
+        the live-scan dashboard panels, which select by field name."""
+        if not self.fluent_bit_metrics_sender:
+            return
+        analysis = observable.get_analysis(PhishkitAnalysis)
+        if analysis is None:
+            return
+        metrics = analysis.metrics or {}
+        try:
+            self.fluent_bit_metrics_sender.emit(None, {
+                "event": "cache_served",
+                "job_id": analysis.job_id,
+                "scan_type": analysis.scan_type,
+                "observable_value": observable.value,
+                "saved_bytes": metrics.get("total_bytes_downloaded"),
+                "saved_duration_seconds": metrics.get("scan_duration_seconds"),
+            })
+        except Exception as e:
+            logging.error(f"failed to send cache_served to fluent-bit for {observable}: {e}")
+
     def _emit_scan_dispatched(self, observable: Observable, analysis: "PhishkitAnalysis") -> None:
         """Emit a scan-dispatch event to fluent-bit. Pair with _emit_scan_outcome.
 

@@ -150,7 +150,11 @@ class AnalysisModuleInterface(Protocol):
     def execute_post_analysis(self) -> bool:
         """This is called after all analysis work has been performed."""
         ...
-    
+
+    def on_cache_hit(self, root, observable) -> None:
+        """Called after a cached analysis has been replayed for this module."""
+        ...
+
     # Control methods
     def should_analyze(self, obj) -> bool:
         """Put your custom 'should I analyze this?' logic in this function."""

@@ -768,6 +768,12 @@ class AnalysisModule(FileWatcherMixin):
         Return INCOMPLETE if analysis has NOT completed. The engine could potentially call this function again if the analysis mode changes."""
         return AnalysisExecutionResult.COMPLETED
 
+    def on_cache_hit(self, root: RootAnalysisInterface, observable: Observable) -> None:
+        """Called after a cached analysis has been replayed for this module, in place
+        of execute_analysis. Default is a no-op; override to emit hit-time telemetry
+        from the replayed analysis (available via observable.get_analysis)."""
+        pass
+
     # ========================================
     # Analysis Helpers
     # ========================================
