@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.72] - 2026-07-01
+
+- [Sorts the directives](https://github.com/ACE-Collective/ace3/pull/360)
+
 ## [3.0.71] - 2026-06-29
 
 - [Phishkit analysis caching](https://github.com/ACE-Collective/ace3/pull/356)
