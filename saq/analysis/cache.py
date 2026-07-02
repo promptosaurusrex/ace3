@@ -777,13 +777,6 @@ def get_cached_delta(
                 )
                 return _result(None, "blob_missing")
 
-        # NOTE: an earlier build recomputed generate_cache_key() here and
-        # compared it against `cache_key` as a self-check. That comparison is
-        # a tautology within a single lookup — both derive from the same
-        # (observable, module) — so it never fired, while paying a second full
-        # extended_version rebuild (re-probing the module's external tools) on
-        # the hot path. Dropped: `cache_key` from the initial computation is
-        # authoritative for this lookup.
         return _result(delta, None)
 
     except Exception:

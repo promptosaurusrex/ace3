@@ -165,9 +165,7 @@ class AnalysisExecutionContext:
         self._cancel_analysis_flag = False
         self.total_analysis_time = {}
         # Per-(root, module) aggregates surfaced on the per-root metrics event.
-        # Keyed by module.name; default 0 when absent. Mutated in the live exec
-        # path (executor.py time-tracking block) and the cache hit/miss/write
-        # paths (_apply_cached_delta + get/put_cached_delta callers).
+        # Keyed by module.name; default 0 when absent.
         self.total_exec_count: dict[str, int] = {}
         self.cache_hit_count: dict[str, int] = {}
         self.cache_miss_count: dict[str, int] = {}
@@ -176,9 +174,7 @@ class AnalysisExecutionContext:
         self.cache_lookup_ms_sum: dict[str, int] = {}
         self.cache_lookup_ms_max: dict[str, int] = {}
         # lookup_ms decomposed: key_ms is the (separately measured) cache-key /
-        # tool-probe cost; db/decode/blob sum to lookup_ms. Lets the payoff panel
-        # show whether a module's lookup cost is DB, deserialization, blob-store
-        # I/O (S3 exists()), or cache-key computation.
+        # tool-probe cost; db/decode/blob sum to lookup_ms.
         self.cache_lookup_key_ms_sum: dict[str, int] = {}
         self.cache_lookup_db_ms_sum: dict[str, int] = {}
         self.cache_lookup_decode_ms_sum: dict[str, int] = {}
