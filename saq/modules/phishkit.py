@@ -521,6 +521,13 @@ class PhishkitAnalyzer(AnalysisModule):
         else:
             analysis.scan_result = f"successfully scanned {observable}"
 
+        # The scanned input URL is omitted from both promotion passes because
+        # re-adding it from dom.html or requests.json would make it a descendant
+        # of its own PhishkitAnalysis and create a spurious ancestor, which
+        # would break observable-modifier crawl rules that require no
+        # PhishkitAnalysis ancestor above the URL.
+        scanned_url_value = URL(observable.value).value if observable.type == F_URL else None
+
         # extract URL observables from MARKER URL entries in dom.html
         dom_path = os.path.join(analysis.output_dir, "dom.html")
         if os.path.exists(dom_path):
@@ -530,7 +537,7 @@ class PhishkitAnalyzer(AnalysisModule):
                         match = re.match(r"MARKER URL: (.+)$", line.strip())
                         if match:
                             url = URL(match.group(1).strip())
-                            if url.value and not url.value.startswith("file:///"):
+                            if url.value and url.value != scanned_url_value and not url.value.startswith("file:///"):
                                 obs = analysis.add_observable_by_spec(F_URL, url.value)
                                 if obs:
                                     obs.display_type = "Phishkit Request URL"
@@ -559,7 +566,7 @@ class PhishkitAnalyzer(AnalysisModule):
                     if raw_url.startswith(("file:///", "data:", "blob:")):
                         continue
                     url = URL(raw_url)
-                    if not url.value:
+                    if not url.value or url.value == scanned_url_value:
                         continue
                     obs = analysis.add_observable_by_spec(F_URL, url.value)
                     if obs:
