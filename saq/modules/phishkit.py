@@ -364,14 +364,14 @@ class PhishkitAnalyzer(AnalysisModule):
         """A cached PhishkitAnalysis was replayed instead of running a live scan.
         The replayed analysis carries the original scan's metrics, so emit a
         dedicated ``cache_served`` event recording exactly the bytes and scan
-        time this cache hit avoided. A distinct event name + ``saved_*`` fields
-        (not scan_outcome's ``total_bytes_downloaded``) keep replay events out of
-        the live-scan dashboard panels, which select by field name."""
+        time this cache hit avoided."""
         if not self.fluent_bit_metrics_sender:
             return
+
         analysis = observable.get_analysis(PhishkitAnalysis)
         if analysis is None:
             return
+
         metrics = analysis.metrics or {}
         try:
             self.fluent_bit_metrics_sender.emit(None, {
