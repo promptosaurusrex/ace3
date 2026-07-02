@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.73] - 2026-07-02
+
+- [Cache key generation improvements and new metrics](https://github.com/ACE-Collective/ace3/pull/362)
+- [Emits bytes/time saved metrics on Phishkit cache hits](https://github.com/ACE-Collective/ace3/pull/363)
+- [Fixes transfer_work_target issue](https://github.com/ACE-Collective/ace3/pull/364)
+- [Sorts missed directive calls](https://github.com/ACE-Collective/ace3/pull/366)
+- [Show submit multiple alerts button](https://github.com/ACE-Collective/ace3/pull/367)
+- [Treat wait_for_analysis False sentinel as no analysis in file/pcap modules](https://github.com/ACE-Collective/ace3/pull/370)
+- [Re-enable QR code module for HTML data URL files](https://github.com/ACE-Collective/ace3/pull/371)
+
 ## [3.0.72] - 2026-07-01
 
 - [Sorts the directives](https://github.com/ACE-Collective/ace3/pull/360)
