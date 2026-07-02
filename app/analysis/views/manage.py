@@ -222,5 +222,5 @@ def manage():
 
         # observable modal data
         observable_types=run_async(get_observable_types()),
-        directives={directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in GUI_DIRECTIVES},
+        directives={directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in sorted(GUI_DIRECTIVES)},
     )
