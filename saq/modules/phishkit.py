@@ -496,16 +496,11 @@ class PhishkitAnalyzer(AnalysisModule):
         else:
             analysis.scan_result = f"successfully scanned {observable}"
 
-        # The URL phishkit was told to crawl is written into dom.html as the
-        # top-level "MARKER URL:" line and also appears among the requests.json
-        # entries. Re-promoting it below would re-parent the scanned URL under
-        # its own PhishkitAnalysis (add_observable_by_spec dedupes by value, so
-        # the observable becomes its own descendant), giving it a spurious
-        # PhishkitAnalysis *ancestor*. Observable-modifier crawl rules that gate
-        # on "no PhishkitAnalysis ancestor" rely on the scanned URL not appearing
-        # above itself, so skip it in both promotion passes below. Only the input
-        # URL is skipped; every genuinely discovered URL (redirects, CDN,
-        # second-stage) is still added.
+        # The scanned input URL is omitted from both promotion passes because
+        # re-adding it from dom.html or requests.json would make it a descendant
+        # of its own PhishkitAnalysis and create a spurious ancestor, which
+        # would break observable-modifier crawl rules that require no
+        # PhishkitAnalysis ancestor above the URL.
         scanned_url_value = URL(observable.value).value if observable.type == F_URL else None
 
         # extract URL observables from MARKER URL entries in dom.html
