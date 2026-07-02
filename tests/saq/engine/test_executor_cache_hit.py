@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from saq.analysis.cache import CacheLookupResult
 from saq.analysis.module_execution_delta import (
     ModuleExecutionDelta,
     ObservableDiff,
@@ -108,7 +109,8 @@ class TestApplyCachedDelta:
         module = _make_module()
         delta = _make_delta_for(obs)
 
-        executor._apply_cached_delta(context, root, obs, module, delta, lookup_ms=4)
+        executor._apply_cached_delta(context, root, obs, module,
+                                     CacheLookupResult(delta, None, 4, "abc"))
 
         assert len(root.module_executions) == 1
         recorded = root.module_executions[0]
@@ -143,7 +145,8 @@ class TestApplyCachedDelta:
         delta = _make_delta_for(obs)
         assert delta.analysis["details"]  # precondition
 
-        executor._apply_cached_delta(context, root, obs, module, delta, lookup_ms=4)
+        executor._apply_cached_delta(context, root, obs, module,
+                                     CacheLookupResult(delta, None, 4, "abc"))
 
         recorded = root.module_executions[0]
         assert "details" not in recorded.analysis
@@ -167,13 +170,24 @@ class TestApplyCachedDelta:
         module = _make_module()
         delta = _make_delta_for(obs)
 
-        executor._apply_cached_delta(context, root, obs, module, delta, lookup_ms=7)
-        executor._apply_cached_delta(context, root, obs, module, delta, lookup_ms=3)
+        executor._apply_cached_delta(
+            context, root, obs, module,
+            CacheLookupResult(delta, None, 7, "abc", key_ms=5, db_ms=2, decode_ms=1, blob_ms=4),
+        )
+        executor._apply_cached_delta(
+            context, root, obs, module,
+            CacheLookupResult(delta, None, 3, "abc", key_ms=1, db_ms=1, decode_ms=0, blob_ms=2),
+        )
 
         name = module.config.name
         assert context.cache_hit_count[name] == 2
         assert context.cache_lookup_ms_sum[name] == 10
         assert context.cache_lookup_ms_max[name] == 7
+        # component sums accumulate across both hits
+        assert context.cache_lookup_key_ms_sum[name] == 6
+        assert context.cache_lookup_db_ms_sum[name] == 3
+        assert context.cache_lookup_decode_ms_sum[name] == 1
+        assert context.cache_lookup_blob_ms_sum[name] == 6
 
     @pytest.mark.unit
     def test_attribution_delta_recorded_even_when_diff_is_empty(self, tmp_path):
@@ -204,7 +218,8 @@ class TestApplyCachedDelta:
         )
         empty_delta.cache_key = "00" * 32
 
-        executor._apply_cached_delta(context, root, obs, module, empty_delta, lookup_ms=2)
+        executor._apply_cached_delta(context, root, obs, module,
+                                     CacheLookupResult(empty_delta, None, 2, "abc"))
 
         # Even though the delta is empty, attribution is recorded.
         assert len(root.module_executions) == 1
@@ -224,7 +239,8 @@ class TestApplyCachedDelta:
         module = _make_module()
         delta = _make_delta_for(obs)
 
-        executor._apply_cached_delta(context, root, obs, module, delta, lookup_ms=1)
+        executor._apply_cached_delta(context, root, obs, module,
+                                     CacheLookupResult(delta, None, 1, "abc"))
 
         # Diff additions applied.
         assert "replayed" in obs.tags
