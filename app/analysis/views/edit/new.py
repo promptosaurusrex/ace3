@@ -78,10 +78,20 @@ ORDER BY
     event_time = event_time
     details = {'user': current_user.username, 'comment': comment}
 
-    observables = []
     tags = []
-    files = []
     temp_file_paths = []
+
+    # each entry pairs an observable dict with the file tuple(s) it owns so that
+    # when submitting one alert per observable we only attach that observable's
+    # own file(s) (files are linked to file observables by sha256 server-side)
+    observable_entries = []
+
+    def alert_title(observable):
+        # mirror the single-alert title hack: show the file name for files,
+        # otherwise the observable value
+        if observable['type'] == F_FILE:
+            return f"{description} ({observable['file_path']})"
+        return f"{description} ({observable['value']})"
 
     try:
         for key in request.form.keys():
@@ -129,13 +139,16 @@ ORDER BY
                     o_time = datetime.strptime(o_time, '%m-%d-%Y %H:%M:%S')
                     observable['time'] = timezone.localize(o_time)
 
+                # the file(s) belonging to this observable (empty for non-file types)
+                observable_files = []
+
                 if o_type == F_FILE:
                     if is_local:
                         local_path = request.form.get(f'observables_values_{index}')
                         #observable['value'] = os.path.basename(local_path)
                         observable["value"] = sha256_file(local_path)
                         observable["file_path"] = os.path.basename(local_path)
-                        files.append((observable['value'], open(local_path, 'rb')))
+                        observable_files.append((observable['value'], open(local_path, 'rb')))
 
                     else:
                         upload_file = request.files.get(f'observables_values_{index}', None)
@@ -152,12 +165,13 @@ ORDER BY
                                 report_exception()
                                 return redirect(url_for('analysis.manage'))
 
-                            files.append((upload_file.filename, open(save_path, 'rb')))
+                            observable_files.append((upload_file.filename, open(save_path, 'rb')))
 
                             observable['value'] = sha256_file(save_path)
                             observable['file_path'] = upload_file.filename
 
                 # multi fields add multiple observables of the same type
+                # (only text observables can be "multi"; they never carry files)
                 if o_data_sep == "multi":
                     split_char = ',' # default to comma separated
                     # if there is a newline in the data then we assume newline separated
@@ -171,21 +185,22 @@ ORDER BY
                     for o_value_split in o_value.split(split_char):
                         o_copy = observable.copy()
                         o_copy['value'] = o_value_split.strip()
-                        observables.append(o_copy)
+                        observable_entries.append({'observable': o_copy, 'files': []})
                 else:
-                    observables.append(observable)
+                    observable_entries.append({'observable': observable, 'files': observable_files})
             
+        all_observables = [entry['observable'] for entry in observable_entries]
+        all_files = [f for entry in observable_entries for f in entry['files']]
+
         try:
-            # if we added a multi field then we end up with two different submit buttons
-            # one submits a single alert and the other submits one alert per observable
+            # if we added a multi field or more than one observable then we end up
+            # with two different submit buttons: one submits a single alert with all
+            # observables and the other submits one alert per observable
             if request.form.get('submit_type') == 'single':
                 # if we only submitted a single obervable then we also modify the description
-                if len(observables) == 1:
+                if len(all_observables) == 1:
                     # XXX this is a hack to get the file path to show up in the description
-                    if observables[0]['type'] == F_FILE:
-                        description += f" ({observables[0]['file_path']})"
-                    else:
-                        description += f" ({observables[0]['value']})"
+                    description = alert_title(all_observables[0])
 
                 result = ace_api.submit(
                     remote_host = translate_node(node_location),
@@ -198,10 +213,10 @@ ORDER BY
                     type = alert_type,
                     event_time = event_time,
                     details = details,
-                    observables = observables,
+                    observables = all_observables,
                     tags = tags,
                     queue = queue,
-                    files = files,
+                    files = all_files,
                     api_key = get_config().api.api_key)
 
                 if 'result' in result and 'uuid' in result['result']:
@@ -210,11 +225,12 @@ ORDER BY
                     get_db().commit()
                     return redirect(url_for('analysis.index', direct=uuid))
             else:
-                for observable in observables:
+                for entry in observable_entries:
+                    observable = entry['observable']
                     result = ace_api.submit(
                         remote_host = translate_node(node_location),
                         ssl_verification = abs_path(get_config().SSL.ca_chain_path),
-                        description = description + f" ({observable['value']})",
+                        description = alert_title(observable),
                         analysis_mode = ANALYSIS_MODE_CORRELATION,
                         tool = tool,
                         tool_instance = tool_instance,
@@ -225,7 +241,8 @@ ORDER BY
                         observables = [ observable ],
                         tags = tags,
                         queue = queue,
-                        files = files,
+                        # only attach this observable's own file(s)
+                        files = entry['files'],
                         api_key = get_config().api.api_key)
 
                     # in the case of multiple alerts we redirect to the last alert added
@@ -251,11 +268,12 @@ ORDER BY
             except Exception as e:
                 logging.error(f"unable to remove {file_path}: {e}")
 
-        for file_name, fp in files:
-            try:
-                fp.close()
-            except:
-                logging.error(f"unable to close file descriptor for {file_name}")
+        for entry in observable_entries:
+            for file_name, fp in entry['files']:
+                try:
+                    fp.close()
+                except:
+                    logging.error(f"unable to close file descriptor for {file_name}")
 
 @analysis.route('/new_alert_observable', methods=['POST', 'GET'])
 @login_required

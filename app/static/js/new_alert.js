@@ -10,7 +10,27 @@ $(document).ready(function() {
       dateFormat: 'mm-dd-yy',
       timeFormat: 'HH:mm:ss'
     });
+
+    new_alert_update_submit_buttons();
 });
+
+// show the "Submit Multiple Alerts" button (one alert per observable) when there
+// is more than one observable, or when any field has been toggled to "multi"
+function new_alert_update_submit_buttons() {
+  var row_count = $('#new_alert_observables tr[id^="new_alert_observable_"]').length;
+  var has_multi = $('input[id^="observable_data_sep_"]').filter(function () {
+    return this.value === 'multi';
+  }).length > 0;
+
+  if (row_count > 1 || has_multi) {
+    $('#submit_type_multi').show();
+    // clarify that the primary button bundles everything into one alert
+    $('#submit_type_single').text('Submit Single Alert');
+  } else {
+    $('#submit_type_multi').hide();
+    $('#submit_type_single').text('Submit');
+  }
+}
 
 function new_alert_observable() {
   var index = new Date().valueOf();
@@ -28,6 +48,7 @@ function new_alert_observable() {
         dateFormat: 'mm-dd-yy',
         timeFormat: 'HH:mm:ss'
       });
+      new_alert_update_submit_buttons();
     })
     .catch(function(err){
       alert('DOH: ' + err.message);
@@ -98,12 +119,13 @@ function new_alert_observable_type_changed(index) {
               // when we POST we indicate this is a "multi" field
               $("#observable_data_sep_" + button_index).val("multi");
               // show the additional button to submit multiple alerts
-              $('#submit_type_multi').show();
+              new_alert_update_submit_buttons();
               $('#observables_values_' + button_index).focus();
           } else {
               // otherwise swap it back
               target_input_container.html(`<input class="form-control" type="text" style="width:100%;" name="observables_values_${button_index}" id="observables_values_${button_index}"/>`);
               $("#observable_data_sep_" + button_index).val("single");
+              new_alert_update_submit_buttons();
               $('#observables_values_' + button_index).focus();
           }
       });
@@ -113,4 +135,5 @@ function new_alert_observable_type_changed(index) {
 function new_alert_remove_observable(index) {
   var element = document.getElementById("new_alert_observable_" + index);
   element.parentNode.removeChild(element);
+  new_alert_update_submit_buttons();
 }
