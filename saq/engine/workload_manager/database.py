@@ -209,8 +209,7 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
                 )
                 report_exception()
 
-            # the transfer failed before we took ownership of the item -- release the
-            # lock so it can be retried instead of leaking the lock until it expires
+            # the transfer failed before we took ownership of the item
             self.lock_manager.release_lock(uuid, ignore_lock_failure=True)
             return None
 
@@ -226,11 +225,7 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
 
         # at this point the database points at our local copy and we hold the lock,
         # so we are the authoritative owner of this work item. tell the remote node to
-        # delete its now-stale copy, but treat this strictly as best-effort cleanup: a
-        # failure here (e.g. our lock already expired, or the item was already cleared --
-        # both return HTTP 400) must NOT fail the transfer, delete our local copy, or
-        # report an exception. orphaned remote directories are cosmetic.
-        # we use our lock uuid as kind of password for clearing the work item.
+        # delete its now-stale copy, but treat this strictly as best-effort cleanup
         try:
             if not clear(uuid, self.lock_manager.lock_uuid, remote_host=remote_host):
                 logging.warning(
@@ -420,12 +415,10 @@ LIMIT 128""".format(
                     # go grab it
                     transferred = self.transfer_work_target(uuid, node_id)
                     if not transferred:
-                        # transfer_work_target releases the lock on its own failure
-                        # paths; this is a belt-and-suspenders guard so a failed
-                        # transfer can never leak the lock (ignore_lock_failure keeps
-                        # it quiet in the normal case where it was already released)
+                        # ensure lock is released
                         self.lock_manager.release_lock(uuid, ignore_lock_failure=True)
                         return None
+
                     return transferred
 
                 logging.info(
