@@ -452,6 +452,13 @@ def test_html_data_url_extraction(datadir, test_context):
 
     assert analysis.count == 2
 
+    # Extracted data-URL images skip expensive OCR but must still be scanned
+    # for QR codes -- an embedded data-URL image is a common quishing vector.
+    for extracted in analysis.get_observables_by_type(F_FILE):
+        excluded = " ".join(extracted.excluded_analysis)
+        assert "OCRAnalyzer" in excluded
+        assert "QRCodeAnalyzer" not in excluded
+
 @pytest.mark.unit
 def test_one_file_in_zip_detection(datadir):
     root = create_root_analysis(analysis_mode='test_single')
