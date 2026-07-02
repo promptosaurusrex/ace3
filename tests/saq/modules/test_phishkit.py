@@ -1741,3 +1741,53 @@ def test_phishkit_partial_scan_is_cached(monkeypatch, tmp_path):
     delta.cache_key = generate_cache_key(obs, analyzer)
     write = put_cached_delta(delta, analyzer, blob_store, root=root)
     assert write is not None  # partial results are cached, not refused
+
+
+@pytest.mark.integration
+def test_phishkit_on_cache_hit_emits_cache_served(test_context):
+    """A cache hit replays the cached analysis; on_cache_hit should emit a
+    cache_served event recording the exact bytes and scan time it avoided."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
+    analysis = PhishkitAnalysis()
+    analysis.job_id = "cache-hit-job"
+    analysis.scan_type = "url"
+    analysis.metrics = {"total_bytes_downloaded": 12345, "scan_duration_seconds": 42}
+    url_observable.add_analysis(analysis)
+
+    analyzer = PhishkitAnalyzer(
+        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+        context=create_test_context(root=root))
+    analyzer.fluent_bit_metrics_sender = MagicMock()
+
+    analyzer.on_cache_hit(root, url_observable)
+
+    analyzer.fluent_bit_metrics_sender.emit.assert_called_once()
+    _, payload = analyzer.fluent_bit_metrics_sender.emit.call_args.args
+    assert payload["event"] == "cache_served"
+    assert payload["job_id"] == "cache-hit-job"
+    assert payload["scan_type"] == "url"
+    assert payload["observable_value"] == "https://example.com/phish"
+    assert payload["saved_bytes"] == 12345
+    assert payload["saved_duration_seconds"] == 42
+
+
+@pytest.mark.integration
+def test_phishkit_on_cache_hit_no_sender_is_noop(test_context):
+    """With no fluent-bit sender configured, on_cache_hit must not raise."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
+    analysis = PhishkitAnalysis()
+    analysis.metrics = {"total_bytes_downloaded": 1, "scan_duration_seconds": 1}
+    url_observable.add_analysis(analysis)
+
+    analyzer = PhishkitAnalyzer(
+        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+        context=create_test_context(root=root))
+    analyzer.fluent_bit_metrics_sender = None
+
+    analyzer.on_cache_hit(root, url_observable)  # should be a no-op, no exception

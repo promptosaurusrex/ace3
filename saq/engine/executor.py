@@ -1171,6 +1171,17 @@ class AnalysisExecutor:
         )
         context.record_cache_lookup(module_name, lookup_result)
 
+        # Best-effort hit-time hook: lets a module emit telemetry from the
+        # replayed analysis (e.g. phishkit's saved bytes). Must never break
+        # replay, so failures are swallowed.
+        try:
+            module.on_cache_hit(root, observable)
+        except Exception:
+            logging.warning(
+                "on_cache_hit failed module_name=%s observable_uuid=%s",
+                module_name, observable.uuid, exc_info=True,
+            )
+
     def _maybe_write_cache_delta(
         self,
         context: "AnalysisExecutionContext",
