@@ -107,23 +107,40 @@ def _load_details_for_match(analysis: Analysis, details_cache: Optional[dict]) -
 
 
 class _AnalysisTypeIndex:
-    """Lazily-built set of module_path strings for every analysis in a root.
+    """Lazily-resolved set of module_path strings for every analysis in a root.
 
     Lets TreeCondition skip a tree walk entirely when no analysis of the
     condition's analysis_type exists anywhere in the root -- the common case
-    for rules gating on rare analyses. Built at most once per module
+    for rules gating on rare analyses. Resolved at most once per module
     invocation (execute_analysis / execute_final_analysis call) and shared by
-    every rule evaluated in that call; never cached across invocations, so it
-    can never be stale in a way that outlives the current call.
+    every rule evaluated in that call.
+
+    The type set itself is reused across invocations via ``cache`` (keyed by
+    root.uuid, owned per-root by the analyzer), invalidated by the count of
+    real Analysis objects in the root: analyses are add-only while a root is
+    being processed (the False "no analysis" sentinels that reset_analysis
+    removes are not Analysis objects and are already excluded from
+    ``root.all_analysis``), so an unchanged count means an unchanged type set.
+    The tree also cannot gain analyses mid-invocation (rule actions never
+    create Analysis objects), so a resolved instance never goes stale within
+    its own invocation.
     """
 
-    def __init__(self, root: RootAnalysis):
+    def __init__(self, root: RootAnalysis, cache: Optional[dict] = None):
         self._root = root
+        self._cache = cache
         self._types: Optional[set[str]] = None
 
     def __contains__(self, analysis_type: str) -> bool:
         if self._types is None:
-            self._types = {a.module_path for a in self._root.all_analysis if a}
+            analyses = self._root.all_analysis
+            entry = self._cache.get(self._root.uuid) if self._cache is not None else None
+            if entry is not None and entry[0] == len(analyses):
+                self._types = entry[1]
+            else:
+                self._types = {a.module_path for a in analyses if a}
+                if self._cache is not None:
+                    self._cache[self._root.uuid] = (len(analyses), self._types)
         return analysis_type in self._types
 
 
@@ -558,6 +575,10 @@ class ObservableModifierAnalyzer(AnalysisModule):
         # that is technically mutable changes (type/value property setters,
         # set_display_* rule actions, display_type assigned by other modules).
         self._immutable_false_cache: dict[str, dict[str, tuple[tuple, set[str]]]] = {}
+        # per-root analysis-type presence sets for _AnalysisTypeIndex.
+        # outer key = root.uuid, value = (real_analysis_count, set[module_path]).
+        # Count-invalidated -- see _AnalysisTypeIndex for the reasoning.
+        self._type_index_cache: dict[str, tuple[int, set[str]]] = {}
 
     @classmethod
     def get_config_class(cls) -> Type[AnalysisModuleConfig]:
@@ -885,7 +906,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
             matched_rules = []
             emitted_uuids = set()
 
-        type_index = _AnalysisTypeIndex(root)
+        type_index = _AnalysisTypeIndex(root, self._type_index_cache)
 
         for rule in self._rules:
             if not rule.enabled:
@@ -971,7 +992,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
 
         ignore_rules = []
 
-        type_index = _AnalysisTypeIndex(root)
+        type_index = _AnalysisTypeIndex(root, self._type_index_cache)
 
         for rule in self._rules:
             if not rule.enabled:
@@ -1044,6 +1065,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
             # drop the root's per-root caches so they stay bounded to one root
             self._details_cache.pop(root.uuid, None)
             self._immutable_false_cache.pop(root.uuid, None)
+            self._type_index_cache.pop(root.uuid, None)
             stats = self._rule_eval_stats.pop(root.uuid, {})
             for rule_uuid, s in stats.items():
                 count = s["count"]

@@ -5253,8 +5253,8 @@ def test_type_index_absent_type_match_count_zero_negated():
 
 @pytest.mark.unit
 def test_analysis_type_index_lazy_and_frozen():
-    """The index is built lazily on first lookup and frozen thereafter; a fresh
-    instance over the same root sees analyses added since."""
+    """The index is resolved lazily on first lookup and frozen thereafter; a
+    fresh instance over the same root sees analyses added since."""
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     parent_observable = root.add_observable_by_spec(F_FQDN, "example.com")
@@ -5272,10 +5272,42 @@ def test_analysis_type_index_lazy_and_frozen():
     marker.details_modified = True
     parent_observable.add_analysis(marker)
 
-    # already-built instance is frozen (safe: it never outlives one invocation)
+    # already-resolved instance is frozen (safe: it never outlives one invocation)
     assert module_path not in index
     # a fresh per-invocation instance sees the new analysis
     assert module_path in _AnalysisTypeIndex(root)
+
+
+@pytest.mark.unit
+def test_analysis_type_index_cross_invocation_cache():
+    """The shared cache reuses the type set while the real-analysis count is
+    unchanged and rebuilds when it grows."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    parent_observable = root.add_observable_by_spec(F_FQDN, "example.com")
+
+    class TestMarkerAnalysis(Analysis):
+        pass
+
+    module_path = f"{TestMarkerAnalysis.__module__}:{TestMarkerAnalysis.__name__}"
+
+    cache = {}
+    assert module_path not in _AnalysisTypeIndex(root, cache)
+    assert root.uuid in cache
+    first_set = cache[root.uuid][1]
+
+    # same count -> a fresh instance reuses the exact same set object
+    index2 = _AnalysisTypeIndex(root, cache)
+    assert module_path not in index2
+    assert cache[root.uuid][1] is first_set
+
+    # count grows -> rebuild picks up the new type
+    marker = TestMarkerAnalysis()
+    marker.details = {}
+    marker.details_modified = True
+    parent_observable.add_analysis(marker)
+    assert module_path in _AnalysisTypeIndex(root, cache)
+    assert cache[root.uuid][1] is not first_set
 
 
 @pytest.mark.integration
@@ -5552,6 +5584,7 @@ def test_immutable_memo_popped_in_post_analysis():
 
     adapter.execute_post_analysis()
     assert root.uuid not in adapter.wrapped_module._immutable_false_cache
+    assert root.uuid not in adapter.wrapped_module._type_index_cache
     # idempotent
     adapter.execute_post_analysis()
     assert root.uuid not in adapter.wrapped_module._immutable_false_cache
