@@ -32,6 +32,7 @@ from saq.modules.util.observable_modifier import (
     RuleActions,
     RuleConditions,
     TreeCondition,
+    _AnalysisTypeIndex,
     _load_details_for_match,
     get_nested_value,
 )
@@ -5171,3 +5172,473 @@ def test_observable_modifier_git_dir_not_containing_rules_logs_error(tmpdir, cap
     dp = observable.detections[0]
     assert dp.signature_version == SIGNATURE_VERSION_UNKNOWN
     assert any("does not contain rules file" in r.message for r in caplog.records)
+
+
+# ============================================================
+# analysis-type presence index tests
+# ============================================================
+
+def _absent_type_rule(scope, negate=False, match_count=None, extra_conditions=None):
+    """Build a rule whose single tree_condition targets an analysis type that
+    exists nowhere in the root."""
+    tc = {"analysis_type": "tests.nonexistent:NoSuchAnalysis", "scope": scope}
+    if negate:
+        tc["negate"] = True
+    if match_count is not None:
+        tc["match_count"] = match_count
+    conditions = {"observable_types": ["url"], "tree_conditions": [tc]}
+    if extra_conditions:
+        conditions.update(extra_conditions)
+    return [{
+        "name": f"absent type rule {scope}",
+        "phase": "pre",
+        "conditions": conditions,
+        "actions": {"add_directives": ["extract_iocs"]},
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("scope", ["ancestors", "descendants", "global", "self", "parent", "siblings"])
+def test_type_index_absent_type_no_match(scope):
+    """When no analysis of the condition's type exists in the root, the rule
+    does not match, for every scope."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com/page.html")
+    adapter = _create_analyzer_with_rules(root, _absent_type_rule(scope))
+
+    adapter.execute_analysis(observable)
+    assert not observable.has_directive("extract_iocs")
+
+
+@pytest.mark.unit
+def test_type_index_absent_type_negate_matches():
+    """negate: true on an absent analysis type resolves to True instantly (the
+    'no PhishkitAnalysis ancestor' pattern) -- the rule matches."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com/page.html")
+    adapter = _create_analyzer_with_rules(root, _absent_type_rule("ancestors", negate=True))
+
+    adapter.execute_analysis(observable)
+    assert observable.has_directive("extract_iocs")
+
+
+@pytest.mark.unit
+def test_type_index_absent_type_match_count_zero():
+    """match_count: 0 means 'require exactly zero matches', so an absent
+    analysis type satisfies the condition -- the fast path must not return
+    an unconditional False."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com/page.html")
+    adapter = _create_analyzer_with_rules(root, _absent_type_rule("ancestors", match_count=0))
+
+    adapter.execute_analysis(observable)
+    assert observable.has_directive("extract_iocs")
+
+
+@pytest.mark.unit
+def test_type_index_absent_type_match_count_zero_negated():
+    """match_count: 0 + negate: true on an absent type is inner True -> negated
+    False -- the rule does not match."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com/page.html")
+    adapter = _create_analyzer_with_rules(root, _absent_type_rule("ancestors", negate=True, match_count=0))
+
+    adapter.execute_analysis(observable)
+    assert not observable.has_directive("extract_iocs")
+
+
+@pytest.mark.unit
+def test_analysis_type_index_lazy_and_frozen():
+    """The index is built lazily on first lookup and frozen thereafter; a fresh
+    instance over the same root sees analyses added since."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    parent_observable = root.add_observable_by_spec(F_FQDN, "example.com")
+
+    class TestMarkerAnalysis(Analysis):
+        pass
+
+    module_path = f"{TestMarkerAnalysis.__module__}:{TestMarkerAnalysis.__name__}"
+
+    index = _AnalysisTypeIndex(root)
+    assert module_path not in index
+
+    marker = TestMarkerAnalysis()
+    marker.details = {}
+    marker.details_modified = True
+    parent_observable.add_analysis(marker)
+
+    # already-built instance is frozen (safe: it never outlives one invocation)
+    assert module_path not in index
+    # a fresh per-invocation instance sees the new analysis
+    assert module_path in _AnalysisTypeIndex(root)
+
+
+@pytest.mark.integration
+def test_type_index_rebuilt_per_invocation():
+    """A tree-condition rule that finds nothing on the first invocation still
+    matches on a later invocation after the analysis type appears -- proving
+    the index is rebuilt per module invocation, never cached across calls."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com/page.html")
+    parent_observable = root.add_observable_by_spec(F_FQDN, "example.com")
+
+    class TestMarkerAnalysis(Analysis):
+        pass
+
+    module_path = f"{TestMarkerAnalysis.__module__}:{TestMarkerAnalysis.__name__}"
+    rules = [{
+        "name": "global marker rule",
+        "phase": "post",
+        "conditions": {
+            "observable_types": ["url"],
+            "tree_conditions": [{"analysis_type": module_path, "scope": "global"}],
+        },
+        "actions": {"add_directives": ["extract_iocs"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(observable)
+    result = adapter.analyze(observable, final_analysis=True)
+    assert result == AnalysisExecutionResult.INCOMPLETE
+    assert not observable.has_directive("extract_iocs")
+
+    marker = TestMarkerAnalysis()
+    marker.details = {}
+    marker.details_modified = True
+    parent_observable.add_analysis(marker)
+
+    adapter.analyze(observable, final_analysis=True)
+    assert observable.has_directive("extract_iocs")
+
+
+@pytest.mark.integration
+def test_type_index_present_type_parity():
+    """When the analysis type IS present, the walk still runs and details_match
+    still discriminates -- the gate only fast-paths absence."""
+    root, target_observable, email_analysis, module_path = _build_root_with_flushed_email_analysis(
+        from_address="soc@vendor.com"
+    )
+    rules = [{
+        "name": "matching details rule",
+        "phase": "pre",
+        "conditions": {
+            "observable_types": ["url"],
+            "tree_conditions": [{
+                "analysis_type": module_path,
+                "details_match": {"email.from_address": r"soc@vendor\.com"},
+            }],
+        },
+        "actions": {"add_directives": ["extract_iocs"]},
+    }, {
+        "name": "non-matching details rule",
+        "phase": "pre",
+        "conditions": {
+            "observable_types": ["url"],
+            "tree_conditions": [{
+                "analysis_type": module_path,
+                "details_match": {"email.from_address": r"NOMATCH@nowhere\.com"},
+            }],
+        },
+        "actions": {"add_tags": ["should-not-appear"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(target_observable)
+    assert target_observable.has_directive("extract_iocs")
+    assert not target_observable.has_tag("should-not-appear")
+
+
+# ============================================================
+# immutable-rule verdict memoization tests
+# ============================================================
+
+def _keeper_rule():
+    """A mutable rule (has_tags never satisfied) that passes evaluate_early for
+    url observables, keeping the observable past _any_rule_could_match so the
+    rule loop actually runs. Mirrors the production shape where tree-condition
+    rules keep candidacy alive while cheap immutable rules get re-checked."""
+    return {
+        "name": "keeper",
+        "uuid": "keeper-uuid",
+        "conditions": {"observable_types": ["url"], "has_tags": ["never-set"]},
+        "actions": {"add_tags": ["keeper-matched"]},
+        "phase": "pre",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mutable_field,value", [
+    ("alert_tags", ["t"]),
+    ("has_tags", ["t"]),
+    ("has_directives", ["d"]),
+    ("has_yara_meta_tags", ["y"]),
+    ("tree_conditions", [TreeCondition(analysis_type="x:Y")]),
+])
+def test_rule_conditions_mutable_fields_not_immutable(mutable_field, value):
+    conditions = RuleConditions(**{mutable_field: value})
+    assert conditions.is_immutable is False
+
+
+@pytest.mark.unit
+def test_rule_conditions_early_only_fields_immutable():
+    assert RuleConditions().is_immutable is True
+    assert RuleConditions(
+        observable_types=["url"],
+        alert_type="mailbox",
+        queue="default",
+        value_pattern=re.compile(r"x"),
+        file_name_pattern=re.compile(r"x"),
+        display_type_pattern=re.compile(r"x"),
+        display_value_pattern=re.compile(r"x"),
+    ).is_immutable is True
+
+
+@pytest.mark.unit
+def test_rule_is_immutable_round_trips_through_parser():
+    """Rule.is_immutable is derived from the parsed conditions."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    rules = [{
+        "name": "immutable rule",
+        "uuid": "imm-uuid",
+        "conditions": {"observable_types": ["url"], "value_pattern": r"\.exe$"},
+        "actions": {"add_tags": ["t"]},
+    }, {
+        "name": "mutable rule",
+        "uuid": "mut-uuid",
+        "conditions": {"observable_types": ["url"], "has_tags": ["t"]},
+        "actions": {"add_tags": ["t"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+    adapter.execute_analysis(root.add_observable_by_spec(F_URL, "https://example.com"))
+
+    by_uuid = {r.uuid: r for r in adapter.wrapped_module._rules}
+    assert by_uuid["imm-uuid"].is_immutable is True
+    assert by_uuid["mut-uuid"].is_immutable is False
+
+
+@pytest.mark.unit
+def test_immutable_rule_evaluated_once_across_invocations():
+    """An immutable rule that fails is evaluated exactly once per observable;
+    a mutable rule of the same shape keeps being re-evaluated."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com/page.html")
+    rules = [_keeper_rule(), {
+        "name": "immutable exe rule",
+        "uuid": "imm-exe-uuid",
+        "phase": "pre",
+        "conditions": {"observable_types": ["url"], "value_pattern": r"\.exe$"},
+        "actions": {"add_tags": ["exe"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    for _ in range(3):
+        adapter.execute_analysis(observable)
+
+    stats = adapter.wrapped_module._rule_eval_stats[root.uuid]
+    assert stats["imm-exe-uuid"]["count"] == 1
+    assert stats["keeper-uuid"]["count"] == 3
+
+
+@pytest.mark.integration
+def test_mutable_rule_can_newly_match_later():
+    """A mutable rule must keep re-evaluating: a tag added between invocations
+    lets a has_tags rule match on a later pass."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com/page.html")
+    rules = [{
+        "name": "tag reactor",
+        "uuid": "tag-reactor-uuid",
+        "phase": "post",
+        "conditions": {"observable_types": ["url"], "has_tags": ["hot"]},
+        "actions": {"add_directives": ["extract_iocs"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(observable)
+    adapter.analyze(observable, final_analysis=True)
+    assert not observable.has_directive("extract_iocs")
+
+    observable.add_tag("hot")
+    adapter.analyze(observable, final_analysis=True)
+    assert observable.has_directive("extract_iocs")
+
+
+@pytest.mark.unit
+def test_immutable_memo_snapshot_invalidation_on_display_change():
+    """Mutating a display field re-opens memoized verdicts: the rule is
+    re-evaluated against the new snapshot and can now match."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com/page.html")
+    rules = [_keeper_rule(), {
+        "name": "display type rule",
+        "uuid": "display-uuid",
+        "phase": "pre",
+        # the display_type getter renders a set value as "special (url)"
+        "conditions": {"observable_types": ["url"], "display_type_pattern": r"^special \(url\)$"},
+        "actions": {"add_tags": ["special-display"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(observable)
+    assert not observable.has_tag("special-display")
+    # verdict memoized
+    assert "display-uuid" in adapter.wrapped_module._immutable_false_cache[root.uuid][observable.uuid][1]
+
+    observable.display_type = "special"
+    adapter.execute_analysis(observable)
+    assert observable.has_tag("special-display")
+
+
+@pytest.mark.unit
+def test_immutable_memo_cleared_on_rule_reload():
+    """_load_config clears all memoized verdicts: a reloaded rule with the same
+    uuid but changed conditions is re-evaluated and can match."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com/page.html")
+    rules = [_keeper_rule(), {
+        "name": "pattern rule",
+        "uuid": "reload-uuid",
+        "phase": "pre",
+        "conditions": {"observable_types": ["url"], "value_pattern": r"\.exe$"},
+        "actions": {"add_tags": ["pattern-hit"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(observable)
+    assert not observable.has_tag("pattern-hit")
+    assert adapter.wrapped_module._immutable_false_cache
+
+    # same uuid, widened pattern -- rewrite the rules file and reload
+    rules[1]["conditions"]["value_pattern"] = r"\.html$"
+    yaml_path = os.path.join(root.storage_dir, "test_rules.yaml")
+    with open(yaml_path, "w") as f:
+        yaml.dump({"rules": rules}, f)
+    adapter.wrapped_module._load_config()
+    assert adapter.wrapped_module._immutable_false_cache == {}
+
+    adapter.execute_analysis(observable)
+    assert observable.has_tag("pattern-hit")
+
+
+@pytest.mark.unit
+def test_immutable_memo_popped_in_post_analysis():
+    """The per-root verdict memo is dropped in execute_post_analysis so it
+    stays bounded to a single root."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com/page.html")
+    rules = [_keeper_rule(), {
+        "name": "immutable exe rule",
+        "uuid": "imm-exe-uuid",
+        "phase": "pre",
+        "conditions": {"observable_types": ["url"], "value_pattern": r"\.exe$"},
+        "actions": {"add_tags": ["exe"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(observable)
+    assert root.uuid in adapter.wrapped_module._immutable_false_cache
+
+    adapter.execute_post_analysis()
+    assert root.uuid not in adapter.wrapped_module._immutable_false_cache
+    # idempotent
+    adapter.execute_post_analysis()
+    assert root.uuid not in adapter.wrapped_module._immutable_false_cache
+
+
+@pytest.mark.unit
+def test_unmatched_immutable_rule_no_accidental_settle():
+    """Memoizing a False verdict must not seal the module: both phases still
+    return INCOMPLETE while any rule passes evaluate_early."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com/page.html")
+    rules = [_keeper_rule(), {
+        "name": "immutable exe rule",
+        "uuid": "imm-exe-uuid",
+        "phase": "pre",
+        "conditions": {"observable_types": ["url"], "value_pattern": r"\.exe$"},
+        "actions": {"add_tags": ["exe"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    assert adapter.execute_analysis(observable) == AnalysisExecutionResult.INCOMPLETE
+    assert adapter.execute_analysis(observable) == AnalysisExecutionResult.INCOMPLETE
+    assert adapter.analyze(observable, final_analysis=True) == AnalysisExecutionResult.INCOMPLETE
+
+
+# ============================================================
+# pre/final eval-split counter tests
+# ============================================================
+
+@pytest.mark.unit
+def test_rule_eval_split_counters():
+    """eval_calls_pre / eval_calls_final split the count by phase method: a pre
+    rule only accrues pre calls, a post rule only final calls."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "pre split rule",
+        "uuid": "split-pre-uuid",
+        "phase": "pre",
+        "conditions": {"observable_types": ["url"], "has_tags": ["never"]},
+        "actions": {"add_tags": ["t"]},
+    }, {
+        "name": "post split rule",
+        "uuid": "split-post-uuid",
+        "phase": "post",
+        "conditions": {"observable_types": ["url"], "has_tags": ["never"]},
+        "actions": {"add_tags": ["t"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(observable)
+    adapter.execute_analysis(observable)
+    adapter.analyze(observable, final_analysis=True)
+
+    stats = adapter.wrapped_module._rule_eval_stats[root.uuid]
+    assert stats["split-pre-uuid"]["eval_calls_pre"] == 2
+    assert stats["split-pre-uuid"]["eval_calls_final"] == 0
+    assert stats["split-pre-uuid"]["count"] == 2
+    assert stats["split-post-uuid"]["eval_calls_pre"] == 0
+    assert stats["split-post-uuid"]["eval_calls_final"] == 1
+    assert stats["split-post-uuid"]["count"] == 1
+
+
+@pytest.mark.unit
+def test_rule_eval_cost_line_contains_phase_split(caplog):
+    """The emitted cost line carries the new split fields, with rule_name still
+    the terminal field (the downstream rex captures it to end-of-line)."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    adapter = _create_analyzer_with_rules(root, _cost_rules("cost-uuid-1"))
+
+    adapter.execute_analysis(observable)
+    adapter.analyze(observable, final_analysis=True)
+
+    with caplog.at_level(logging.INFO):
+        adapter.execute_post_analysis()
+
+    cost_lines = [
+        r.getMessage() for r in caplog.records
+        if "observable_modifier rule cost" in r.getMessage()
+    ]
+    assert len(cost_lines) == 1
+    assert "eval_calls_pre=0" in cost_lines[0]
+    assert "eval_calls_final=1" in cost_lines[0]
+    match = re.search(r"rule_name=(?P<rule_name>.+)$", cost_lines[0])
+    assert match is not None
+    assert match.group("rule_name") == "cost rule cost-uuid-1"

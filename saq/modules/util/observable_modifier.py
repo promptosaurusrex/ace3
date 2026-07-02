@@ -106,6 +106,27 @@ def _load_details_for_match(analysis: Analysis, details_cache: Optional[dict]) -
     return analysis.details
 
 
+class _AnalysisTypeIndex:
+    """Lazily-built set of module_path strings for every analysis in a root.
+
+    Lets TreeCondition skip a tree walk entirely when no analysis of the
+    condition's analysis_type exists anywhere in the root -- the common case
+    for rules gating on rare analyses. Built at most once per module
+    invocation (execute_analysis / execute_final_analysis call) and shared by
+    every rule evaluated in that call; never cached across invocations, so it
+    can never be stale in a way that outlives the current call.
+    """
+
+    def __init__(self, root: RootAnalysis):
+        self._root = root
+        self._types: Optional[set[str]] = None
+
+    def __contains__(self, analysis_type: str) -> bool:
+        if self._types is None:
+            self._types = {a.module_path for a in self._root.all_analysis if a}
+        return analysis_type in self._types
+
+
 @dataclass
 class TreeCondition:
     analysis_type: str
@@ -125,11 +146,20 @@ class TreeCondition:
     # contains exactly one instance of the analysis type.
     match_count: Optional[int] = None
 
-    def evaluate(self, observable: Observable, root: RootAnalysis, details_cache: Optional[dict] = None) -> bool:
-        result = self._evaluate_inner(observable, root, details_cache)
+    def evaluate(self, observable: Observable, root: RootAnalysis, details_cache: Optional[dict] = None,
+                 type_index: Optional[_AnalysisTypeIndex] = None) -> bool:
+        result = self._evaluate_inner(observable, root, details_cache, type_index)
         return not result if self.negate else result
 
-    def _evaluate_inner(self, observable: Observable, root: RootAnalysis, details_cache: Optional[dict] = None) -> bool:
+    def _evaluate_inner(self, observable: Observable, root: RootAnalysis, details_cache: Optional[dict] = None,
+                        type_index: Optional[_AnalysisTypeIndex] = None) -> bool:
+        # Absence gate: if no analysis of this type exists anywhere in the
+        # root, no scope's walk can find one, so the walk would yield exactly
+        # zero matches. match_count == 0 is a legal "require exactly zero"
+        # value, so zero matches means True in that case, not False.
+        if self.analysis_type and type_index is not None and self.analysis_type not in type_index:
+            return self.match_count == 0 if self.match_count is not None else False
+
         # NOTE there is special logic here to deal with observables that don't
         # have an analysis of their own yet since the rest of the logic is
         # "analysis-centric traversal".
@@ -334,7 +364,28 @@ class RuleConditions:
                 return False
         return True
 
-    def evaluate(self, observable: Observable, root: RootAnalysis, details_cache: Optional[dict] = None) -> bool:
+    @property
+    def is_immutable(self) -> bool:
+        """True when every condition is re-evaluation-stable for a given
+        (type, value, display_type, display_value) observable snapshot.
+
+        Tags, directives, and tree state grow as analysis proceeds, so any
+        rule using them can newly match on a later pass and must be
+        re-evaluated. A rule using only the evaluate_early condition set
+        cannot -- once False for an observable snapshot, always False. Note
+        rules with tree_conditions are never immutable, so the verdict memo
+        never skips a rule the analysis-type presence gate accelerates.
+        """
+        return not (
+            self.alert_tags
+            or self.has_tags
+            or self.has_directives
+            or self.has_yara_meta_tags
+            or self.tree_conditions
+        )
+
+    def evaluate(self, observable: Observable, root: RootAnalysis, details_cache: Optional[dict] = None,
+                 type_index: Optional[_AnalysisTypeIndex] = None) -> bool:
         # Cheapest checks first for short-circuit efficiency
 
         # Observable type check (subtype-aware: a rule targeting "email_address"
@@ -397,7 +448,7 @@ class RuleConditions:
 
         # Tree conditions (most expensive — disk I/O)
         for tc in self.tree_conditions:
-            if not tc.evaluate(observable, root, details_cache):
+            if not tc.evaluate(observable, root, details_cache, type_index):
                 return False
 
         return True
@@ -480,6 +531,9 @@ class Rule:
     conditions: RuleConditions
     actions: RuleActions
     phase: str = "post"  # "pre" or "post"
+    # copied from conditions.is_immutable at parse time so the hot rule loop
+    # pays one attribute read instead of recomputing the classification
+    is_immutable: bool = False
 
 
 class ObservableModifierAnalyzer(AnalysisModule):
@@ -497,6 +551,13 @@ class ObservableModifierAnalyzer(AnalysisModule):
         # per-root analysis-details cache for details_match conditions.
         # outer key = root.uuid, inner = dict[external_details_path -> (details_size, details)].
         self._details_cache: dict[str, dict] = {}
+        # per-root memo of immutable rules known NOT to match an observable.
+        # outer key = root.uuid, inner key = observable.uuid, value =
+        # ((type, value, display_type, display_value) snapshot, set[rule.uuid]).
+        # The snapshot self-invalidates the set if any evaluate_early input
+        # that is technically mutable changes (type/value property setters,
+        # set_display_* rule actions, display_type assigned by other modules).
+        self._immutable_false_cache: dict[str, dict[str, tuple[tuple, set[str]]]] = {}
 
     @classmethod
     def get_config_class(cls) -> Type[AnalysisModuleConfig]:
@@ -508,6 +569,9 @@ class ObservableModifierAnalyzer(AnalysisModule):
 
     def _load_config(self):
         """Load rules from YAML config file."""
+        # a reload can change a rule's conditions while keeping its uuid, so
+        # every memoized "this rule didn't match" verdict is now suspect
+        self._immutable_false_cache.clear()
         self._rules = []
 
         yaml_path = os.path.join(
@@ -642,6 +706,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
             conditions=conditions,
             actions=actions,
             phase=phase,
+            is_immutable=conditions.is_immutable,
         )
 
     def _parse_tree_condition(self, tc_data: dict, rule_name: str) -> Optional[TreeCondition]:
@@ -737,7 +802,9 @@ class ObservableModifierAnalyzer(AnalysisModule):
             for rule in self._rules
         )
 
-    def _evaluate_rule(self, rule: "Rule", observable: Observable, root: RootAnalysis) -> bool:
+    def _evaluate_rule(self, rule: "Rule", observable: Observable, root: RootAnalysis,
+                       type_index: Optional[_AnalysisTypeIndex] = None,
+                       final_phase: bool = False) -> bool:
         """Evaluate a rule's conditions, recording the elapsed time as a cost metric.
 
         The timing is captured in a finally block so the cost is recorded even
@@ -747,32 +814,54 @@ class ObservableModifierAnalyzer(AnalysisModule):
         start = time.perf_counter()
         try:
             return rule.conditions.evaluate(
-                observable, root, details_cache=self._details_cache.setdefault(root.uuid, {})
+                observable, root,
+                details_cache=self._details_cache.setdefault(root.uuid, {}),
+                type_index=type_index,
             )
         finally:
             elapsed = time.perf_counter() - start
             try:
-                self._record_rule_eval(root, rule, elapsed)
+                self._record_rule_eval(root, rule, elapsed, final_phase)
             except Exception as e:
                 logging.warning("failed to record observable modifier rule eval cost: %s", e)
 
-    def _record_rule_eval(self, root: RootAnalysis, rule: "Rule", elapsed: float) -> None:
+    def _record_rule_eval(self, root: RootAnalysis, rule: "Rule", elapsed: float, final_phase: bool) -> None:
         """Accumulate one rule evaluation into the per-root cost stats.
 
         Note: execute_analysis re-runs for the same pre-phase observable as the
         analysis tree grows, so a pre-phase rule's count legitimately counts
         every evaluate() call -- this is total evaluation cost, not distinct
-        observables evaluated.
+        observables evaluated. eval_calls_pre / eval_calls_final split that
+        count by which phase method issued the evaluation.
         """
         root_stats = self._rule_eval_stats.setdefault(root.uuid, {})
         rule_stats = root_stats.get(rule.uuid)
         if rule_stats is None:
-            rule_stats = {"name": rule.name, "count": 0, "total_seconds": 0.0, "max_seconds": 0.0}
+            rule_stats = {
+                "name": rule.name, "count": 0, "total_seconds": 0.0, "max_seconds": 0.0,
+                "eval_calls_pre": 0, "eval_calls_final": 0,
+            }
             root_stats[rule.uuid] = rule_stats
         rule_stats["count"] += 1
+        rule_stats["eval_calls_final" if final_phase else "eval_calls_pre"] += 1
         rule_stats["total_seconds"] += elapsed
         if elapsed > rule_stats["max_seconds"]:
             rule_stats["max_seconds"] = elapsed
+
+    def _immutable_false_set(self, root: RootAnalysis, observable: Observable) -> set[str]:
+        """Return the set of immutable-rule uuids known not to match this
+        observable, creating (or resetting) it when the observable's
+        evaluate_early inputs have changed since the set was recorded.
+        """
+        per_root = self._immutable_false_cache.setdefault(root.uuid, {})
+        snapshot = (observable.type, observable.value,
+                    observable.display_type, observable.display_value)
+        entry = per_root.get(observable.uuid)
+        if entry is not None and entry[0] == snapshot:
+            return entry[1]
+        fresh: set[str] = set()
+        per_root[observable.uuid] = (snapshot, fresh)
+        return fresh
 
     def execute_analysis(self, observable: Observable) -> AnalysisExecutionResult:
         self._ensure_initialized()
@@ -796,6 +885,8 @@ class ObservableModifierAnalyzer(AnalysisModule):
             matched_rules = []
             emitted_uuids = set()
 
+        type_index = _AnalysisTypeIndex(root)
+
         for rule in self._rules:
             if not rule.enabled:
                 continue
@@ -806,8 +897,17 @@ class ObservableModifierAnalyzer(AnalysisModule):
             # idempotent (exclude_analysis / limit_analysis append).
             if rule.uuid in emitted_uuids:
                 continue
+            # Skip immutable rules already known not to match this observable.
+            # Fetched per rule (not hoisted) so a set_display_* action fired by
+            # an earlier rule in this loop invalidates the memo mid-loop.
+            false_set = self._immutable_false_set(root, observable)
+            if rule.is_immutable and rule.uuid in false_set:
+                continue
 
-            if self._evaluate_rule(rule, observable, root):
+            if not self._evaluate_rule(rule, observable, root, type_index):
+                if rule.is_immutable:
+                    false_set.add(rule.uuid)
+            else:
                 applied = rule.actions.apply(
                     observable, signature_uuid=rule.uuid, signature_version=self._rules_signature_version)
                 matched_rules.append({
@@ -871,6 +971,8 @@ class ObservableModifierAnalyzer(AnalysisModule):
 
         ignore_rules = []
 
+        type_index = _AnalysisTypeIndex(root)
+
         for rule in self._rules:
             if not rule.enabled:
                 continue
@@ -881,8 +983,17 @@ class ObservableModifierAnalyzer(AnalysisModule):
             # signature_id observables, or re-append exclude/limit analysis.
             if rule.uuid in emitted_uuids:
                 continue
+            # Skip immutable rules already known not to match this observable.
+            # Fetched per rule (not hoisted) so a set_display_* action fired by
+            # an earlier rule in this loop invalidates the memo mid-loop.
+            false_set = self._immutable_false_set(root, observable)
+            if rule.is_immutable and rule.uuid in false_set:
+                continue
 
-            if self._evaluate_rule(rule, observable, root):
+            if not self._evaluate_rule(rule, observable, root, type_index, final_phase=True):
+                if rule.is_immutable:
+                    false_set.add(rule.uuid)
+            else:
                 applied = rule.actions.apply(
                     observable, signature_uuid=rule.uuid, signature_version=self._rules_signature_version)
                 matched_rules.append({
@@ -930,17 +1041,22 @@ class ObservableModifierAnalyzer(AnalysisModule):
         """
         try:
             root = self.get_root()
-            # drop the root's details cache so it stays bounded to one root
+            # drop the root's per-root caches so they stay bounded to one root
             self._details_cache.pop(root.uuid, None)
+            self._immutable_false_cache.pop(root.uuid, None)
             stats = self._rule_eval_stats.pop(root.uuid, {})
             for rule_uuid, s in stats.items():
                 count = s["count"]
                 avg = s["total_seconds"] / count if count else 0.0
+                # rule_name must stay the terminal field: names contain spaces
+                # and the downstream Splunk rex captures it to end-of-line
                 logging.info(
                     "observable_modifier rule cost root=%s rule_uuid=%s count=%d "
-                    "total_seconds=%.4f avg_seconds=%.6f max_seconds=%.4f rule_name=%s",
+                    "total_seconds=%.4f avg_seconds=%.6f max_seconds=%.4f "
+                    "eval_calls_pre=%d eval_calls_final=%d rule_name=%s",
                     root.uuid, rule_uuid, count,
-                    s["total_seconds"], avg, s["max_seconds"], s["name"],
+                    s["total_seconds"], avg, s["max_seconds"],
+                    s.get("eval_calls_pre", 0), s.get("eval_calls_final", 0), s["name"],
                 )
         except Exception as e:
             logging.warning("failed to emit observable modifier rule cost metrics: %s", e)
