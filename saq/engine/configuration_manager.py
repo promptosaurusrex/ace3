@@ -34,6 +34,8 @@ class ConfigurationManager:
         self.analysis_modules: list[AnalysisModuleInterface] = []
         self.analysis_mode_mapping: dict[str, list[AnalysisModuleInterface]] = {}
         self.analysis_module_name_mapping: dict[str, AnalysisModuleInterface] = {}
+        # module name -> list of resolved declared-dependency modules (see build_and_validate_dependency_graph)
+        self.declared_dependency_mapping: dict[str, list[AnalysisModuleInterface]] = {}
         
         # Local overrides for testing
         self.locally_enabled_modules: list[str] = []
@@ -54,6 +56,7 @@ class ConfigurationManager:
         self.analysis_modules.clear()
         self.analysis_mode_mapping = {self.config.default_analysis_mode: []}
         self.analysis_module_name_mapping.clear()
+        self.declared_dependency_mapping.clear()
     
     def is_analysis_mode_supported(self, analysis_mode: str) -> bool:
         """Check if the given analysis mode is supported by this engine."""
@@ -163,7 +166,72 @@ class ConfigurationManager:
             if self.is_analysis_mode_supported(analysis_mode):
                 if analysis_mode not in self.analysis_mode_mapping:
                     self.analysis_mode_mapping[analysis_mode] = []
-    
+
+        # resolve declared dependencies and validate the graph is acyclic (fail fast at startup)
+        self.build_and_validate_dependency_graph()
+
+    def build_and_validate_dependency_graph(self) -> None:
+        """Resolve declared analysis-module dependencies and validate the graph is acyclic.
+
+        Declared dependencies (the config `dependencies` list) reference other analysis
+        modules by their config name. Each is resolved to the loaded module instance and
+        cached in self.declared_dependency_mapping so the runtime seeding hook needs no
+        re-resolution. Dependencies that cannot be resolved (disabled or absent in this
+        engine's loaded set) are treated as vacuously satisfied (soft-skip) and only
+        logged. A declared dependency cycle raises RuntimeError so the engine fails fast
+        at startup rather than surfacing a circular dependency mid-analysis.
+        """
+        self.declared_dependency_mapping = {}
+
+        for module in self.analysis_modules:
+            resolved = []
+            for dependency_name in module.config.dependencies:
+                target = self.analysis_module_name_mapping.get(dependency_name)
+                if target is None:
+                    logging.warning(
+                        "analysis module %s declares dependency on %s which is not loaded "
+                        "(disabled or missing) -- treating as satisfied",
+                        module.config.name, dependency_name,
+                    )
+                    continue
+
+                resolved.append(target)
+
+            self.declared_dependency_mapping[module.config.name] = resolved
+
+        self._check_declared_dependency_cycles()
+
+    def _check_declared_dependency_cycles(self) -> None:
+        """Depth-First Search over the resolved declared-dependency graph, raising RuntimeError on a cycle."""
+        # visit_state: unvisited (absent) -> 1 (on current path) -> 2 (fully explored)
+        visit_state: dict[str, int] = {}
+
+        def visit(name: str, path: list[str]) -> None:
+            visit_state[name] = 1
+            path.append(name)
+            for target in self.declared_dependency_mapping.get(name, []):
+                target_name = target.config.name
+                if visit_state.get(target_name) == 1:
+                    cycle = path[path.index(target_name):] + [target_name]
+                    raise RuntimeError(
+                        "CIRCULAR DEPENDENCY ERROR in declared analysis module dependencies: {}".format(
+                            " -> ".join(cycle)
+                        )
+                    )
+                if visit_state.get(target_name, 0) == 0:
+                    visit(target_name, path)
+
+            path.pop()
+            visit_state[name] = 2
+
+        for name in list(self.declared_dependency_mapping.keys()):
+            if visit_state.get(name, 0) == 0:
+                visit(name, [])
+
+    def get_declared_dependencies(self, module_name: str) -> list[AnalysisModuleInterface]:
+        """Returns the resolved declared-dependency modules for the given module name."""
+        return self.declared_dependency_mapping.get(module_name, [])
+
     def get_analysis_modules_by_mode(self, analysis_mode: Optional[str]=None) -> list[AnalysisModuleInterface]:
         """Get analysis modules for a specific analysis mode, sorted by config section name."""
         if analysis_mode is None:

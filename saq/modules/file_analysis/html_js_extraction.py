@@ -186,7 +186,7 @@ class HTMLJavaScriptExtractor(AnalysisModule):
         if not self._is_html_file(_file):
             # Extension didn't match -- fall back to MIME type from FileTypeAnalysis
             try:
-                file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
+                file_type_analysis = _file.get_and_load_analysis(FileTypeAnalysis)
                 mime_type = file_type_analysis.mime_type if file_type_analysis else None
             except Exception:
                 pass
@@ -196,7 +196,7 @@ class HTMLJavaScriptExtractor(AnalysisModule):
         else:
             # Extension matched -- still try to get MIME type for MHTML detection
             try:
-                file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
+                file_type_analysis = _file.get_and_load_analysis(FileTypeAnalysis)
                 mime_type = file_type_analysis.mime_type if file_type_analysis else None
             except Exception:
                 pass

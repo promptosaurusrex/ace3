@@ -133,7 +133,7 @@ class OLEVBA_Analyzer_v1_2(AnalysisModule):
         if _file.size > 1024 * 1024 * 4: # 4MB
             return AnalysisExecutionResult.COMPLETED
 
-        file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
+        file_type_analysis = _file.get_and_load_analysis(FileTypeAnalysis)
         if not file_type_analysis:
             return AnalysisExecutionResult.COMPLETED
 

@@ -138,6 +138,7 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
             logging.warning(
                 "target_dir {} for transfer exists! bailing...".format(target_dir)
             )
+            self.lock_manager.release_lock(uuid, ignore_lock_failure=True)
             return False
 
         try:
@@ -148,6 +149,7 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
                 "unable to create transfer target_dir {}: {}".format(target_dir, e)
             )
             report_exception()
+            self.lock_manager.release_lock(uuid, ignore_lock_failure=True)
             return False
 
         tar_path = None
@@ -163,6 +165,7 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
                     logging.error(
                         "cannot find node_id {} in nodes table".format(node_id)
                     )
+                    self.lock_manager.release_lock(uuid, ignore_lock_failure=True)
                     return False
 
                 remote_host = row[0]
@@ -189,17 +192,11 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
                 )
                 db.commit()
 
-                # then finally tell the remote system to clear this work item
-                # we use our lock uuid as kind of password for clearing the work item
-                clear(uuid, self.lock_manager.lock_uuid, remote_host=remote_host)
-
                 # load the analysis we moved over and change the location there as well
                 root = RootAnalysis(storage_dir=target_dir)
                 root.load()
                 root.location = get_global_runtime_settings().saq_node
                 root.save()
-
-                return RootAnalysis(uuid=uuid, storage_dir=target_dir)
 
         except Exception as e:
             logging.error("unable to transfer {}: {}".format(uuid, e))
@@ -212,6 +209,8 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
                 )
                 report_exception()
 
+            # the transfer failed before we took ownership of the item
+            self.lock_manager.release_lock(uuid, ignore_lock_failure=True)
             return None
 
         finally:
@@ -223,6 +222,24 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
                     "unable to delete temporary tar file {}: {}".format(tar_path, e)
                 )
                 report_exception()
+
+        # at this point the database points at our local copy and we hold the lock,
+        # so we are the authoritative owner of this work item. tell the remote node to
+        # delete its now-stale copy, but treat this strictly as best-effort cleanup
+        try:
+            if not clear(uuid, self.lock_manager.lock_uuid, remote_host=remote_host):
+                logging.warning(
+                    "remote clear of transferred work target {} on {} did not succeed "
+                    "(remote copy may already be gone); continuing".format(uuid, remote_host)
+                )
+        except Exception as e:
+            logging.warning(
+                "unable to clear transferred work target {} on remote {}: {}".format(
+                    uuid, remote_host, e
+                )
+            )
+
+        return RootAnalysis(uuid=uuid, storage_dir=target_dir)
 
     def get_delayed_analysis_work_target(self) -> Optional[DelayedAnalysisRequest]:
         """Returns the next DelayedAnalysisRequest that is ready, or None if none are ready."""
@@ -396,7 +413,13 @@ LIMIT 128""".format(
                 # is this work item on a different node?
                 if node_id != get_global_runtime_settings().saq_node_id:
                     # go grab it
-                    return self.transfer_work_target(uuid, node_id)
+                    transferred = self.transfer_work_target(uuid, node_id)
+                    if not transferred:
+                        # ensure lock is released
+                        self.lock_manager.release_lock(uuid, ignore_lock_failure=True)
+                        return None
+
+                    return transferred
 
                 logging.info(
                     f"got workload item {_id} uuid {uuid} for analysis mode {analysis_mode} with lock {self.lock_manager.lock_uuid}"

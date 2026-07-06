@@ -27,15 +27,6 @@ class MockAnalysis(object):
         self.observables.append(args)
 
 
-class MockAnalysisModule(object):
-    def __init__(self, test_file):
-        self.mime_type = f"text/{test_file[len('sample_'):]}"
-
-    @staticmethod
-    def wait_for_analysis():
-        pass
-
-
 class TestUrlExtraction:
     @pytest.mark.unit
     def test_order_urls_by_interest(self, test_context):
@@ -97,15 +88,16 @@ class TestUrlExtraction:
     @pytest.mark.parametrize('test_file', ['sample_html', 'sample_xml', 'sample_dat', 'sample_rfc822', 'sample_rfc822_plaintext_body'])
     @pytest.mark.unit
     def test_execute_analysis(self, monkeypatch, datadir, test_file, root_analysis, test_context):
-        def mock_analysis_module(*args, **kwargs):
-            return MockAnalysisModule(test_file)
-
-        monkeypatch.setattr("saq.modules.AnalysisModule.wait_for_analysis", mock_analysis_module)
-
         url_extraction_analyzer = AnalysisModuleAdapter(URLExtractionAnalyzer(
             context=create_test_context(root=root_analysis),
             config=get_analysis_module_config(ANALYSIS_MODULE_URL_EXTRACTION)))
         file_observable = root_analysis.add_file_observable(datadir / f"{test_file}.in")
+
+        # file type analysis is a declared dependency; provide it directly since we
+        # invoke execute_analysis outside the engine (which would normally seed it)
+        file_type_analysis = FileTypeAnalysis()
+        file_observable.add_analysis(file_type_analysis)
+        file_type_analysis.details = {"type": "", "mime": f"text/{test_file[len('sample_'):]}"}
 
         url_extraction_completed = url_extraction_analyzer.execute_analysis(file_observable)
         analysis = file_observable.get_and_load_analysis(URLExtractionAnalysis)
@@ -414,14 +406,17 @@ def test_ocr_analyzer(datadir, monkeypatch, test_filename, expected_strings, exp
     assert analysis.observables[0].has_directive(DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL)
 
     # Which will kick off the URLExtractionAnalyzer...
-    def mock_analysis_module(*args, **kwargs):
-        return MockAnalysisModule(test_filename)
-
-    monkeypatch.setattr("saq.modules.AnalysisModule.wait_for_analysis", mock_analysis_module)
     monkeypatch.setattr("os.path.exists", lambda x: 1 == 1)  # return true that path exists
     monkeypatch.setattr("os.path.getsize", lambda x: 1)  # arbitrary filesize
 
     text_file_observable = analysis.observables[0]
+
+    # file type analysis is a declared dependency; provide it directly since we
+    # invoke execute_analysis outside the engine (which would normally seed it)
+    file_type_analysis = FileTypeAnalysis()
+    text_file_observable.add_analysis(file_type_analysis)
+    file_type_analysis.details = {"type": "", "mime": f"text/{test_filename[len('sample_'):]}"}
+
     analyzer = AnalysisModuleAdapter(URLExtractionAnalyzer(
         context=create_test_context(root=root),
         config=get_analysis_module_config(ANALYSIS_MODULE_URL_EXTRACTION)))
@@ -451,6 +446,13 @@ def test_html_data_url_extraction(datadir, test_context):
     assert isinstance(analysis, HTMLDataURLAnalysis)
 
     assert analysis.count == 2
+
+    # Extracted data-URL images skip expensive OCR but must still be scanned
+    # for QR codes -- an embedded data-URL image is a common quishing vector.
+    for extracted in analysis.get_observables_by_type(F_FILE):
+        excluded = " ".join(extracted.excluded_analysis)
+        assert "OCRAnalyzer" in excluded
+        assert "QRCodeAnalyzer" not in excluded
 
 @pytest.mark.unit
 def test_one_file_in_zip_detection(datadir):

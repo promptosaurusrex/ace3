@@ -382,6 +382,31 @@ class PhishkitAnalyzer(AnalysisModule):
         except Exception as e:
             logging.error(f"failed to send scan_outcome to fluent-bit for {observable}: {e}")
 
+    def on_cache_hit(self, root, observable: Observable) -> None:
+        """A cached PhishkitAnalysis was replayed instead of running a live scan.
+        The replayed analysis carries the original scan's metrics, so emit a
+        dedicated ``cache_served`` event recording exactly the bytes and scan
+        time this cache hit avoided."""
+        if not self.fluent_bit_metrics_sender:
+            return
+
+        analysis = observable.get_analysis(PhishkitAnalysis)
+        if analysis is None:
+            return
+
+        metrics = analysis.metrics or {}
+        try:
+            self.fluent_bit_metrics_sender.emit(None, {
+                "event": "cache_served",
+                "job_id": analysis.job_id,
+                "scan_type": analysis.scan_type,
+                "observable_value": observable.value,
+                "saved_bytes": metrics.get("total_bytes_downloaded"),
+                "saved_duration_seconds": metrics.get("scan_duration_seconds"),
+            })
+        except Exception as e:
+            logging.error(f"failed to send cache_served to fluent-bit for {observable}: {e}")
+
     def _emit_scan_dispatched(self, observable: Observable, analysis: "PhishkitAnalysis") -> None:
         """Emit a scan-dispatch event to fluent-bit. Pair with _emit_scan_outcome.
 
@@ -518,6 +543,13 @@ class PhishkitAnalyzer(AnalysisModule):
         else:
             analysis.scan_result = f"successfully scanned {observable}"
 
+        # The scanned input URL is omitted from both promotion passes because
+        # re-adding it from dom.html or requests.json would make it a descendant
+        # of its own PhishkitAnalysis and create a spurious ancestor, which
+        # would break observable-modifier crawl rules that require no
+        # PhishkitAnalysis ancestor above the URL.
+        scanned_url_value = URL(observable.value).value if observable.type == F_URL else None
+
         # extract URL observables from MARKER URL entries in dom.html
         dom_path = os.path.join(analysis.output_dir, "dom.html")
         if os.path.exists(dom_path):
@@ -527,7 +559,7 @@ class PhishkitAnalyzer(AnalysisModule):
                         match = re.match(r"MARKER URL: (.+)$", line.strip())
                         if match:
                             url = URL(match.group(1).strip())
-                            if url.value and not url.value.startswith("file:///"):
+                            if url.value and url.value != scanned_url_value and not url.value.startswith("file:///"):
                                 obs = analysis.add_observable_by_spec(F_URL, url.value)
                                 if obs:
                                     obs.display_type = "Phishkit Request URL"
@@ -556,7 +588,7 @@ class PhishkitAnalyzer(AnalysisModule):
                     if raw_url.startswith(("file:///", "data:", "blob:")):
                         continue
                     url = URL(raw_url)
-                    if not url.value:
+                    if not url.value or url.value == scanned_url_value:
                         continue
                     obs = analysis.add_observable_by_spec(F_URL, url.value)
                     if obs:

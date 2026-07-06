@@ -150,7 +150,11 @@ class AnalysisModuleInterface(Protocol):
     def execute_post_analysis(self) -> bool:
         """This is called after all analysis work has been performed."""
         ...
-    
+
+    def on_cache_hit(self, root, observable) -> None:
+        """Called after a cached analysis has been replayed for this module."""
+        ...
+
     # Control methods
     def should_analyze(self, obj) -> bool:
         """Put your custom 'should I analyze this?' logic in this function."""
@@ -159,7 +163,12 @@ class AnalysisModuleInterface(Protocol):
     def accepts(self, obj) -> bool:
         """Returns True if this module can analyze the given object."""
         ...
-    
+
+    def custom_requirement(self, obj) -> bool:
+        """Additional check evaluated by the engine as the final gate before the
+        module runs. May raise WaitForAnalysisException to wait on another analysis."""
+        ...
+
     def cancel_analysis(self) -> None:
         """Cancel the current analysis."""
         ...

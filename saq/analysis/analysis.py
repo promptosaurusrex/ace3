@@ -29,6 +29,11 @@ class Analysis(BaseNode):
         # this defaults to None if the module has no defined instances
         self.instance: Optional[str] = None
 
+        # memoized module_path result, validated against self.instance (the
+        # only mutable input -- instance can be assigned after construction,
+        # e.g. during deserialization)
+        self._module_path_cache: Optional[tuple[Optional[str], str]] = None
+
         # the observable this Analysis is for
         # this is optional because the root node does not have a parent
         self._observable: Optional["Observable"] = None
@@ -174,8 +179,20 @@ class Analysis(BaseNode):
 
     @property
     def module_path(self) -> str:
-        """Returns module.path:class_name[:instance]."""
-        return MODULE_PATH(self)
+        """Returns module.path:class_name[:instance].
+
+        Memoized: MODULE_PATH() is comparatively expensive (isinstance
+        checks, string formatting) and this property is read per analysis on
+        every tree walk. The result depends only on type(self) and
+        self.instance, so the cache is validated against the current instance
+        value (getattr guards subclasses that bypass __init__).
+        """
+        cached = getattr(self, "_module_path_cache", None)
+        if cached is not None and cached[0] == self.instance:
+            return cached[1]
+        value = MODULE_PATH(self)
+        self._module_path_cache = (self.instance, value)
+        return value
 
     def is_on_detection_path(self) -> bool:
         """Returns True if this node or any node down to (but not including) the root has a detection point."""

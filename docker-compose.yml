@@ -151,7 +151,7 @@ services:
 
   ace-db:
     platform: linux/amd64
-    image: ${MYSQL_DOCKER_IMAGE:-mysql:9.2}
+    image: ${MYSQL_DOCKER_IMAGE:-mysql:9.7}
     command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_520_ci --max-allowed-packet=1073741824
     logging:
       driver: fluentd
@@ -187,7 +187,7 @@ services:
 
   ace-db-readonly:
     platform: linux/amd64
-    image: ${MYSQL_DOCKER_IMAGE:-mysql:9.2}
+    image: ${MYSQL_DOCKER_IMAGE:-mysql:9.7}
     command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_520_ci --max-allowed-packet=1073741824
     logging:
       driver: fluentd

@@ -130,11 +130,8 @@ def test_email_archive_action(root_analysis, tmpdir, monkeypatch):
     tagged_observable.add_tag(TAG_DECRYPTED_EMAIL)
     assert analyzer.execute_analysis(tagged_observable) == AnalysisExecutionResult.COMPLETED
 
+    from saq.modules.email.rfc822 import EmailAnalysis
     MockEmailAnalysis = namedtuple("MockEmailAnalysis", ["message_id", "env_rcpt_to"])
-    def mock_wait_for_analysis(*args, **kwargs):
-        return MockEmailAnalysis(message_id=TEST_MESSAGE_ID, env_rcpt_to=[TEST_RECIPIENT])
-
-    monkeypatch.setattr(analyzer, "wait_for_analysis", mock_wait_for_analysis)
 
     file_path = root_analysis.create_file_path("email.rfc822")
     with open(file_path, "w") as fp:
@@ -143,6 +140,16 @@ def test_email_archive_action(root_analysis, tmpdir, monkeypatch):
     file_observable = root_analysis.add_file_observable(file_path)
     assert isinstance(file_observable, Observable)
     file_observable.add_directive(DIRECTIVE_ARCHIVE)
+
+    # EmailAnalysis is a declared dependency; provide it directly since we invoke
+    # execute_analysis outside the engine (which would normally seed it). Only the
+    # EmailAnalysis lookup is mocked; other analysis lookups fall through to the real one.
+    original_get_and_load_analysis = file_observable.get_and_load_analysis
+    def mock_get_and_load_analysis(analysis_type, *args, **kwargs):
+        if analysis_type is EmailAnalysis:
+            return MockEmailAnalysis(message_id=TEST_MESSAGE_ID, env_rcpt_to=[TEST_RECIPIENT])
+        return original_get_and_load_analysis(analysis_type, *args, **kwargs)
+    monkeypatch.setattr(file_observable, "get_and_load_analysis", mock_get_and_load_analysis)
 
     # archive directory should be empty
     assert not len(os.listdir(get_email_archive_dir()))
@@ -174,11 +181,8 @@ def test_email_archive_action_skips_on_missing_fields(root_analysis, tmpdir, mon
         context=create_test_context(root=root_analysis),
         config=get_analysis_module_config(ANALYSIS_MODULE_EMAIL_ARCHIVER))
 
+    from saq.modules.email.rfc822 import EmailAnalysis
     MockEmailAnalysis = namedtuple("MockEmailAnalysis", ["message_id", "env_rcpt_to"])
-    def mock_wait_for_analysis(*args, **kwargs):
-        return MockEmailAnalysis(message_id=message_id, env_rcpt_to=env_rcpt_to)
-
-    monkeypatch.setattr(analyzer, "wait_for_analysis", mock_wait_for_analysis)
 
     # clean up review directory from previous parametrized runs
     review_dir = os.path.join(get_data_dir(), "review", "rfc822")
@@ -192,6 +196,15 @@ def test_email_archive_action_skips_on_missing_fields(root_analysis, tmpdir, mon
     file_observable = root_analysis.add_file_observable(file_path)
     assert isinstance(file_observable, Observable)
     file_observable.add_directive(DIRECTIVE_ARCHIVE)
+
+    # EmailAnalysis is a declared dependency; provide it directly since we invoke
+    # execute_analysis outside the engine (which would normally seed it)
+    original_get_and_load_analysis = file_observable.get_and_load_analysis
+    def mock_get_and_load_analysis(analysis_type, *args, **kwargs):
+        if analysis_type is EmailAnalysis:
+            return MockEmailAnalysis(message_id=message_id, env_rcpt_to=env_rcpt_to)
+        return original_get_and_load_analysis(analysis_type, *args, **kwargs)
+    monkeypatch.setattr(file_observable, "get_and_load_analysis", mock_get_and_load_analysis)
 
     result = analyzer.execute_analysis(file_observable)
     assert result == AnalysisExecutionResult.COMPLETED

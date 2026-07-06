@@ -1182,6 +1182,76 @@ def test_phishkit_analyzer_continue_analysis_extracts_requests_json_urls(monkeyp
 
 
 @pytest.mark.unit
+def test_phishkit_analyzer_continue_analysis_skips_scanned_url_self_reference(monkeypatch, test_context):
+    """The scanned URL appears as its own top-level MARKER URL in dom.html (and as
+    the initial navigation in requests.json), but must NOT be re-promoted as a
+    child observable. Re-adding it would re-parent the scanned URL under its own
+    PhishkitAnalysis (add_observable_by_spec dedupes by value, making the
+    observable its own descendant), giving it a self-referential PhishkitAnalysis
+    ancestor and breaking the "no PhishkitAnalysis ancestor" guard used by the
+    NRD / RDAP crawl rules. Genuinely discovered URLs are still promoted.
+    """
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    scanned = "https://l3cwy5ly93.essencedesigns.de/l/iFoz5AyHD_Q"
+    url_observable = root.add_observable_by_spec(F_URL, scanned)
+    analysis = PhishkitAnalysis()
+    analysis.job_id = "test-job-self-ref"
+    analysis.output_dir = "/tmp/test-output"
+    url_observable.add_analysis(analysis)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # dom.html: the top-level MARKER URL is the scanned URL itself, plus a
+        # genuinely discovered redirect target.
+        dom_file = os.path.join(temp_dir, "dom.html")
+        with open(dom_file, "w") as f:
+            f.write(f"\n\nMARKER URL: {scanned}\n\n")
+            f.write("<html>redirected</html>\n")
+            f.write("\n\nMARKER URL: https://cdn.example.com/next.html\n\n")
+
+        # requests.json: the scanned URL again (initial navigation) plus a
+        # discovered second-stage endpoint.
+        requests_file = os.path.join(temp_dir, "requests.json")
+        with open(requests_file, "w") as f:
+            json.dump([
+                {"type": "request", "url": scanned},  # initial navigation -- must be skipped
+                {"type": "request", "url": "https://blocked.example.com/step2"},
+            ], f)
+
+        exit_code_file = os.path.join(temp_dir, "exit.code")
+        with open(exit_code_file, "w") as f:
+            f.write("0")
+
+        output_files = [exit_code_file, dom_file, requests_file]
+        analysis.output_dir = temp_dir
+
+        monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result",
+                            lambda job_id, output_dir, timeout=1: output_files)
+
+        added_urls = []
+        original_add = analysis.add_observable_by_spec
+        def tracking_add(o_type, o_value, **kwargs):
+            if o_type == F_URL:
+                added_urls.append(o_value)
+            return original_add(o_type, o_value, **kwargs)
+        monkeypatch.setattr(analysis, "add_observable_by_spec", tracking_add)
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+        result = analyzer.continue_analysis(url_observable, analysis)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        # the scanned URL is skipped in BOTH passes; only discovered URLs promoted
+        assert scanned not in added_urls
+        assert added_urls == [
+            "https://cdn.example.com/next.html",
+            "https://blocked.example.com/step2",
+        ]
+
+
+@pytest.mark.unit
 def test_phishkit_analyzer_continue_analysis_partial_on_interrupt(monkeypatch, test_context):
     """A timed-out scan still flushes partial requests.json/metrics.json.
 
@@ -1327,10 +1397,11 @@ def test_phishkit_analyzer_file_not_analyzed_in_non_correlation_mode(monkeypatch
         
         monkeypatch.setattr(analyzer, "wait_for_analysis", mock_wait_for_analysis)
         
-        # Verify that accepts returns False (custom_requirement check)
-        # This is the gatekeeper - if accepts returns False, execute_analysis should not be called
-        assert not analyzer.accepts(file_observable)
-        
+        # Verify that custom_requirement returns False.
+        # custom_requirement is the gatekeeper the engine evaluates right before
+        # running the module - if it returns False, execute_analysis is not called
+        assert not analyzer.custom_requirement(file_observable)
+
     finally:
         if os.path.exists(test_file_path):
             os.unlink(test_file_path)
@@ -1371,15 +1442,15 @@ def test_phishkit_analyzer_file_analyzed_after_mode_switch_to_correlation(monkey
         
         monkeypatch.setattr(analyzer, "wait_for_analysis", mock_wait_for_analysis)
         
-        # First, verify that in non-correlation mode, it's NOT accepted for analysis
-        # The accepts method checks custom_requirement, which should return False
-        assert not analyzer.accepts(file_observable)
-        
+        # First, verify that in non-correlation mode, it's NOT gated in for analysis.
+        # custom_requirement (the engine's final gate) should return False
+        assert not analyzer.custom_requirement(file_observable)
+
         # Now switch to correlation mode
         root.analysis_mode = ANALYSIS_MODE_CORRELATION
-        
-        # Verify that accepts now returns True (custom_requirement should pass)
-        assert analyzer.accepts(file_observable)
+
+        # Verify that custom_requirement now returns True (gate passes)
+        assert analyzer.custom_requirement(file_observable)
         
         # Mock saq.phishkit functions
         def mock_scan_file(file_path, output_dir, is_async=True, **kwargs):
@@ -1819,3 +1890,53 @@ def test_phishkit_partial_scan_is_cached(monkeypatch, tmp_path):
     delta.cache_key = generate_cache_key(obs, analyzer)
     write = put_cached_delta(delta, analyzer, blob_store, root=root)
     assert write is not None  # partial results are cached, not refused
+
+
+@pytest.mark.integration
+def test_phishkit_on_cache_hit_emits_cache_served(test_context):
+    """A cache hit replays the cached analysis; on_cache_hit should emit a
+    cache_served event recording the exact bytes and scan time it avoided."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
+    analysis = PhishkitAnalysis()
+    analysis.job_id = "cache-hit-job"
+    analysis.scan_type = "url"
+    analysis.metrics = {"total_bytes_downloaded": 12345, "scan_duration_seconds": 42}
+    url_observable.add_analysis(analysis)
+
+    analyzer = PhishkitAnalyzer(
+        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+        context=create_test_context(root=root))
+    analyzer.fluent_bit_metrics_sender = MagicMock()
+
+    analyzer.on_cache_hit(root, url_observable)
+
+    analyzer.fluent_bit_metrics_sender.emit.assert_called_once()
+    _, payload = analyzer.fluent_bit_metrics_sender.emit.call_args.args
+    assert payload["event"] == "cache_served"
+    assert payload["job_id"] == "cache-hit-job"
+    assert payload["scan_type"] == "url"
+    assert payload["observable_value"] == "https://example.com/phish"
+    assert payload["saved_bytes"] == 12345
+    assert payload["saved_duration_seconds"] == 42
+
+
+@pytest.mark.integration
+def test_phishkit_on_cache_hit_no_sender_is_noop(test_context):
+    """With no fluent-bit sender configured, on_cache_hit must not raise."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
+    analysis = PhishkitAnalysis()
+    analysis.metrics = {"total_bytes_downloaded": 1, "scan_duration_seconds": 1}
+    url_observable.add_analysis(analysis)
+
+    analyzer = PhishkitAnalyzer(
+        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+        context=create_test_context(root=root))
+    analyzer.fluent_bit_metrics_sender = None
+
+    analyzer.on_cache_hit(root, url_observable)  # should be a no-op, no exception

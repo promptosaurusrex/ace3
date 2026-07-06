@@ -165,9 +165,7 @@ class AnalysisExecutionContext:
         self._cancel_analysis_flag = False
         self.total_analysis_time = {}
         # Per-(root, module) aggregates surfaced on the per-root metrics event.
-        # Keyed by module.name; default 0 when absent. Mutated in the live exec
-        # path (executor.py time-tracking block) and the cache hit/miss/write
-        # paths (_apply_cached_delta + get/put_cached_delta callers).
+        # Keyed by module.name; default 0 when absent.
         self.total_exec_count: dict[str, int] = {}
         self.cache_hit_count: dict[str, int] = {}
         self.cache_miss_count: dict[str, int] = {}
@@ -175,6 +173,12 @@ class AnalysisExecutionContext:
         self.cache_write_count_insert: dict[str, int] = {}
         self.cache_lookup_ms_sum: dict[str, int] = {}
         self.cache_lookup_ms_max: dict[str, int] = {}
+        # lookup_ms decomposed: key_ms is the (separately measured) cache-key /
+        # tool-probe cost; db/decode/blob sum to lookup_ms.
+        self.cache_lookup_key_ms_sum: dict[str, int] = {}
+        self.cache_lookup_db_ms_sum: dict[str, int] = {}
+        self.cache_lookup_decode_ms_sum: dict[str, int] = {}
+        self.cache_lookup_blob_ms_sum: dict[str, int] = {}
         self.cache_write_ms_sum: dict[str, int] = {}
         self.cache_write_ms_max: dict[str, int] = {}
         self.cache_write_bytes_uncompressed_sum: dict[str, int] = {}
@@ -199,6 +203,34 @@ class AnalysisExecutionContext:
     def cancel_analysis(self):
         """Cancel the current analysis."""
         self._cancel_analysis_flag = True
+
+    def record_cache_lookup(self, module_name: str, result) -> None:
+        """Accumulate a cache lookup's latency into the per-module aggregates.
+
+        Called for BOTH hits and misses (a miss's lookup time is pure overhead
+        on top of the live run — see the cache-miss handling in the executor).
+        ``result`` is a ``CacheLookupResult``; ``lookup_ms`` gets both a sum and
+        a max, the four components only sums (they drive the per-component
+        averages the payoff panel breaks lookup cost down by).
+        """
+        self.cache_lookup_ms_sum[module_name] = (
+            self.cache_lookup_ms_sum.get(module_name, 0) + result.lookup_ms
+        )
+        self.cache_lookup_ms_max[module_name] = max(
+            self.cache_lookup_ms_max.get(module_name, 0), result.lookup_ms
+        )
+        self.cache_lookup_key_ms_sum[module_name] = (
+            self.cache_lookup_key_ms_sum.get(module_name, 0) + result.key_ms
+        )
+        self.cache_lookup_db_ms_sum[module_name] = (
+            self.cache_lookup_db_ms_sum.get(module_name, 0) + result.db_ms
+        )
+        self.cache_lookup_decode_ms_sum[module_name] = (
+            self.cache_lookup_decode_ms_sum.get(module_name, 0) + result.decode_ms
+        )
+        self.cache_lookup_blob_ms_sum[module_name] = (
+            self.cache_lookup_blob_ms_sum.get(module_name, 0) + result.blob_ms
+        )
 
     def record_execution_statistics(self, elapsed_time: float, stats_dir: str):
         """Records the execution statistics for the analysis.
@@ -271,6 +303,12 @@ class AnalysisExecutionContext:
                     if hits or misses:
                         payload["cache_lookup_ms_sum"] = self.cache_lookup_ms_sum.get(key, 0)
                         payload["cache_lookup_ms_max"] = self.cache_lookup_ms_max.get(key, 0)
+                        # lookup_ms decomposed: db+decode+blob sum to lookup_ms;
+                        # key_ms is the separate cache-key/tool-probe cost.
+                        payload["cache_lookup_key_ms_sum"] = self.cache_lookup_key_ms_sum.get(key, 0)
+                        payload["cache_lookup_db_ms_sum"] = self.cache_lookup_db_ms_sum.get(key, 0)
+                        payload["cache_lookup_decode_ms_sum"] = self.cache_lookup_decode_ms_sum.get(key, 0)
+                        payload["cache_lookup_blob_ms_sum"] = self.cache_lookup_blob_ms_sum.get(key, 0)
                     if inserts:
                         payload["cache_write_ms_sum"] = self.cache_write_ms_sum.get(key, 0)
                         payload["cache_write_ms_max"] = self.cache_write_ms_max.get(key, 0)
@@ -1086,8 +1124,7 @@ class AnalysisExecutor:
         root: RootAnalysis,
         observable: Observable,
         module: AnalysisModuleInterface,
-        delta,
-        lookup_ms: int,
+        lookup_result,
     ) -> None:
         """Replay a cached delta and record cache-hit attribution + metrics.
 
@@ -1098,11 +1135,12 @@ class AnalysisExecutor:
         apply here, because cache consultation is itself information
         worth keeping.
 
-        ``lookup_ms`` is the wall time the caller spent in
-        ``get_cached_delta`` (DB SELECT + zstd decompress + deserialize +
-        any blob fetch). Combined with ``replay_ms`` it gives the total
-        cost of a hit — for cheap modules like whois the lookup is the
-        larger half, so ``replay_ms`` alone would understate it.
+        ``lookup_result`` is the ``CacheLookupResult`` from
+        ``get_cached_delta``; ``lookup_result.lookup_ms`` is the wall time the
+        caller spent there (DB SELECT + zstd decompress + deserialize + any
+        blob fetch). Combined with ``replay_ms`` it gives the total cost of a
+        hit — for cheap modules like whois the lookup is the larger half, so
+        ``replay_ms`` alone would understate it.
 
         Bumps ``context.cache_hit_count`` and the lookup latency
         accumulators so the per-(root, module) metrics emitted at root
@@ -1114,13 +1152,14 @@ class AnalysisExecutor:
         purpose: both are bounded by live module wall time, and replay
         completes in milliseconds.
         """
+        delta = lookup_result.delta
         replay_start_ns = time.monotonic_ns()
         apply_delta(root, observable, delta, blob_store=get_blob_store())
         replay_ms = (time.monotonic_ns() - replay_start_ns) // 1_000_000
 
         attribution_delta = delta.with_cache_hit_metadata(
             executed_at=datetime.now(UTC),
-            execution_time_ms=lookup_ms + replay_ms,
+            execution_time_ms=lookup_result.lookup_ms + replay_ms,
             root_uuid=root.uuid,
             observable_uuid=observable.uuid,
         ).without_analysis_details()
@@ -1130,12 +1169,18 @@ class AnalysisExecutor:
         context.cache_hit_count[module_name] = (
             context.cache_hit_count.get(module_name, 0) + 1
         )
-        context.cache_lookup_ms_sum[module_name] = (
-            context.cache_lookup_ms_sum.get(module_name, 0) + lookup_ms
-        )
-        context.cache_lookup_ms_max[module_name] = max(
-            context.cache_lookup_ms_max.get(module_name, 0), lookup_ms
-        )
+        context.record_cache_lookup(module_name, lookup_result)
+
+        # Best-effort hit-time hook: lets a module emit telemetry from the
+        # replayed analysis (e.g. phishkit's saved bytes). Must never break
+        # replay, so failures are swallowed.
+        try:
+            module.on_cache_hit(root, observable)
+        except Exception:
+            logging.warning(
+                "on_cache_hit failed module_name=%s observable_uuid=%s",
+                module_name, observable.uuid, exc_info=True,
+            )
 
     def _maybe_write_cache_delta(
         self,
@@ -1217,6 +1262,79 @@ class AnalysisExecutor:
                 },
             )
 
+    def _seed_declared_dependencies(
+        self, work_item: WorkTarget, analysis_module: AnalysisModuleInterface
+    ) -> bool:
+        """Ensure this module's declared dependencies are satisfied before it runs.
+
+        For each declared dependency module that is not yet satisfied on this
+        observable, seed the same dependency edge the WaitForAnalysisException
+        handler would create (observable.add_dependency), so the existing
+        dependency-resolution loop runs the dependency first and re-queues this
+        module. Returns True if any dependency was unmet and this module should be
+        deferred to a later pass; False if all declared dependencies are satisfied
+        and the module may run now.
+
+        A dependency is treated as satisfied (mirroring wait_for_analysis) when the
+        dependency module does not accept the observable, an existing dependency edge
+        is completed/resolved/failed, or the target analysis is already present as a
+        completed Analysis or the "no analysis" (False) sentinel. A present-but-not-
+        completed (delayed) target analysis is NOT satisfied -- we keep waiting.
+        """
+        dependency_modules = self.configuration_manager.get_declared_dependencies(
+            analysis_module.config.name
+        )
+        if not dependency_modules:
+            return False
+
+        observable = work_item.observable
+        unmet = False
+        for dependency_module in dependency_modules:
+            # a dependency that would never analyze this observable is vacuously satisfied
+            if not dependency_module.accepts(observable):
+                continue
+
+            dep = observable.get_dependency(
+                MODULE_PATH(
+                    dependency_module.generated_analysis_type,
+                    instance=dependency_module.instance,
+                )
+            )
+            # an existing edge already driven to a terminal state satisfies the dependency
+            if dep and (dep.completed or dep.resolved or dep.failed):
+                continue
+
+            existing_analysis = observable.get_analysis(
+                dependency_module.generated_analysis_type,
+                instance=dependency_module.instance,
+            )
+            # satisfied if we have a completed Analysis or the False no-analysis sentinel
+            if existing_analysis is not None and not (
+                isinstance(existing_analysis, Analysis)
+                and not existing_analysis.completed
+            ):
+                continue
+
+            # unmet -- seed the dependency edge (idempotent; add_dependency dedups)
+            observable.add_dependency(
+                analysis_module.generated_analysis_type,
+                analysis_module.instance,
+                observable,
+                dependency_module.generated_analysis_type,
+                dependency_module.instance,
+            )
+            unmet = True
+
+        if unmet:
+            # if we are re-running the source of a completed dependency but still have
+            # another unmet dependency, consume that completed dependency so it is not
+            # re-selected
+            if work_item.dependency and work_item.dependency.completed:
+                work_item.dependency.increment_status()
+            return True
+
+        return False
+
     def _execute_module_analysis(
         self,
         context: AnalysisExecutionContext,
@@ -1261,7 +1379,52 @@ class AnalysisExecutor:
         if not self._check_module_acceptance(work_item, analysis_module):
             return
 
+        # ensure declared dependencies are satisfied before running this module;
+        # if any are unmet, the dependency edges are seeded and we defer this module
+        if self._seed_declared_dependencies(work_item, analysis_module):
+            return
+
         try:
+            # custom_requirement is the final gate before the module runs. it is
+            # evaluated here (rather than in accepts()) so that it runs only after
+            # this module's declared dependencies are satisfied -- letting it inspect
+            # dependency results and, by raising WaitForAnalysisException (directly or
+            # via wait_for_analysis), wait on a cross-observable analysis. a raised
+            # WaitForAnalysisException is intentionally not caught here; it propagates
+            # to the handler below which seeds the dependency edge.
+            try:
+                if not analysis_module.custom_requirement(work_item.observable):
+                    logging.debug(
+                        "%s does not pass custom requirements for %s",
+                        work_item.observable, analysis_module,
+                    )
+                    # skip WITHOUT recording a no-analysis sentinel so this module is
+                    # re-considered on a later pass (e.g. once a directive lands). when
+                    # this work item is resolving a dependency edge we still resolve it
+                    # here (no analysis was produced) exactly as _process_generated_analysis
+                    # would -- failing the edge and re-queuing the waiting source so it is
+                    # re-analyzed in the normal (not final-analysis) phase.
+                    if work_item.dependency:
+                        if work_item.dependency.ready:
+                            work_item.dependency.set_status_failed("custom requirement not met")
+                            work_item.dependency.increment_status()
+                            work_stack.appendleft(
+                                WorkTarget(
+                                    observable=root.get_observable(
+                                        work_item.dependency.source_observable_id
+                                    ),
+                                    analysis_module=self._get_analysis_module_by_generated_analysis(
+                                        work_item.dependency.source_analysis_type
+                                    ),
+                                )
+                            )
+                        elif work_item.dependency.completed:
+                            work_item.dependency.increment_status()
+                    return
+            except NotImplementedError:
+                # module does not override custom_requirement -- no custom gate
+                pass
+
             # have we already tried this and it didn't work?
             if root.is_analysis_failed(analysis_module, work_item.observable):
                 logging.debug(
@@ -1293,7 +1456,7 @@ class AnalysisExecutor:
                     if lookup_result.delta is not None:
                         self._apply_cached_delta(
                             context, root, work_item.observable, analysis_module,
-                            lookup_result.delta, lookup_result.lookup_ms,
+                            lookup_result,
                         )
                         self._process_generated_analysis(
                             AnalysisExecutionResult.COMPLETED, root, work_item,
@@ -1314,14 +1477,7 @@ class AnalysisExecutor:
                         context.cache_miss_count[module_name] = (
                             context.cache_miss_count.get(module_name, 0) + 1
                         )
-                        context.cache_lookup_ms_sum[module_name] = (
-                            context.cache_lookup_ms_sum.get(module_name, 0)
-                            + lookup_result.lookup_ms
-                        )
-                        context.cache_lookup_ms_max[module_name] = max(
-                            context.cache_lookup_ms_max.get(module_name, 0),
-                            lookup_result.lookup_ms,
-                        )
+                        context.record_cache_lookup(module_name, lookup_result)
                 except Exception:
                     logging.warning(
                         "cache replay failed module_name=%s observable_uuid=%s "

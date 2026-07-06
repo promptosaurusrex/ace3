@@ -520,10 +520,9 @@ def test_svg_defanged_extension_with_mime_fallback(monkeypatch, tmpdir, test_con
 
     mock_analysis = _make_mock_file_type_analysis('image/svg+xml')
 
-    def mock_wait_for_analysis(observable, analysis_type):
-        return mock_analysis
-
-    monkeypatch.setattr(analyzer._module, "wait_for_analysis", mock_wait_for_analysis)
+    # file type analysis is a declared dependency; provide it directly since we
+    # invoke execute_analysis outside the engine (which would normally seed it)
+    observable.add_analysis(mock_analysis)
 
     result = analyzer.execute_analysis(observable)
     assert result == AnalysisExecutionResult.COMPLETED
@@ -609,10 +608,9 @@ if(_c)(0,eval)(_c);
 
     mock_analysis = _make_mock_file_type_analysis('image/svg+xml')
 
-    def mock_wait_for_analysis(observable, analysis_type):
-        return mock_analysis
-
-    monkeypatch.setattr(analyzer._module, "wait_for_analysis", mock_wait_for_analysis)
+    # file type analysis is a declared dependency; provide it directly since we
+    # invoke execute_analysis outside the engine (which would normally seed it)
+    observable.add_analysis(mock_analysis)
 
     result = analyzer.execute_analysis(observable)
     assert result == AnalysisExecutionResult.COMPLETED
@@ -743,10 +741,9 @@ def test_unknown_extension_no_mime_skipped(monkeypatch, tmpdir, test_context):
 
     mock_analysis = _make_mock_file_type_analysis('application/pdf')
 
-    def mock_wait_for_analysis(observable, analysis_type):
-        return mock_analysis
-
-    monkeypatch.setattr(analyzer._module, "wait_for_analysis", mock_wait_for_analysis)
+    # file type analysis is a declared dependency; provide it directly since we
+    # invoke execute_analysis outside the engine (which would normally seed it)
+    observable.add_analysis(mock_analysis)
 
     result = analyzer.execute_analysis(observable)
     assert result == AnalysisExecutionResult.COMPLETED

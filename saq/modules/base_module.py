@@ -481,13 +481,11 @@ class AnalysisModule(FileWatcherMixin):
                     # logging.debug("{} does not have required directive {} for {}".format(obj, directive, self))
                     return False
 
-            # does the module have a custom requirement routine defined?
-            try:
-                if not self.custom_requirement(obj):
-                    logging.debug(f"{obj} does not pass custom requirements for {self}")
-                    return False
-            except NotImplementedError:
-                pass
+            # NOTE custom_requirement is intentionally NOT evaluated here. it is
+            # evaluated by the engine as the final gate right before the module runs
+            # (after declared dependencies are satisfied) so that it can inspect
+            # dependency results and wait on cross-observable analysis. see
+            # AnalysisExecutor._execute_module_analysis.
 
             # have we already generated analysis for this target?
             current_analysis = obj.get_analysis(
@@ -767,6 +765,12 @@ class AnalysisModule(FileWatcherMixin):
         Return COMPLETED if analysis has completed. The engine will not call this function again for this target.
         Return INCOMPLETE if analysis has NOT completed. The engine could potentially call this function again if the analysis mode changes."""
         return AnalysisExecutionResult.COMPLETED
+
+    def on_cache_hit(self, root: RootAnalysisInterface, observable: Observable) -> None:
+        """Called after a cached analysis has been replayed for this module, in place
+        of execute_analysis. Default is a no-op; override to emit hit-time telemetry
+        from the replayed analysis (available via observable.get_analysis)."""
+        pass
 
     # ========================================
     # Analysis Helpers
