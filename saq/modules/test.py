@@ -819,6 +819,132 @@ class WaitAnalyzerModule_C(AnalysisModule):
         self.create_analysis(test)
         return AnalysisExecutionResult.COMPLETED
 
+# ---------------------------------------------------------------------------
+# declarative dependency test modules
+#
+# unlike the WaitAnalyzer modules above, these declare their dependencies in
+# configuration (the `dependencies` key) instead of calling wait_for_analysis.
+# the engine guarantees a module's declared dependency analyses are present
+# before execute_analysis is called, so these modules never wait or re-enter.
+# ---------------------------------------------------------------------------
+
+class DeclaredDepAnalysis_A(Analysis):
+    pass
+
+class DeclaredDepAnalyzerModule_A(AnalysisModule):
+    @property
+    def generated_analysis_type(self):
+        return DeclaredDepAnalysis_A
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        analysis = self.create_analysis(test)
+        # our declared dependency (module B) must already have run by now
+        analysis.details = {"saw_dependency": isinstance(test.get_analysis(DeclaredDepAnalysis_B), DeclaredDepAnalysis_B)}
+        return AnalysisExecutionResult.COMPLETED
+
+class DeclaredDepAnalysis_B(Analysis):
+    pass
+
+class DeclaredDepAnalyzerModule_B(AnalysisModule):
+    @property
+    def generated_analysis_type(self):
+        return DeclaredDepAnalysis_B
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        analysis = self.create_analysis(test)
+        # our declared dependency (module C) must already have run by now
+        analysis.details = {"saw_dependency": isinstance(test.get_analysis(DeclaredDepAnalysis_C), DeclaredDepAnalysis_C)}
+        return AnalysisExecutionResult.COMPLETED
+
+class DeclaredDepAnalysis_C(Analysis):
+    pass
+
+class DeclaredDepAnalyzerModule_C(AnalysisModule):
+    @property
+    def generated_analysis_type(self):
+        return DeclaredDepAnalysis_C
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        self.create_analysis(test)
+        return AnalysisExecutionResult.COMPLETED
+
+class DeclaredNoProduceAnalysis(Analysis):
+    pass
+
+class DeclaredNoProduceModule(AnalysisModule):
+    @property
+    def generated_analysis_type(self):
+        return DeclaredNoProduceAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        # intentionally produces no analysis (exercises the no-analysis sentinel)
+        return AnalysisExecutionResult.COMPLETED
+
+class DeclaredDepOnNoProduceAnalysis(Analysis):
+    pass
+
+class DeclaredDepOnNoProduceModule(AnalysisModule):
+    @property
+    def generated_analysis_type(self):
+        return DeclaredDepOnNoProduceAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        # declared dependency produces no analysis, but we must still run
+        self.create_analysis(test)
+        return AnalysisExecutionResult.COMPLETED
+
+class DeclaredCycleAnalysis_X(Analysis):
+    pass
+
+class DeclaredCycleModule_X(AnalysisModule):
+    @property
+    def generated_analysis_type(self):
+        return DeclaredCycleAnalysis_X
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        self.create_analysis(test)
+        return AnalysisExecutionResult.COMPLETED
+
+class DeclaredCycleAnalysis_Y(Analysis):
+    pass
+
+class DeclaredCycleModule_Y(AnalysisModule):
+    @property
+    def generated_analysis_type(self):
+        return DeclaredCycleAnalysis_Y
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        self.create_analysis(test)
+        return AnalysisExecutionResult.COMPLETED
+
 class ForcedDetectionTestAnalysis(Analysis):
     pass
 

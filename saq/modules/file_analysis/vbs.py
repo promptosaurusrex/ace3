@@ -226,14 +226,11 @@ class PCodeAnalyzer(AnalysisModule):
         return self.config.pcodedmp_path
 
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
-        from saq.modules.file_analysis.file_type import FileTypeAnalysis
-
         local_file_path = _file.full_path
         if not os.path.exists(local_file_path):
             logging.error("cannot find local file path for {}".format(_file))
             return AnalysisExecutionResult.COMPLETED
 
-        self.wait_for_analysis(_file, FileTypeAnalysis)
         if not is_office_file(_file):
             return AnalysisExecutionResult.COMPLETED
         

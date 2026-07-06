@@ -1262,6 +1262,79 @@ class AnalysisExecutor:
                 },
             )
 
+    def _seed_declared_dependencies(
+        self, work_item: WorkTarget, analysis_module: AnalysisModuleInterface
+    ) -> bool:
+        """Ensure this module's declared dependencies are satisfied before it runs.
+
+        For each declared dependency module that is not yet satisfied on this
+        observable, seed the same dependency edge the WaitForAnalysisException
+        handler would create (observable.add_dependency), so the existing
+        dependency-resolution loop runs the dependency first and re-queues this
+        module. Returns True if any dependency was unmet and this module should be
+        deferred to a later pass; False if all declared dependencies are satisfied
+        and the module may run now.
+
+        A dependency is treated as satisfied (mirroring wait_for_analysis) when the
+        dependency module does not accept the observable, an existing dependency edge
+        is completed/resolved/failed, or the target analysis is already present as a
+        completed Analysis or the "no analysis" (False) sentinel. A present-but-not-
+        completed (delayed) target analysis is NOT satisfied -- we keep waiting.
+        """
+        dependency_modules = self.configuration_manager.get_declared_dependencies(
+            analysis_module.config.name
+        )
+        if not dependency_modules:
+            return False
+
+        observable = work_item.observable
+        unmet = False
+        for dependency_module in dependency_modules:
+            # a dependency that would never analyze this observable is vacuously satisfied
+            if not dependency_module.accepts(observable):
+                continue
+
+            dep = observable.get_dependency(
+                MODULE_PATH(
+                    dependency_module.generated_analysis_type,
+                    instance=dependency_module.instance,
+                )
+            )
+            # an existing edge already driven to a terminal state satisfies the dependency
+            if dep and (dep.completed or dep.resolved or dep.failed):
+                continue
+
+            existing_analysis = observable.get_analysis(
+                dependency_module.generated_analysis_type,
+                instance=dependency_module.instance,
+            )
+            # satisfied if we have a completed Analysis or the False no-analysis sentinel
+            if existing_analysis is not None and not (
+                isinstance(existing_analysis, Analysis)
+                and not existing_analysis.completed
+            ):
+                continue
+
+            # unmet -- seed the dependency edge (idempotent; add_dependency dedups)
+            observable.add_dependency(
+                analysis_module.generated_analysis_type,
+                analysis_module.instance,
+                observable,
+                dependency_module.generated_analysis_type,
+                dependency_module.instance,
+            )
+            unmet = True
+
+        if unmet:
+            # if we are re-running the source of a completed dependency but still have
+            # another unmet dependency, consume that completed dependency so it is not
+            # re-selected
+            if work_item.dependency and work_item.dependency.completed:
+                work_item.dependency.increment_status()
+            return True
+
+        return False
+
     def _execute_module_analysis(
         self,
         context: AnalysisExecutionContext,
@@ -1304,6 +1377,11 @@ class AnalysisExecutor:
 
         # does this module accept the work item?
         if not self._check_module_acceptance(work_item, analysis_module):
+            return
+
+        # ensure declared dependencies are satisfied before running this module;
+        # if any are unmet, the dependency edges are seeded and we defer this module
+        if self._seed_declared_dependencies(work_item, analysis_module):
             return
 
         try:

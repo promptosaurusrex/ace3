@@ -72,7 +72,7 @@ class ExtractedOLEAnalyzer(AnalysisModule):
         from saq.modules.file_analysis.officeparser3 import OfficeParserAnalysis3
 
         # gather all the requirements for all the things we want to check
-        file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
+        file_type_analysis = _file.get_and_load_analysis(FileTypeAnalysis)
         if not file_type_analysis:
             return AnalysisExecutionResult.COMPLETED
 

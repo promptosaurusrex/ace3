@@ -25,7 +25,7 @@ from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode, EngineType
 from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_dir, reset_node
-from saq.modules.test import BasicTestAnalysis, ConfigurableModuleTestAnalysis, DelayedAnalysisTestAnalysis, FileSizeLimitAnalysis, FinalAnalysisTestAnalysis, GenericTestAnalysis, GroupedByTimeRangeAnalysis, GroupingTargetAnalysis, PostAnalysisTestResult, TestInstanceAnalysis, WaitAnalysis_A, WaitAnalysis_B, WaitAnalysis_C, WaitAnalyzerModule_B
+from saq.modules.test import BasicTestAnalysis, ConfigurableModuleTestAnalysis, DeclaredDepAnalysis_A, DeclaredDepAnalysis_B, DeclaredDepAnalysis_C, DeclaredDepOnNoProduceAnalysis, DelayedAnalysisTestAnalysis, FileSizeLimitAnalysis, FinalAnalysisTestAnalysis, GenericTestAnalysis, GroupedByTimeRangeAnalysis, GroupingTargetAnalysis, PostAnalysisTestResult, TestInstanceAnalysis, WaitAnalysis_A, WaitAnalysis_B, WaitAnalysis_C, WaitAnalyzerModule_B
 from saq.observables.file import FileObservable
 from saq.util.maintenance import cleanup_alerts
 from saq.util.time import parse_event_time
@@ -1076,6 +1076,93 @@ def test_wait_for_analysis_rejected():
     assert test_observable.get_and_load_analysis(WaitAnalysis_A)
     assert not test_observable.get_and_load_analysis(WaitAnalysis_B)
     assert test_observable.get_and_load_analysis(WaitAnalysis_C)
+
+@pytest.mark.integration
+def test_declared_dependency_chained():
+    # declared_dep_a depends on declared_dep_b which depends on declared_dep_c;
+    # the engine must run c, then b, then a -- without any wait_for_analysis calls
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root.initialize_storage()
+    test_observable = root.add_observable_by_spec(F_TEST, 'declared_dep_test')
+    root.save()
+    root.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('declared_dep_a', 'test_groups')
+    engine.configuration_manager.enable_module('declared_dep_b', 'test_groups')
+    engine.configuration_manager.enable_module('declared_dep_c', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root = load_root(get_storage_dir(root.uuid))
+    test_observable = root.get_observable(test_observable.uuid)
+    assert test_observable
+
+    analysis_a = test_observable.get_and_load_analysis(DeclaredDepAnalysis_A)
+    analysis_b = test_observable.get_and_load_analysis(DeclaredDepAnalysis_B)
+    analysis_c = test_observable.get_and_load_analysis(DeclaredDepAnalysis_C)
+    assert analysis_a
+    assert analysis_b
+    assert analysis_c
+
+    # ordering is guaranteed by the declared dependencies: a ran after b, b after c
+    assert analysis_a.details["saw_dependency"] is True
+    assert analysis_b.details["saw_dependency"] is True
+
+    # a declared (acyclic) dependency graph must not report a circular dependency
+    assert log_count("CIRCULAR DEPENDENCY ERROR") == 0
+
+@pytest.mark.integration
+def test_declared_dependency_missing_soft_skip():
+    # declared_dep_a depends on declared_dep_b, but b is not enabled -- a must still
+    # run (a missing/disabled declared dependency is treated as vacuously satisfied)
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root.initialize_storage()
+    test_observable = root.add_observable_by_spec(F_TEST, 'declared_dep_test')
+    root.save()
+    root.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('declared_dep_a', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root = load_root(get_storage_dir(root.uuid))
+    test_observable = root.get_observable(test_observable.uuid)
+    assert test_observable
+    analysis_a = test_observable.get_and_load_analysis(DeclaredDepAnalysis_A)
+    assert analysis_a
+    # b never ran (not enabled), so a did not see its dependency but still executed
+    assert analysis_a.details["saw_dependency"] is False
+    assert not test_observable.get_and_load_analysis(DeclaredDepAnalysis_B)
+
+@pytest.mark.integration
+def test_declared_dependency_no_analysis_target():
+    # declared_dep_on_no_produce depends on declared_no_produce, which produces no
+    # analysis -- the dependent must still run (exercises the False no-analysis sentinel)
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root.initialize_storage()
+    test_observable = root.add_observable_by_spec(F_TEST, 'declared_dep_test')
+    root.save()
+    root.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('declared_no_produce', 'test_groups')
+    engine.configuration_manager.enable_module('declared_dep_on_no_produce', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root = load_root(get_storage_dir(root.uuid))
+    test_observable = root.get_observable(test_observable.uuid)
+    assert test_observable
+    assert test_observable.get_and_load_analysis(DeclaredDepOnNoProduceAnalysis)
+
+@pytest.mark.integration
+def test_declared_dependency_startup_cycle():
+    # declared_cycle_x and declared_cycle_y declare a dependency on each other;
+    # building the dependency graph at startup must fail fast with a RuntimeError
+    engine = Engine()
+    engine.configuration_manager.enable_module('declared_cycle_x', 'test_groups')
+    engine.configuration_manager.enable_module('declared_cycle_y', 'test_groups')
+    with pytest.raises(RuntimeError, match="CIRCULAR DEPENDENCY"):
+        engine.configuration_manager.load_modules()
 
 @pytest.mark.integration
 def test_post_analysis_after_false_return():

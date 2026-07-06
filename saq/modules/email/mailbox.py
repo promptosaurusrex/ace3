@@ -40,7 +40,7 @@ class MailboxEmailAnalyzer(AnalysisModule):
         if self.get_root().whitelisted:
             return AnalysisExecutionResult.COMPLETED
 
-        email_analysis = self.wait_for_analysis(_file, EmailAnalysis)
+        email_analysis = _file.get_and_load_analysis(EmailAnalysis)
 
         analysis = self.create_analysis(_file)
         assert isinstance(analysis, MailboxEmailAnalysis)

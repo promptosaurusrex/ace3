@@ -69,7 +69,7 @@ class HiddenMIMEAnalyzer(AnalysisModule):
         if _file.file_name == "email.rfc822":
             return AnalysisExecutionResult.COMPLETED
 
-        file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
+        file_type_analysis = _file.get_and_load_analysis(FileTypeAnalysis)
         if file_type_analysis is not None and file_type_analysis.mime_type == "message/rfc822":
             return AnalysisExecutionResult.COMPLETED
 

@@ -103,9 +103,6 @@ class XLMMacroDeobfuscatorAnalyzer(AnalysisModule):
             logging.debug(f"file {local_file_path} too big for {self}")
             return AnalysisExecutionResult.COMPLETED
 
-        # wait for yara analysis
-        yara_analysis = self.wait_for_analysis(_file, YaraScanResults_v3_4)
-
         # ignore files we're not interested in
         xlm4 = False
         yara_matches = self.xlm_yara_context.match(local_file_path)

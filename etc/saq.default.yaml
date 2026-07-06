@@ -1084,6 +1084,8 @@ analysis_module_html_data_url_extraction:
 
 analysis_module_html_js_extraction:
   name: html_js_extraction
+  dependencies:
+    - file_type
   python_module: saq.modules.file_analysis.html_js_extraction
   python_class: HTMLJavaScriptExtractor
   enabled: true
@@ -1124,6 +1126,8 @@ analysis_module_command_line_analyzer:
 
 analysis_module_mailbox_email_analyzer:
   name: mailbox_email_analyzer
+  dependencies:
+    - email_analyzer
   python_module: saq.modules.email.mailbox
   python_class: MailboxEmailAnalyzer
   enabled: true
@@ -1133,6 +1137,8 @@ analysis_module_mailbox_email_analyzer:
 
 analysis_module_email_analyzer:
   name: email_analyzer
+  dependencies:
+    - file_type
   python_module: saq.modules.email.rfc822
   python_class: EmailAnalyzer
   enabled: true
@@ -1147,6 +1153,8 @@ analysis_module_email_analyzer:
 
 analysis_module_email_archiver:
   name: email_archiver
+  dependencies:
+    - email_analyzer
   python_module: saq.modules.email.archive
   python_class: EmailArchiveAction
   enabled: false
@@ -1196,6 +1204,10 @@ analysis_module_network_identifier:
 
 analysis_module_asset_analyzer:
   name: asset_analyzer
+  dependencies:
+    - dns_analyzer
+    - netbios_analyzer
+    - active_directory_analyzer
   python_module: saq.modules.asset.asset
   python_class: AssetAnalyzer
   enabled: false
@@ -1353,6 +1365,8 @@ analysis_module_email_logger:
 
 analysis_module_file_hash_analyzer:
   name: file_hash_analyzer
+  dependencies:
+    - file_type
   python_module: saq.modules.file_analysis.hash
   python_class: FileHashAnalyzer
   enabled: true
@@ -1430,6 +1444,8 @@ analysis_module_ssdeep:
 
 analysis_module_archive:
   name: archive
+  dependencies:
+    - file_type
   python_module: saq.modules.file_analysis.archive
   python_class: ArchiveAnalyzer
   enabled: true
@@ -1457,6 +1473,8 @@ analysis_module_java_class_decompiler:
 
 analysis_module_olevba_v1_2:
   name: olevba_v1_2
+  dependencies:
+    - file_type
   python_module: saq.modules.file_analysis.olevba
   python_class: OLEVBA_Analyzer_v1_2
   enabled: true
@@ -1474,6 +1492,8 @@ analysis_module_olevba_v1_2:
 
 analysis_module_officeparser3:
   name: officeparser3
+  dependencies:
+    - file_type
   python_module: saq.modules.file_analysis.officeparser3
   python_class: OfficeParserAnalyzer3
   enabled: true
@@ -1486,6 +1506,8 @@ analysis_module_officeparser3:
 
 analysis_module_xlmdeobfuscator:
   name: xlmdeobfuscator
+  dependencies:
+    - yara_scanner_v3_4
   python_module: saq.modules.file_analysis.xlm
   python_class: XLMMacroDeobfuscatorAnalyzer
   enabled: true
@@ -1509,6 +1531,8 @@ analysis_module_mhtml:
 
 analysis_module_pcodedmp:
   name: pcodedmp
+  dependencies:
+    - file_type
   python_module: saq.modules.file_analysis.vbs
   python_class: PCodeAnalyzer
   enabled: true
@@ -1556,6 +1580,8 @@ analysis_module_xml_plain_text_analyzer:
 
 analysis_module_extracted_ole_analyzer:
   name: extracted_ole_analyzer
+  dependencies:
+    - file_type
   python_module: saq.modules.file_analysis.ole
   python_class: ExtractedOLEAnalyzer
   enabled: true
@@ -1566,6 +1592,8 @@ analysis_module_extracted_ole_analyzer:
 
 analysis_module_office_file_archiver:
   name: office_file_archiver
+  dependencies:
+    - file_type
   python_module: saq.modules.file_analysis.msoffice
   python_class: OfficeFileArchiver
   enabled: false
@@ -1655,6 +1683,8 @@ analysis_module_qrcode:
 
 analysis_module_hidden_mime:
   name: hidden_mime
+  dependencies:
+    - file_type
   python_module: saq.modules.file_analysis.mime
   python_class: HiddenMIMEAnalyzer
   enabled: true
@@ -1726,6 +1756,9 @@ analysis_module_microsoft_script_encoding_analysis:
 
 analysis_module_url_extraction:
   name: url_extraction
+  dependencies:
+    - file_type
+    - yara_scanner_v3_4
   python_module: saq.modules.file_analysis.url_extraction
   python_class: URLExtractionAnalyzer
   enabled: true
@@ -1763,6 +1796,8 @@ analysis_module_observable_modifier:
 
 analysis_module_x509_analyzer:
   name: x509_analyzer
+  dependencies:
+    - file_type
   python_module: saq.modules.x509
   python_class: X509Analyzer
   enabled: true
@@ -1847,6 +1882,8 @@ analysis_module_rtfole:
 
 analysis_module_extracted_rtf_analyzer:
   name: extracted_rtf_analyzer
+  dependencies:
+    - file_type
   python_module: saq.modules.file_analysis.rtf
   python_class: ExtractedRTFAnalyzer
   enabled: true
