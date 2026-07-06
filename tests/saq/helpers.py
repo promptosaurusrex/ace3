@@ -471,24 +471,6 @@ memory_log_handler = None
 # so eventually this class goes away
 
 class MemoryLogHandler(logging.Handler):
-    def acquire(self):
-        pass
-        #if test_log_sync: # TODO fix me
-            #if not test_log_sync.acquire(block=True, timeout=0.1):
-                #sys.stderr.write("failed to acquire log sync\n")
-
-    def release(self):
-        pass
-
-        #if test_log_sync: # TODO fix me
-            #try:
-                #test_log_sync.release()
-            #except Exception as e:
-                #sys.stderr.write(f"failed to release log sync: {e}\n")
-
-    def createLock(self):
-        pass
-
     def emit(self, record):
         try:
             test_log_messages.append(record)
