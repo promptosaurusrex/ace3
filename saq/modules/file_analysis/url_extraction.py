@@ -162,17 +162,12 @@ class URLExtractionAnalyzer(AnalysisModule):
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
         from saq.modules.url import CrawlphishAnalyzer
         from saq.modules.file_analysis.file_type import FileTypeAnalysis
-        from saq.modules.file_analysis.yara import YaraScanResults_v3_4
 
         # we need file type analysis first
-        file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
+        file_type_analysis = _file.get_and_load_analysis(FileTypeAnalysis)
         if not file_type_analysis:
             return AnalysisExecutionResult.COMPLETED
 
-        # IF we've got yara enabled THEN wait for it
-        # otherrwise don't worry about it eh?
-        if self._context.configuration_manager.is_module_enabled(YaraScanResults_v3_4):
-            self.wait_for_analysis(_file, YaraScanResults_v3_4)
 
         local_file_path = _file.full_path
         if not os.path.exists(local_file_path):

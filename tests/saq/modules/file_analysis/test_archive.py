@@ -1,9 +1,9 @@
 import pytest
-from unittest.mock import Mock
 
 from saq.constants import ANALYSIS_MODULE_ARCHIVE, AnalysisExecutionResult
 from saq.configuration.config import get_analysis_module_config
 from saq.modules.file_analysis.archive import ArchiveAnalyzer, order_archive_file_list
+from saq.modules.file_analysis.file_type import FileTypeAnalysis
 from tests.saq.test_util import create_test_context
 
 
@@ -135,17 +135,21 @@ class TestOrderArchiveFileList:
     @pytest.mark.unit
     @pytest.mark.parametrize("file_type_result", [False, None])
     def test_execute_analysis_no_file_type_analysis(self, file_type_result, root_analysis, tmpdir):
-        # wait_for_analysis() can return the ``False`` sentinel (analysis ran but produced
-        # nothing / was skipped) in addition to None. The guard must treat both as "no
+        # file type analysis is a declared dependency, but get_and_load_analysis can still
+        # return the ``False`` sentinel (analysis ran but produced nothing / was skipped) or
+        # None (dependency soft-skipped / disabled). The guard must treat both as "no
         # analysis" and return COMPLETED rather than dereferencing a bool.
         analyzer = ArchiveAnalyzer(
             context=create_test_context(root=root_analysis),
             config=get_analysis_module_config(ANALYSIS_MODULE_ARCHIVE))
-        analyzer.wait_for_analysis = Mock(return_value=file_type_result)
 
         test_file = tmpdir / "sample.bin"
         test_file.write("not really an archive")
         file_observable = root_analysis.add_file_observable(str(test_file))
+
+        # False sentinel => the dependency ran but produced no analysis; None => absent
+        if file_type_result is False:
+            file_observable.add_no_analysis(FileTypeAnalysis)
 
         result = analyzer.execute_analysis(file_observable)
         assert result == AnalysisExecutionResult.COMPLETED

@@ -81,7 +81,7 @@ class OfficeParserAnalyzer3(AnalysisModule):
         if not os.path.exists(local_file_path):
             return AnalysisExecutionResult.COMPLETED
 
-        file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
+        file_type_analysis = _file.get_and_load_analysis(FileTypeAnalysis)
         if not file_type_analysis:
             return AnalysisExecutionResult.COMPLETED
 

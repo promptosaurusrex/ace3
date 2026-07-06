@@ -25,6 +25,7 @@ class AnalysisModuleConfig(BaseModel):
     valid_queues: Optional[list[str]] = Field(default=None, description="The list of valid queues for the analysis module.")
     invalid_queues: Optional[list[str]] = Field(default=None, description="The list of invalid queues for the analysis module.")
     invalid_alert_types: Optional[list[str]] = Field(default=None, description="The list of invalid alert types for the analysis module.")
+    dependencies: list[str] = Field(default=[], description="config names of analysis modules whose analysis of the same observable must exist before this module runs")
     required_directives: list[str] = Field(default=[], description="The list of required directives for the analysis module.")
     required_tags: list[str] = Field(default=[], description="The list of required tags for the analysis module.")
     requires_detection_path: bool = Field(default=False, description="Whether the analysis module requires observables to be on a detection path.")

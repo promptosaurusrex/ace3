@@ -185,17 +185,6 @@ class AssetAnalyzer(AnalysisModule):
         return None
 
     def execute_analysis(self, asset) -> AnalysisExecutionResult:
-        from saq.modules.asset.dns import DNSAnalysis
-        from saq.modules.asset.netbios import NetBIOSAnalysis
-        from saq.modules.asset.active_directory import ActiveDirectoryAnalysis
-
-        if self.get_engine().is_module_enabled(DNSAnalysis):
-            dns_analysis = self.wait_for_analysis(asset, DNSAnalysis)
-        if self.get_engine().is_module_enabled(NetBIOSAnalysis):
-            netbios_analysis = self.wait_for_analysis(asset, NetBIOSAnalysis)
-        if self.get_engine().is_module_enabled(ActiveDirectoryAnalysis):
-            active_directory_analysis = self.wait_for_analysis(asset, ActiveDirectoryAnalysis)
-
         analysis = self.create_analysis(asset)
         assert isinstance(analysis, AssetAnalysis)
 

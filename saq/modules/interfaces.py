@@ -163,7 +163,12 @@ class AnalysisModuleInterface(Protocol):
     def accepts(self, obj) -> bool:
         """Returns True if this module can analyze the given object."""
         ...
-    
+
+    def custom_requirement(self, obj) -> bool:
+        """Additional check evaluated by the engine as the final gate before the
+        module runs. May raise WaitForAnalysisException to wait on another analysis."""
+        ...
+
     def cancel_analysis(self) -> None:
         """Cancel the current analysis."""
         ...

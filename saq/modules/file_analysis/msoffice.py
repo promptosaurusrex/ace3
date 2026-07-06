@@ -168,7 +168,6 @@ class OfficeFileArchiver(AnalysisModule):
             logging.error("cannot find local file path for {}".format(_file))
             return AnalysisExecutionResult.COMPLETED
 
-        self.wait_for_analysis(_file, FileTypeAnalysis)
         if not is_office_file(_file):
             return AnalysisExecutionResult.COMPLETED
 

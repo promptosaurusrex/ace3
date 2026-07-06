@@ -1319,10 +1319,11 @@ def test_phishkit_analyzer_file_not_analyzed_in_non_correlation_mode(monkeypatch
         
         monkeypatch.setattr(analyzer, "wait_for_analysis", mock_wait_for_analysis)
         
-        # Verify that accepts returns False (custom_requirement check)
-        # This is the gatekeeper - if accepts returns False, execute_analysis should not be called
-        assert not analyzer.accepts(file_observable)
-        
+        # Verify that custom_requirement returns False.
+        # custom_requirement is the gatekeeper the engine evaluates right before
+        # running the module - if it returns False, execute_analysis is not called
+        assert not analyzer.custom_requirement(file_observable)
+
     finally:
         if os.path.exists(test_file_path):
             os.unlink(test_file_path)
@@ -1363,15 +1364,15 @@ def test_phishkit_analyzer_file_analyzed_after_mode_switch_to_correlation(monkey
         
         monkeypatch.setattr(analyzer, "wait_for_analysis", mock_wait_for_analysis)
         
-        # First, verify that in non-correlation mode, it's NOT accepted for analysis
-        # The accepts method checks custom_requirement, which should return False
-        assert not analyzer.accepts(file_observable)
-        
+        # First, verify that in non-correlation mode, it's NOT gated in for analysis.
+        # custom_requirement (the engine's final gate) should return False
+        assert not analyzer.custom_requirement(file_observable)
+
         # Now switch to correlation mode
         root.analysis_mode = ANALYSIS_MODE_CORRELATION
-        
-        # Verify that accepts now returns True (custom_requirement should pass)
-        assert analyzer.accepts(file_observable)
+
+        # Verify that custom_requirement now returns True (gate passes)
+        assert analyzer.custom_requirement(file_observable)
         
         # Mock saq.phishkit functions
         def mock_scan_file(file_path, output_dir, is_async=True, **kwargs):

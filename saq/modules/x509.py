@@ -186,7 +186,7 @@ class X509Analyzer(AnalysisModule):
 
         logging.debug(f"analysis file {local_file_path}")
 
-        file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
+        file_type_analysis = _file.get_and_load_analysis(FileTypeAnalysis)
         if not file_type_analysis:
             logging.debug("x509 analysis module requires FileTypeAnalysis")
             return AnalysisExecutionResult.COMPLETED
