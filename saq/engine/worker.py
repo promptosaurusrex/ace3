@@ -11,7 +11,7 @@ import uuid
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis
-from saq.configuration.config import get_engine_config
+from saq.configuration.config import get_config, get_engine_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, F_FILE, LockManagerType, WorkloadManagerType
 from saq.database.pool import remove_all_sessions
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
@@ -31,7 +31,7 @@ from saq.engine.workload_manager.adapter import WorkloadManagerAdapter
 from saq.engine.workload_manager.database import DatabaseWorkloadManager
 from saq.engine.workload_manager.interface import WorkloadManagerInterface
 from saq.engine.workload_manager.memory import MemoryWorkloadManager
-from saq.environment import get_data_dir, get_global_runtime_settings
+from saq.environment import get_data_dir, get_global_runtime_settings, get_spawn_init_hooks, spawn_process_target
 from saq.error.reporting import report_exception
 from saq.modules.interfaces import AnalysisModuleInterface
 
@@ -218,9 +218,13 @@ class Worker:
 
     def start(self, execution_mode: EngineExecutionMode=EngineExecutionMode.NORMAL) -> Process:
         """Non-blocking call to start the worker. Returns the Process object created for the worker."""
+        # spawned under forkserver/spawn (Python 3.14 default): route through
+        # spawn_process_target so the child re-establishes global state from the
+        # parent's transferred config + runtime settings before running worker_loop()
         self.process = Process(
-            target=self.worker_loop,
+            target=spawn_process_target,
             name="Worker [{}]".format(self.config.analysis_mode_priority if self.config.analysis_mode_priority else "any"),
+            args=(get_config(), get_global_runtime_settings(), get_spawn_init_hooks(), self.worker_loop),
             kwargs={"execution_mode": execution_mode}
         )
         self.process.start()

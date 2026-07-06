@@ -376,7 +376,16 @@ def search_log_condition(func):
 
 def start_api_server(remote_host=None, ssl_verification=None, listen_address=None, listen_port=None, ssl_cert=None, ssl_key=None) -> Process:
     """Starts the API server as a separate process."""
-    api_server_process = Process(target=execute_api_server, args=(listen_address, listen_port, ssl_cert, ssl_key))
+    # spawned under forkserver/spawn (Python 3.14 default): route through
+    # spawn_process_target so the child re-establishes global state from the parent's
+    # transferred config + runtime settings before running execute_api_server()
+    from saq.configuration import get_config
+    from saq.environment import get_spawn_init_hooks, spawn_process_target
+    api_server_process = Process(
+        target=spawn_process_target,
+        args=(get_config(), get_global_runtime_settings(), get_spawn_init_hooks(), execute_api_server,
+              listen_address, listen_port, ssl_cert, ssl_key),
+    )
     api_server_process.start()
 
     if remote_host is None:
@@ -551,6 +560,31 @@ def initialize_unittest_logging():
     memory_log_handler = MemoryLogHandler()
     memory_log_handler.setLevel(logging.DEBUG)
     memory_log_handler.setFormatter(log_format)
+    logging.getLogger().addHandler(memory_log_handler)
+
+    # Under fork, spawned child processes inherited memory_log_handler + the shared
+    # test_log_messages list, so their logs were captured by this process. Under forkserver
+    # (Python 3.14 default) children start fresh, so we register a spawn init hook that
+    # re-attaches a MemoryLogHandler in each spawned child, pointed at the same shared list
+    # (transferred through the Process pickle as the hook payload).
+    from saq.environment import register_spawn_init_hook, clear_spawn_init_hooks
+    clear_spawn_init_hooks()
+    register_spawn_init_hook(_attach_spawned_child_logging, test_log_messages)
+
+def _attach_spawned_child_logging(config, runtime_settings, log_records_proxy):
+    """Spawn init hook (runs in a spawned child): re-attach the cross-process memory log
+    handler so logs emitted by the child are captured by the parent test process via the
+    shared test_log_messages list."""
+    global test_log_sync
+    global test_log_messages
+    global memory_log_handler
+
+    test_log_messages = log_records_proxy
+    test_log_sync = RLock()
+
+    memory_log_handler = MemoryLogHandler()
+    memory_log_handler.setLevel(logging.DEBUG)
+    memory_log_handler.setFormatter(logging.Formatter(datefmt='%(asctime)s'))
     logging.getLogger().addHandler(memory_log_handler)
 
 def reset_unittest_logging():

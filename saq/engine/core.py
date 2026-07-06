@@ -12,7 +12,8 @@ from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.worker_manager import WorkerManager
 from saq.engine.node_manager.node_manager_factory import create_node_manager
 from saq.engine.worker import Worker
-from saq.environment import get_global_runtime_settings
+from saq.configuration import get_config
+from saq.environment import get_global_runtime_settings, get_spawn_init_hooks, spawn_process_target
 from saq.error import report_exception
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.service import ACEServiceInterface
@@ -146,7 +147,13 @@ class Engine():
 
     def start_nonblocking(self) -> Process:
         """Starts the engine on another process. Returns the created Process object."""
-        process = Process(target=self.start)
+        # spawned under forkserver/spawn (Python 3.14 default): route through
+        # spawn_process_target so the child re-establishes global state from the
+        # parent's transferred config + runtime settings before running self.start()
+        process = Process(
+            target=spawn_process_target,
+            args=(get_config(), get_global_runtime_settings(), get_spawn_init_hooks(), self.start),
+        )
         process.start()
         return process
 

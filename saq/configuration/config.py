@@ -53,6 +53,16 @@ def set_config(config):
     global CONFIG
     CONFIG = config
 
+def rebuild_integration_configurations(config: ACEConfig):
+    """Populates INTEGRATION_CONFIGURATIONS from the currently registered integration
+    configuration classes using the given (already resolved) config's raw data.
+
+    This is factored out of resolve_configuration() so that a spawned child process can
+    repopulate the integration configurations WITHOUT rebuilding CONFIG (which would
+    discard any in-memory modifications made to the transferred config object)."""
+    for integration_name, integration_class in REGISTERED_INTEGRATION_CONFIGURATIONS.items():
+        INTEGRATION_CONFIGURATIONS[integration_name] = integration_class.model_validate(config.raw._data)
+
 def resolve_configuration(existing_config: ACEConfig):
     global CONFIG
     existing_config.resolve_all_values()
@@ -60,8 +70,7 @@ def resolve_configuration(existing_config: ACEConfig):
     CONFIG.raw = existing_config.raw
 
     # load integration configurations as separate objects
-    for integration_name, integration_class in REGISTERED_INTEGRATION_CONFIGURATIONS.items():
-        INTEGRATION_CONFIGURATIONS[integration_name] = integration_class.model_validate(existing_config.raw._data)
+    rebuild_integration_configurations(CONFIG)
 
 def register_integration_configuration(integration_name: str, integration_class: Type[BaseModel]):
     if integration_name in REGISTERED_INTEGRATION_CONFIGURATIONS:

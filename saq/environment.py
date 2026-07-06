@@ -210,13 +210,7 @@ def initialize_environment(
     )
     get_global_runtime_settings().lock_timeout_seconds = (minutes * 60) + seconds
 
-    # if the logging configuration path is not specified, see if it's set in the environment
-    if logging_config_path is None:
-        logging_config_path = os.environ.get(ENV_ACE_LOG_CONFIG_PATH)
-
-    # if it's still not set, use the default console logging configuration
-    if logging_config_path is None:
-        logging_config_path = os.path.join(get_base_dir(), "etc", "logging_configs", "console_logging.yaml")
+    logging_config_path = resolve_logging_config_path(logging_config_path)
 
     from saq.logging import initialize_logging
 
@@ -361,3 +355,108 @@ def initialize_environment(
     initialize_phishkit()
 
     logging.debug("SAQ initialized")
+
+def resolve_logging_config_path(logging_config_path: Optional[str] = None) -> str:
+    """Resolves the logging configuration path: the given path, else the path in the
+    ENV_ACE_LOG_CONFIG_PATH environment variable, else the default console logging config."""
+    if logging_config_path is None:
+        logging_config_path = os.environ.get(ENV_ACE_LOG_CONFIG_PATH)
+
+    if logging_config_path is None:
+        logging_config_path = os.path.join(get_base_dir(), "etc", "logging_configs", "console_logging.yaml")
+
+    return logging_config_path
+
+def initialize_spawned_process(config, runtime_settings):
+    """Re-establishes the module-global singletons in a process spawned under a non-fork
+    start method (forkserver/spawn, the default as of Python 3.14).
+
+    Under fork these were inherited from the parent's memory image; under forkserver the
+    child starts from a clean interpreter and inherits none of them. `config` and
+    `runtime_settings` are the parent's live singletons, transferred through the Process
+    pickle by spawn_process_target(). We install those directly (preserving any in-memory
+    modifications and the already-derived encryption key) and re-initialize the pieces that
+    cannot cross a process boundary (logging, database connections, integration import paths)."""
+    from saq.configuration.config import set_config, rebuild_integration_configurations
+    from saq.integration.integration_loader import load_integrations, initialize_integrations
+    from saq.observables.type_hierarchy import bootstrap_type_hierarchy
+    from saq.database import initialize_database
+    from saq.disposition import initialize_dispositions
+    from saq.monitor import initialize_monitoring
+    from saq.network_semaphore.fallback import initialize_fallback_semaphores
+    from saq.logging import initialize_logging
+
+    # install the transferred runtime settings first: it carries the encryption key, node
+    # id, data directories and the already-populated integration_config_paths
+    set_global_runtime_settings(runtime_settings)
+
+    # install the transferred configuration (load_integrations() and friends call get_config())
+    set_config(config)
+
+    # re-add integration src dirs to sys.path and bin dirs to PATH (not inherited under
+    # forkserver) and re-import integration modules so REGISTERED_INTEGRATION_CONFIGURATIONS
+    # is repopulated. load_integrations() re-appends etc paths to integration_config_paths,
+    # so snapshot and restore that list to avoid duplicating the (already transferred) paths.
+    saved_integration_config_paths = list(runtime_settings.integration_config_paths)
+    load_integrations()
+    runtime_settings.integration_config_paths[:] = saved_integration_config_paths
+    initialize_integrations()
+
+    # repopulate INTEGRATION_CONFIGURATIONS without calling resolve_configuration(), which
+    # would rebuild CONFIG from raw data and discard in-memory modifications
+    rebuild_integration_configurations(config)
+
+    # cheap config-driven module globals that the analysis path reads (no database access)
+    bootstrap_type_hierarchy()
+    initialize_dispositions()
+    initialize_monitoring()
+    initialize_fallback_semaphores()
+
+    # reconfigure logging in this interpreter (handlers are not inherited under forkserver);
+    # this also generates a fresh transaction id for the process
+    initialize_logging(
+        resolve_logging_config_path(),
+        log_sql=config.global_settings.log_sql,
+        fluent_bit_tag=os.environ.get(ENV_FLUENT_BIT_TAG),
+    )
+
+    # create a fresh database engine / scoped session for this process
+    initialize_database()
+
+_SPAWN_INIT_HOOKS = []
+
+def register_spawn_init_hook(hook, payload=None):
+    """Registers a callable to run inside every process spawned via spawn_process_target(),
+    after the global environment has been re-established but before the real target runs.
+
+    The hook is called as hook(config, runtime_settings, payload). Both the hook (which must
+    be an importable module-level callable so it pickles) and the payload are transferred to
+    the child through the Process pickle, so this is the reliable way to propagate parent
+    state to spawned children (environment variables set after the forkserver server starts
+    are NOT inherited). Used by the unit test harness to re-attach its cross-process log
+    handler in spawned children."""
+    _SPAWN_INIT_HOOKS.append((hook, payload))
+
+def get_spawn_init_hooks() -> list:
+    """Returns a snapshot of the registered spawn init hooks. Called at each spawn site so
+    the current hooks are transferred to the child through the Process pickle."""
+    return list(_SPAWN_INIT_HOOKS)
+
+def clear_spawn_init_hooks():
+    _SPAWN_INIT_HOOKS.clear()
+
+def spawn_process_target(config, runtime_settings, spawn_init_hooks, target, *args, **kwargs):
+    """Generic entry point for a multiprocessing.Process started under forkserver/spawn.
+
+    Rehydrates the global singletons from the parent state transferred through the pickle,
+    runs any registered spawn init hooks, then invokes the real target. Used as the
+    Process(target=...) at every spawn site so the original target (typically a bound method)
+    runs with a fully initialized environment."""
+    global _SPAWN_INIT_HOOKS
+    initialize_spawned_process(config, runtime_settings)
+    # re-establish the hook registry in this child so that any processes it spawns in turn
+    # (e.g. an engine controller child spawning worker grandchildren) also transfer the hooks
+    _SPAWN_INIT_HOOKS = list(spawn_init_hooks)
+    for hook, payload in spawn_init_hooks:
+        hook(config, runtime_settings, payload)
+    return target(*args, **kwargs)
