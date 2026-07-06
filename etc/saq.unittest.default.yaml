@@ -275,6 +275,40 @@ analysis_module_declared_cycle_y:
   python_class: DeclaredCycleModule_Y
   enabled: false
 
+analysis_module_custom_req_sees_dep:
+  name: custom_req_sees_dep
+  dependencies:
+    - declared_dep_c
+  python_module: saq.modules.test
+  python_class: CustomReqSeesDepModule
+  enabled: false
+
+analysis_module_custom_req_false:
+  name: custom_req_false
+  python_module: saq.modules.test
+  python_class: CustomReqFalseModule
+  enabled: false
+
+analysis_module_custom_req_false_dependent:
+  name: custom_req_false_dependent
+  dependencies:
+    - custom_req_false
+  python_module: saq.modules.test
+  python_class: CustomReqFalseDependentModule
+  enabled: false
+
+analysis_module_cross_req_target:
+  name: cross_req_target
+  python_module: saq.modules.test
+  python_class: CrossReqTargetModule
+  enabled: false
+
+analysis_module_cross_req_source:
+  name: cross_req_source
+  python_module: saq.modules.test
+  python_class: CrossReqSourceModule
+  enabled: false
+
 analysis_module_merge_test:
   name: merge_test
   python_module: saq.modules.test
@@ -512,6 +546,11 @@ module_group_unittest:
     - declared_dep_on_no_produce
     - declared_cycle_x
     - declared_cycle_y
+    - custom_req_sees_dep
+    - custom_req_false
+    - custom_req_false_dependent
+    - cross_req_target
+    - cross_req_source
     #- threaded_test
     #- threaded_test_broken
     - bad_summary_test

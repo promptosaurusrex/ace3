@@ -945,6 +945,143 @@ class DeclaredCycleModule_Y(AnalysisModule):
         self.create_analysis(test)
         return AnalysisExecutionResult.COMPLETED
 
+# ---------------------------------------------------------------------------
+# custom_requirement + dependency test modules
+#
+# these exercise the engine evaluating custom_requirement as the final gate
+# right before a module runs (after declared dependencies are satisfied),
+# including custom_requirement inspecting a declared dependency's result and
+# raising WaitForAnalysisException (via wait_for_analysis) to wait on a
+# cross-observable analysis.
+# ---------------------------------------------------------------------------
+
+class CustomReqSeesDepAnalysis(Analysis):
+    pass
+
+class CustomReqSeesDepModule(AnalysisModule):
+    """custom_requirement returns True only if its declared dependency's analysis
+    is already present. if custom_requirement were evaluated before the declared
+    dependency ran (the old behavior) it would return False and this module would
+    never produce analysis."""
+    @property
+    def generated_analysis_type(self):
+        return CustomReqSeesDepAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def custom_requirement(self, observable) -> bool:
+        # declared_dep_c is our declared dependency (see config) so its analysis
+        # must already be present when custom_requirement is evaluated
+        return isinstance(observable.get_analysis(DeclaredDepAnalysis_C), DeclaredDepAnalysis_C)
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        self.create_analysis(test)
+        return AnalysisExecutionResult.COMPLETED
+
+class CustomReqFalseAnalysis(Analysis):
+    pass
+
+class CustomReqFalseModule(AnalysisModule):
+    """custom_requirement always returns False -- the module never produces
+    analysis and must not record a no-analysis sentinel (so it stays eligible
+    on later passes)."""
+    @property
+    def generated_analysis_type(self):
+        return CustomReqFalseAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def custom_requirement(self, observable) -> bool:
+        return False
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        # never reached -- custom_requirement gates this module out
+        self.create_analysis(test)
+        return AnalysisExecutionResult.COMPLETED
+
+class CustomReqFalseDependentAnalysis(Analysis):
+    pass
+
+class CustomReqFalseDependentModule(AnalysisModule):
+    """declares a dependency on a module whose custom_requirement is always False.
+    the unmet dependency resolves as failed and this module must still run."""
+    @property
+    def generated_analysis_type(self):
+        return CustomReqFalseDependentAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        self.create_analysis(test)
+        return AnalysisExecutionResult.COMPLETED
+
+class CrossDepTargetAnalysis(Analysis):
+    pass
+
+class CrossReqTargetModule(AnalysisModule):
+    """produces the analysis that CrossReqSourceModule waits on. only analyzes
+    the observable whose value is 'cross_dep_target'."""
+    @property
+    def generated_analysis_type(self):
+        return CrossDepTargetAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def custom_requirement(self, observable) -> bool:
+        return observable.value == "cross_dep_target"
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        self.create_analysis(test)
+        return AnalysisExecutionResult.COMPLETED
+
+class CrossReqSourceAnalysis(Analysis):
+    pass
+
+class CrossReqSourceModule(AnalysisModule):
+    """custom_requirement waits (cross-observable) on CrossDepTargetAnalysis of a
+    sibling observable via wait_for_analysis, which raises WaitForAnalysisException
+    until that analysis is present. only analyzes 'cross_dep_source'."""
+    @property
+    def generated_analysis_type(self):
+        return CrossReqSourceAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def _find_target(self):
+        return self.get_root().find_observable(
+            lambda o: o.type == F_TEST and o.value == "cross_dep_target"
+        )
+
+    def custom_requirement(self, observable) -> bool:
+        if observable.value != "cross_dep_source":
+            return False
+        target = self._find_target()
+        if target is not None:
+            # raises WaitForAnalysisException until the sibling's analysis exists
+            self.wait_for_analysis(target, CrossDepTargetAnalysis)
+        return True
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        analysis = self.create_analysis(test)
+        target = self._find_target()
+        analysis.details = {
+            "saw_target": bool(
+                target
+                and isinstance(target.get_analysis(CrossDepTargetAnalysis), CrossDepTargetAnalysis)
+            )
+        }
+        return AnalysisExecutionResult.COMPLETED
+
 class ForcedDetectionTestAnalysis(Analysis):
     pass
 

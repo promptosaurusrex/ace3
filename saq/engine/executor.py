@@ -1385,6 +1385,46 @@ class AnalysisExecutor:
             return
 
         try:
+            # custom_requirement is the final gate before the module runs. it is
+            # evaluated here (rather than in accepts()) so that it runs only after
+            # this module's declared dependencies are satisfied -- letting it inspect
+            # dependency results and, by raising WaitForAnalysisException (directly or
+            # via wait_for_analysis), wait on a cross-observable analysis. a raised
+            # WaitForAnalysisException is intentionally not caught here; it propagates
+            # to the handler below which seeds the dependency edge.
+            try:
+                if not analysis_module.custom_requirement(work_item.observable):
+                    logging.debug(
+                        "%s does not pass custom requirements for %s",
+                        work_item.observable, analysis_module,
+                    )
+                    # skip WITHOUT recording a no-analysis sentinel so this module is
+                    # re-considered on a later pass (e.g. once a directive lands). when
+                    # this work item is resolving a dependency edge we still resolve it
+                    # here (no analysis was produced) exactly as _process_generated_analysis
+                    # would -- failing the edge and re-queuing the waiting source so it is
+                    # re-analyzed in the normal (not final-analysis) phase.
+                    if work_item.dependency:
+                        if work_item.dependency.ready:
+                            work_item.dependency.set_status_failed("custom requirement not met")
+                            work_item.dependency.increment_status()
+                            work_stack.appendleft(
+                                WorkTarget(
+                                    observable=root.get_observable(
+                                        work_item.dependency.source_observable_id
+                                    ),
+                                    analysis_module=self._get_analysis_module_by_generated_analysis(
+                                        work_item.dependency.source_analysis_type
+                                    ),
+                                )
+                            )
+                        elif work_item.dependency.completed:
+                            work_item.dependency.increment_status()
+                    return
+            except NotImplementedError:
+                # module does not override custom_requirement -- no custom gate
+                pass
+
             # have we already tried this and it didn't work?
             if root.is_analysis_failed(analysis_module, work_item.observable):
                 logging.debug(

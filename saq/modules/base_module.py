@@ -481,13 +481,11 @@ class AnalysisModule(FileWatcherMixin):
                     # logging.debug("{} does not have required directive {} for {}".format(obj, directive, self))
                     return False
 
-            # does the module have a custom requirement routine defined?
-            try:
-                if not self.custom_requirement(obj):
-                    logging.debug(f"{obj} does not pass custom requirements for {self}")
-                    return False
-            except NotImplementedError:
-                pass
+            # NOTE custom_requirement is intentionally NOT evaluated here. it is
+            # evaluated by the engine as the final gate right before the module runs
+            # (after declared dependencies are satisfied) so that it can inspect
+            # dependency results and wait on cross-observable analysis. see
+            # AnalysisExecutor._execute_module_analysis.
 
             # have we already generated analysis for this target?
             current_analysis = obj.get_analysis(
