@@ -79,3 +79,24 @@ def test_add_file_observable(root_analysis, tmpdir):
     file_observable_in_place_move = root_analysis.add_file_observable(target_file, move=True)
     assert file_observable_in_place.full_path == target_file
     assert os.path.exists(target_file)
+
+
+@pytest.mark.unit
+def test_module_path_memoized_and_instance_validated():
+    """module_path is computed once per (type, instance) and recomputed when
+    instance is assigned after construction (deserialization path)."""
+    from saq.analysis.analysis import Analysis
+    from saq.analysis.module_path import MODULE_PATH
+
+    class MemoTestAnalysis(Analysis):
+        pass
+
+    analysis = MemoTestAnalysis()
+    base = analysis.module_path
+    assert base == MODULE_PATH(analysis)
+    # cached value returned (same object)
+    assert analysis.module_path is base
+
+    # assigning instance invalidates the memo
+    analysis.instance = "second"
+    assert analysis.module_path == f"{base}:second"
