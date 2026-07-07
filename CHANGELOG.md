@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.74] - 2026-07-06
+
+- [Observable modifier rule evaluation reduction](https://github.com/ACE-Collective/ace3/pull/373)
+- [update to mysql 9.7](https://github.com/ACE-Collective/ace3/pull/374)
+- [updated pip packages](https://github.com/ACE-Collective/ace3/pull/375)
+- [declarative module dependencies](https://github.com/ACE-Collective/ace3/pull/377)
+
 ## [3.0.73] - 2026-07-02
 
 - [Cache key generation improvements and new metrics](https://github.com/ACE-Collective/ace3/pull/362)
