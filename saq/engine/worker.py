@@ -14,6 +14,7 @@ from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_engine_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, F_FILE, LockManagerType, WorkloadManagerType
 from saq.database.pool import remove_all_sessions
+from saq.database.util.locking import get_lock_uuid
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.delayed_analysis import DelayedAnalysisRequest
@@ -208,6 +209,13 @@ class Worker:
             lock_manager=self.lock_manager
         )
 
+    def _handle_lock_lost(self):
+        logging.warning("lost lock on current work item - cancelling in-flight analysis")
+        try:
+            self.analysis_orchestrator.cancel_current_analysis()
+        except Exception as e:
+            logging.error("error cancelling analysis after lock loss: %s", e)
+
     #
     # MANGER INTERFACE
     # ------------------------------------------------------------------------
@@ -400,7 +408,7 @@ class Worker:
             # at this point the thing to work on is locked (using the locks database table)
             # start a secondary thread that just keeps the lock open
             if not self.config.single_threaded_mode:
-                if not self.lock_manager.start_keepalive(work_item.uuid):
+                if not self.lock_manager.start_keepalive(work_item.uuid, on_lock_lost=self._handle_lock_lost):
                     logging.error("detected lock failure for work item {}".format(work_item))
                     self.current_execution_context = None
                     return
@@ -545,8 +553,11 @@ analysis_module = {last_analysis_module}
 
             root.save()
 
-            # and then clear the lock on this so it can get picked up right away
-            self.lock_manager.force_release_lock(root.uuid)
+            # and then clear the lock on this so it can get picked up right away. release it in an
+            # ownership-aware way (scoped to the lock we actually observe) so we can never delete a
+            # lock a *different* live worker has since taken over
+            observed_lock_uuid = get_lock_uuid(root.uuid)
+            self.lock_manager.force_release_lock(root.uuid, lock_uuid=observed_lock_uuid)
 
         except Exception as e:
             logging.error(f"unable to mark analysis as failed: {e}")
