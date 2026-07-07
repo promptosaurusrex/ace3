@@ -2029,6 +2029,8 @@ analysis_module_observable_detection:
 
 analysis_module_phishkit_analyzer:
   name: phishkit_analyzer
+  dependencies:
+    - file_type
   python_module: saq.modules.phishkit
   python_class: PhishkitAnalyzer
   enabled: true

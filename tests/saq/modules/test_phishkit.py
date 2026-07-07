@@ -391,6 +391,98 @@ def test_phishkit_custom_requirement_file_requires_render_directive(test_context
 
 
 @pytest.mark.integration
+def test_phishkit_custom_requirement_file_rejects_non_html_pdf(test_context):
+    """A rendered correlation-mode file that is neither html nor pdf is rejected by
+    custom_requirement *before* a cache lookup happens, so phishkit stops recording a
+    wasted cache miss on every rendered attachment it would immediately skip anyway.
+    The mime check reads the file_type declared dependency (FileTypeAnalysis)."""
+    root = create_root_analysis(analysis_mode='correlation')
+    root.initialize_storage()
+
+    # a non-html/pdf attachment (image) that still carries the render directive
+    with tempfile.NamedTemporaryFile(mode='wb', suffix='.png', delete=False) as f:
+        f.write(b'\x89PNG\r\n\x1a\n' + b'\x00' * 32)
+        test_file_path = f.name
+
+    try:
+        file_observable = root.add_file_observable(test_file_path)
+        file_observable.add_directive(DIRECTIVE_RENDER)
+
+        # file_type is a declared dependency; provide it directly since we invoke
+        # custom_requirement outside the engine (which would normally seed it)
+        file_type_analysis = FileTypeAnalysis()
+        file_type_analysis.details = {'type': 'PNG image data', 'mime': 'image/png'}
+        file_observable.add_analysis(file_type_analysis)
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+
+        assert analyzer.custom_requirement(file_observable) is False
+    finally:
+        if os.path.exists(test_file_path):
+            os.unlink(test_file_path)
+
+
+@pytest.mark.integration
+def test_phishkit_custom_requirement_file_accepts_content_pdf_wrong_extension(test_context):
+    """A real PDF whose name lacks a .pdf extension is still accepted by
+    custom_requirement via the mime branch, which reads the file_type declared
+    dependency (FileTypeAnalysis) -- the authoritative check the engine now guarantees
+    is available before this gate runs."""
+    root = create_root_analysis(analysis_mode='correlation')
+    root.initialize_storage()
+
+    # PDF content but a non-valid extension
+    with tempfile.NamedTemporaryFile(mode='wb', suffix='.dat', delete=False) as f:
+        f.write(b'%PDF-1.7\n%\xe2\xe3\xcf\xd3\n')
+        test_file_path = f.name
+
+    try:
+        file_observable = root.add_file_observable(test_file_path)
+        file_observable.add_directive(DIRECTIVE_RENDER)
+
+        # FileTypeAnalysis (declared dependency) reports the real pdf mime type
+        file_type_analysis = FileTypeAnalysis()
+        file_type_analysis.details = {'type': 'PDF document', 'mime': 'application/pdf'}
+        file_observable.add_analysis(file_type_analysis)
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+
+        assert analyzer.custom_requirement(file_observable) is True
+    finally:
+        if os.path.exists(test_file_path):
+            os.unlink(test_file_path)
+
+
+@pytest.mark.integration
+def test_phishkit_custom_requirement_file_rejects_empty_file(test_context):
+    """An empty rendered file is rejected by custom_requirement (mirrors the qrcode
+    existence/size guard) so we never inspect or cache-lookup a zero-byte file, even
+    though its .pdf extension would otherwise be enabled."""
+    root = create_root_analysis(analysis_mode='correlation')
+    root.initialize_storage()
+
+    with tempfile.NamedTemporaryFile(mode='wb', suffix='.pdf', delete=False) as f:
+        test_file_path = f.name  # left empty
+
+    try:
+        file_observable = root.add_file_observable(test_file_path)
+        file_observable.add_directive(DIRECTIVE_RENDER)
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+
+        assert analyzer.custom_requirement(file_observable) is False
+    finally:
+        if os.path.exists(test_file_path):
+            os.unlink(test_file_path)
+
+
+@pytest.mark.integration
 def test_phishkit_analyzer_execute_analysis_url_with_crawl_directive(monkeypatch, test_context):
     """Test URL analysis with crawl directive."""
     root = create_root_analysis(analysis_mode='test_single')
@@ -514,13 +606,7 @@ def test_phishkit_analyzer_execute_analysis_file_success(monkeypatch, test_conte
             return "/tmp/test-file-output"
         
         monkeypatch.setattr("saq.util.filesystem.create_temporary_directory", mock_create_temporary_directory)
-        
-        # Mock wait_for_analysis
-        def mock_wait_for_analysis(observable, analysis_type):
-            return file_type_analysis
-        
-        monkeypatch.setattr(analyzer, "wait_for_analysis", mock_wait_for_analysis)
-        
+                
         result = analyzer.execute_analysis(file_observable)
         
         # Since file analysis now returns the result of delay_analysis
@@ -570,7 +656,6 @@ def test_phishkit_analyzer_accepts_html_body_misdetected_as_text_plain(monkeypat
         monkeypatch.setattr("saq.modules.phishkit.scan_file", lambda *a, **k: "file-job-html")
         monkeypatch.setattr("saq.modules.phishkit.PhishkitAnalyzer.delay_analysis", lambda *a, **k: AnalysisExecutionResult.INCOMPLETE)
         monkeypatch.setattr("saq.util.filesystem.create_temporary_directory", lambda: "/tmp/test-html-output")
-        monkeypatch.setattr(analyzer, "wait_for_analysis", lambda observable, analysis_type: file_type_analysis)
 
         result = analyzer.execute_analysis(file_observable)
 
@@ -611,12 +696,6 @@ def test_phishkit_analyzer_execute_analysis_file_invalid_extension(monkeypatch, 
         file_type_analysis = FileTypeAnalysis()
         file_type_analysis.details = {'type': 'Plain text', 'mime': 'text/plain'}
         file_observable.add_analysis(file_type_analysis)
-
-        # Mock wait_for_analysis
-        def mock_wait_for_analysis(observable, analysis_type):
-            return file_type_analysis
-        
-        monkeypatch.setattr(analyzer, "wait_for_analysis", mock_wait_for_analysis)
         
         # No need for adapter
         result = analyzer.execute_analysis(file_observable)
@@ -658,13 +737,7 @@ def test_phishkit_analyzer_execute_analysis_file_invalid_mime_type(monkeypatch, 
         
         monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_file_extensions', ['.html'])
         monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_mime_types', ['text/html'])
-        
-        # Mock wait_for_analysis
-        def mock_wait_for_analysis(observable, analysis_type):
-            return file_type_analysis
-        
-        monkeypatch.setattr(analyzer, "wait_for_analysis", mock_wait_for_analysis)
-        
+                
         # No need for adapter
         result = analyzer.execute_analysis(file_observable)
         
@@ -718,13 +791,7 @@ def test_phishkit_analyzer_execute_analysis_file_error(monkeypatch, test_context
             return "/tmp/test-file-output"
         
         monkeypatch.setattr("saq.util.filesystem.create_temporary_directory", mock_create_temporary_directory)
-        
-        # Mock wait_for_analysis
-        def mock_wait_for_analysis(observable, analysis_type):
-            return file_type_analysis
-        
-        monkeypatch.setattr(analyzer, "wait_for_analysis", mock_wait_for_analysis)
-        
+                
         result = analyzer.execute_analysis(file_observable)
         
         assert result == AnalysisExecutionResult.COMPLETED
@@ -1312,13 +1379,7 @@ def test_phishkit_analyzer_file_not_analyzed_in_non_correlation_mode(monkeypatch
         
         monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_file_extensions', ['.html'])
         monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_mime_types', ['text/html'])
-        
-        # Mock wait_for_analysis
-        def mock_wait_for_analysis(observable, analysis_type):
-            return file_type_analysis
-        
-        monkeypatch.setattr(analyzer, "wait_for_analysis", mock_wait_for_analysis)
-        
+                
         # Verify that custom_requirement returns False.
         # custom_requirement is the gatekeeper the engine evaluates right before
         # running the module - if it returns False, execute_analysis is not called
@@ -1357,13 +1418,7 @@ def test_phishkit_analyzer_file_analyzed_after_mode_switch_to_correlation(monkey
         
         monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_file_extensions', ['.html'])
         monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_mime_types', ['text/html'])
-        
-        # Mock wait_for_analysis
-        def mock_wait_for_analysis(observable, analysis_type):
-            return file_type_analysis
-        
-        monkeypatch.setattr(analyzer, "wait_for_analysis", mock_wait_for_analysis)
-        
+                
         # First, verify that in non-correlation mode, it's NOT gated in for analysis.
         # custom_requirement (the engine's final gate) should return False
         assert not analyzer.custom_requirement(file_observable)
@@ -1575,7 +1630,6 @@ def test_phishkit_analyzer_file_scan_passes_proxy(monkeypatch, test_context):
         analyzer = PhishkitAnalyzer(
             get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
             context=create_test_context(root=root))
-        monkeypatch.setattr(analyzer, "wait_for_analysis", lambda obs, at: file_type_analysis)
 
         analyzer.execute_analysis(file_observable)
 
