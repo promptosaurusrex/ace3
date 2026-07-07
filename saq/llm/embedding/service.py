@@ -5,12 +5,12 @@ from typing import Optional, Type
 
 from pydantic import BaseModel
 
-from saq.configuration.config import get_config, get_service_config
-from saq.environment import get_global_runtime_settings, get_spawn_init_hooks, spawn_process_target
+from saq.configuration.config import get_service_config
 from saq.configuration.schema import ServiceConfig
 from saq.constants import REDIS_DB_BG_TASKS, SERVICE_LLM_EMBEDDING
 from saq.database.pool import remove_all_sessions
 from saq.database.util.locking import acquire_lock, release_lock
+from saq.environment import ACE_MP_CONTEXT
 from saq.error.reporting import report_exception
 from saq.llm.embedding.vector import vectorize
 from saq.redis_client import get_redis_connection
@@ -39,8 +39,8 @@ class EmbeddingWorker:
     def __init__(self, name: str):
         self.name = name
         self.process = None
-        self.shutdown_event = multiprocessing.Event()
-        self.started_event = multiprocessing.Event()
+        self.shutdown_event = ACE_MP_CONTEXT.Event()
+        self.started_event = ACE_MP_CONTEXT.Event()
 
     def __str__(self):
         return f"EmbeddingWorker({self.name})"
@@ -51,14 +51,7 @@ class EmbeddingWorker:
 
     def start(self):
         logging.info(f"starting {self}")
-        # spawned under forkserver/spawn (Python 3.14 default): route through
-        # spawn_process_target so the child re-establishes global state from the
-        # parent's transferred config + runtime settings before running worker_loop()
-        self.process = multiprocessing.Process(
-            target=spawn_process_target,
-            name=self.name,
-            args=(get_config(), get_global_runtime_settings(), get_spawn_init_hooks(), self.worker_loop),
-        )
+        self.process = ACE_MP_CONTEXT.Process(target=self.worker_loop, name=self.name)
         self.process.start()
     
     def wait_for_start(self, timeout: float = 5) -> bool:

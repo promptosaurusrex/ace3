@@ -1,12 +1,12 @@
-from multiprocessing import Pipe, Process
 import threading
 import pytest
 
-from saq.configuration.config import get_config, get_database_config
+from saq.environment import ACE_MP_CONTEXT
+
+from saq.configuration.config import get_database_config
 from saq.constants import DB_ACE
 from saq.database.pool import execute_with_db_cursor, get_db_connection, get_pool, reset_pools
-from saq.environment import get_global_runtime_settings, get_spawn_init_hooks, spawn_process_target
-from tests.saq.helpers import log_count
+from tests.saq.helpers import log_count, recv_test_message, send_test_message
 
 @pytest.mark.unit
 def test_execute_with_db_cursor():
@@ -206,50 +206,34 @@ def test_pooling_threaded():
     assert get_pool().in_use_count == 0
     assert get_pool().available_count == 2
 
-def _pooling_multi_process_child(child_pipe, parent_conn_id):
-    # runs in a spawned child (module-level so it is picklable under forkserver); verifies the
-    # connection pool is process-isolated. The pipe end is passed as an argument rather than
-    # inherited via fork, and the child is routed through spawn_process_target so it has a
-    # fully initialized environment (config, database).
-    # a freshly spawned process starts with an empty pool
-    child_pipe.send(get_pool().in_use_count == 0)
-    child_pipe.send(get_pool().available_count == 0)
-
-    with get_db_connection() as conn_2:
-        # the child must have its own distinct server-side connection, not the parent's
-        cursor = conn_2.cursor()
-        cursor.execute("SELECT CONNECTION_ID()")
-        child_conn_id = cursor.fetchone()[0]
-        child_pipe.send(child_conn_id != parent_conn_id)
-        child_pipe.send(get_pool().in_use_count == 1)
-        child_pipe.send(get_pool().available_count == 0)
-
-    child_pipe.send(get_pool().in_use_count == 0)
-    child_pipe.send(get_pool().available_count == 1)
-
 @pytest.mark.system
-def test_pooling_multi_process():
+def test_pooling_multi_process(test_comms):
     get_pool().clear()
-    parent_pipe, child_pipe = Pipe()
     with get_db_connection() as conn_1:
         assert get_pool().in_use_count == 1
         assert get_pool().available_count == 0
 
-        cursor = conn_1.cursor()
-        cursor.execute("SELECT CONNECTION_ID()")
-        parent_conn_id = cursor.fetchone()[0]
+        def f():
+            # once we've entered into the new process, the pool changes
+            send_test_message(get_pool().in_use_count == 0)
+            send_test_message(get_pool().available_count == 0)
 
-        process = Process(
-            target=spawn_process_target,
-            args=(get_config(), get_global_runtime_settings(), get_spawn_init_hooks(),
-                  _pooling_multi_process_child, child_pipe, parent_conn_id),
-        )
+            # so this connection should be different than conn_1
+            with get_db_connection() as conn_2:
+                send_test_message(conn_1 is not conn_2)
+                send_test_message(get_pool().in_use_count == 1)
+                send_test_message(get_pool().available_count == 0)
+
+            send_test_message(get_pool().in_use_count == 0)
+            send_test_message(get_pool().available_count == 1)
+
+        process = ACE_MP_CONTEXT.Process(target=f)
         process.start()
 
-        assert parent_pipe.recv()
-        assert parent_pipe.recv()
-        assert parent_pipe.recv()
-        assert parent_pipe.recv()
+        assert recv_test_message()
+        assert recv_test_message()
+        assert recv_test_message()
+        assert recv_test_message()
 
         process.join()
 

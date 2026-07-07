@@ -1,4 +1,4 @@
-from multiprocessing import Event, Process
+from multiprocessing import Event
 import uuid
 import pytest
 
@@ -7,8 +7,7 @@ from saq.database.model import Alert
 from saq.database.pool import get_db
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.node import assign_node_analysis_modes, get_node_included_analysis_modes, get_node_excluded_analysis_modes
-from saq.configuration import get_config
-from saq.environment import get_global_runtime_settings, get_spawn_init_hooks, spawn_process_target
+from saq.environment import ACE_MP_CONTEXT, get_global_runtime_settings
 from tests.saq.helpers import insert_alert
 
 @pytest.mark.integration
@@ -56,20 +55,6 @@ def test_lock():
     assert acquire_lock(alert.uuid, lock_uuid)
     assert alert.is_locked()
 
-def _multiprocess_lock_child(alert_id, sync0, sync1, sync2):
-    # runs in a spawned child (module-level so it is picklable under forkserver);
-    # the sync Events are passed as arguments rather than inherited via fork
-    lock_uuid = str(uuid.uuid4())
-    session = get_db()
-    alert = session.query(Alert).filter(Alert.id == alert_id).one()
-    acquire_lock(alert.uuid, lock_uuid)
-    # tell parent to get the lock
-    sync0.set()
-    # wait for parent to signal
-    sync1.wait()
-    release_lock(alert.uuid, lock_uuid)
-    sync2.set()
-
 @pytest.mark.system
 def test_multiprocess_lock():
     alert = insert_alert()
@@ -77,13 +62,20 @@ def test_multiprocess_lock():
     sync1 = Event()
     sync2 = Event()
 
-    # route through spawn_process_target so the child (spawned under forkserver) re-establishes
-    # global state (config, database, etc.) before running _multiprocess_lock_child
-    p = Process(
-        target=spawn_process_target,
-        args=(get_config(), get_global_runtime_settings(), get_spawn_init_hooks(),
-              _multiprocess_lock_child, alert.id, sync0, sync1, sync2),
-    )
+
+    def p1(alert_id):
+        lock_uuid = str(uuid.uuid4())
+        session = get_db()
+        alert = session.query(Alert).filter(Alert.id == alert_id).one()
+        acquire_lock(alert.uuid, lock_uuid)
+        # tell parent to get the lock
+        sync0.set()
+        # wait for parent to signal
+        sync1.wait()
+        release_lock(alert.uuid, lock_uuid)
+        sync2.set()
+
+    p = ACE_MP_CONTEXT.Process(target=p1, args=(alert.id,))
     p.start()
 
     try:

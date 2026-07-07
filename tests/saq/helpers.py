@@ -15,7 +15,7 @@ from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_ANALYSIS, DISPOSITION_FALSE_POSITIVE, F_FILE, F_FILE_NAME, F_FQDN, F_HOSTNAME, F_URL
 from saq.database.model import load_alert
 from saq.database.util.alert import ALERT
-from saq.environment import get_base_dir, get_global_runtime_settings
+from saq.environment import ACE_MP_CONTEXT, get_base_dir, get_global_runtime_settings
 from saq.modules.email import EmailAnalysis
 from saq.util.uuid import get_storage_dir, workload_storage_dir
 
@@ -376,16 +376,7 @@ def search_log_condition(func):
 
 def start_api_server(remote_host=None, ssl_verification=None, listen_address=None, listen_port=None, ssl_cert=None, ssl_key=None) -> Process:
     """Starts the API server as a separate process."""
-    # spawned under forkserver/spawn (Python 3.14 default): route through
-    # spawn_process_target so the child re-establishes global state from the parent's
-    # transferred config + runtime settings before running execute_api_server()
-    from saq.configuration import get_config
-    from saq.environment import get_spawn_init_hooks, spawn_process_target
-    api_server_process = Process(
-        target=spawn_process_target,
-        args=(get_config(), get_global_runtime_settings(), get_spawn_init_hooks(), execute_api_server,
-              listen_address, listen_port, ssl_cert, ssl_key),
-    )
+    api_server_process = ACE_MP_CONTEXT.Process(target=execute_api_server, args=(listen_address, listen_port, ssl_cert, ssl_key))
     api_server_process.start()
 
     if remote_host is None:
@@ -480,6 +471,24 @@ memory_log_handler = None
 # so eventually this class goes away
 
 class MemoryLogHandler(logging.Handler):
+    def acquire(self):
+        pass
+        #if test_log_sync: # TODO fix me
+            #if not test_log_sync.acquire(block=True, timeout=0.1):
+                #sys.stderr.write("failed to acquire log sync\n")
+
+    def release(self):
+        pass
+
+        #if test_log_sync: # TODO fix me
+            #try:
+                #test_log_sync.release()
+            #except Exception as e:
+                #sys.stderr.write(f"failed to release log sync: {e}\n")
+
+    def createLock(self):
+        pass
+
     def emit(self, record):
         try:
             test_log_messages.append(record)
@@ -560,31 +569,6 @@ def initialize_unittest_logging():
     memory_log_handler = MemoryLogHandler()
     memory_log_handler.setLevel(logging.DEBUG)
     memory_log_handler.setFormatter(log_format)
-    logging.getLogger().addHandler(memory_log_handler)
-
-    # Under fork, spawned child processes inherited memory_log_handler + the shared
-    # test_log_messages list, so their logs were captured by this process. Under forkserver
-    # (Python 3.14 default) children start fresh, so we register a spawn init hook that
-    # re-attaches a MemoryLogHandler in each spawned child, pointed at the same shared list
-    # (transferred through the Process pickle as the hook payload).
-    from saq.environment import register_spawn_init_hook, clear_spawn_init_hooks
-    clear_spawn_init_hooks()
-    register_spawn_init_hook(_attach_spawned_child_logging, test_log_messages)
-
-def _attach_spawned_child_logging(config, runtime_settings, log_records_proxy):
-    """Spawn init hook (runs in a spawned child): re-attach the cross-process memory log
-    handler so logs emitted by the child are captured by the parent test process via the
-    shared test_log_messages list."""
-    global test_log_sync
-    global test_log_messages
-    global memory_log_handler
-
-    test_log_messages = log_records_proxy
-    test_log_sync = RLock()
-
-    memory_log_handler = MemoryLogHandler()
-    memory_log_handler.setLevel(logging.DEBUG)
-    memory_log_handler.setFormatter(logging.Formatter(datefmt='%(asctime)s'))
     logging.getLogger().addHandler(memory_log_handler)
 
 def reset_unittest_logging():
