@@ -17,7 +17,6 @@ from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis import FileTypeAnalysis
-from saq.modules.file_analysis.is_file_type import is_pdf_file
 from saq.modules.tool_version import file_content_version
 from saq.observables.file import FileObservable
 from saq.phishkit import get_async_scan_result, get_phishkit_scanner_version, scan_file, scan_url
@@ -318,27 +317,28 @@ class PhishkitAnalyzer(AnalysisModule):
             # phishkit file rendering only meaningful in correlation mode
             if self.get_root().analysis_mode != ANALYSIS_MODE_CORRELATION:
                 return False
-            # Only html/pdf files are ever scanned (see the extension/mime gate in
-            # execute_analysis). Apply that gate here, before the cache is consulted,
-            # so the majority of rendered attachments we would immediately skip don't
-            # each incur a wasted cache lookup + miss. The mime-type half of the
-            # execute_analysis gate depends on the async FileTypeAnalysis and can't
-            # run in this synchronous check, so approximate it: accept by extension,
-            # or by a cheap PDF magic-byte sniff (catches content-PDFs regardless of
-            # extension). execute_analysis still performs the authoritative
-            # extension-OR-mime check as a backstop.
+
             assert isinstance(observable, FileObservable)
             local_file_path = observable.full_path
             if not os.path.exists(local_file_path) or os.path.getsize(local_file_path) == 0:
                 return False
 
-            file_extension = os.path.splitext(observable.file_name)[1].lower()
-            if file_extension in self.config.valid_file_extensions:
-                return True
-
-            return is_pdf_file(local_file_path)
+            return self._file_scan_enabled(observable)
         else:
             return False
+
+    def _file_scan_enabled(self, observable: FileObservable) -> bool:
+        """True if this file's extension or (declared-dependency) FileTypeAnalysis
+        mime type is enabled for phishkit scanning."""
+        file_extension = os.path.splitext(observable.file_name)[1].lower()
+        if file_extension in self.config.valid_file_extensions:
+            return True
+
+        file_type_analysis = observable.get_and_load_analysis(FileTypeAnalysis)
+        return (
+            file_type_analysis is not None
+            and file_type_analysis.mime_type in self.config.valid_mime_types
+        )
 
     def _redact_proxy_credentials(self, text: str) -> str:
         """Remove proxy credentials from text to prevent storage in analysis details."""
@@ -606,26 +606,12 @@ class PhishkitAnalyzer(AnalysisModule):
         # custom_requirement so we never record a permanent "no analysis"
         # sentinel before the directive lands. See custom_requirement above.
 
-        # if the observable is a file, we need to check if the file type is enabled for scanning
+        # if the observable is a file, we need to check if the file type is enabled for scanning.
+        # custom_requirement already gates on this via the file_type declared dependency; this is
+        # a defensive backstop for direct invocation.
         if observable.type == F_FILE:
-            # by default we do not accept files for phishkit analysis
-            file_accepted = False
-
-            # first check the file extension
             assert isinstance(observable, FileObservable)
-            file_extension = os.path.splitext(observable.file_name)[1].lower()
-            if file_extension in self.config.valid_file_extensions:
-                logging.debug(f"file {observable} extension {file_extension} enabled for phishkit analysis")
-                file_accepted = True
-
-            # then check the mime type
-            file_type_analysis = self.wait_for_analysis(observable, FileTypeAnalysis)
-
-            if file_type_analysis is not None and file_type_analysis.mime_type in self.config.valid_mime_types:
-                file_accepted = True
-                logging.debug(f"file {observable} mime type {file_type_analysis.mime_type} enabled for phishkit analysis")
-
-            if not file_accepted:
+            if not self._file_scan_enabled(observable):
                 logging.debug(f"file {observable} not accepted for phishkit analysis")
                 return AnalysisExecutionResult.COMPLETED
 
