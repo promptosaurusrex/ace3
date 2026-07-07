@@ -676,7 +676,7 @@ services:
       context: .
       dockerfile: phishkit/Dockerfile.phishkit
       args:
-        UBUNTU_DOCKER_IMAGE: ${UBUNTU_DOCKER_IMAGE:-ubuntu:22.04}
+        UBUNTU_DOCKER_IMAGE: ${UBUNTU_DOCKER_IMAGE:-ubuntu:26.04}
     image: ${ACE3_PHISHKIT_IMAGE_URL:-phishkit:latest}
     # this is here just to build the image
     entrypoint: /bin/true
@@ -726,7 +726,7 @@ services:
       context: .
       dockerfile: js_deobfuscator/Dockerfile.js_deobfuscator
       args:
-        NODE_DOCKER_IMAGE: ${NODE_DOCKER_IMAGE:-node:20-alpine}
+        NODE_DOCKER_IMAGE: ${NODE_DOCKER_IMAGE:-node:26-alpine}
     image: ${ACE3_JS_DEOBFUSCATOR_IMAGE_URL:-js-deobfuscator:latest}
     # this is here just to build the scanner image
     entrypoint: /bin/true
