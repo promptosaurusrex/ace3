@@ -1457,7 +1457,7 @@ class EmailAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         # is this an RFC 822 email?
-        file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
+        file_type_analysis = _file.get_and_load_analysis(FileTypeAnalysis)
         if not file_type_analysis or not file_type_analysis.file_type:
             logging.debug("missing file type analysis for {}:".format(_file))
             return AnalysisExecutionResult.COMPLETED

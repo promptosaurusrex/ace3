@@ -150,6 +150,11 @@ class AnalysisModuleAdapter(AnalysisModuleInterface):
     def accepts(self, obj) -> bool:
         """Returns True if this module can analyze the given object."""
         return self._module.accepts(obj)
+
+    def custom_requirement(self, obj) -> bool:
+        """Additional check evaluated by the engine as the final gate before the
+        module runs. May raise WaitForAnalysisException to wait on another analysis."""
+        return self._module.custom_requirement(obj)
     
     def cancel_analysis(self) -> None:
         """Cancel the current analysis."""

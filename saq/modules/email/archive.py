@@ -181,7 +181,7 @@ class EmailArchiveAction(AnalysisModule):
             logging.warning(f"detected decrypted email {_file} as original email")
             return AnalysisExecutionResult.COMPLETED
 
-        email_analysis = self.wait_for_analysis(_file, EmailAnalysis)
+        email_analysis = _file.get_and_load_analysis(EmailAnalysis)
         if not email_analysis:
             logging.warning(f"unable to obtain EmailAnalysis for {_file}")
             return AnalysisExecutionResult.COMPLETED

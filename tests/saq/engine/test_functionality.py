@@ -25,7 +25,7 @@ from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode, EngineType
 from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_dir, reset_node
-from saq.modules.test import BasicTestAnalysis, ConfigurableModuleTestAnalysis, DelayedAnalysisTestAnalysis, FileSizeLimitAnalysis, FinalAnalysisTestAnalysis, GenericTestAnalysis, GroupedByTimeRangeAnalysis, GroupingTargetAnalysis, PostAnalysisTestResult, TestInstanceAnalysis, WaitAnalysis_A, WaitAnalysis_B, WaitAnalysis_C, WaitAnalyzerModule_B
+from saq.modules.test import BasicTestAnalysis, ConfigurableModuleTestAnalysis, CrossDepTargetAnalysis, CrossReqSourceAnalysis, CustomReqFalseAnalysis, CustomReqFalseDependentAnalysis, CustomReqSeesDepAnalysis, DeclaredDepAnalysis_A, DeclaredDepAnalysis_B, DeclaredDepAnalysis_C, DeclaredDepOnNoProduceAnalysis, DelayedAnalysisTestAnalysis, FileSizeLimitAnalysis, FinalAnalysisTestAnalysis, GenericTestAnalysis, GroupedByTimeRangeAnalysis, GroupingTargetAnalysis, PostAnalysisTestResult, TestInstanceAnalysis, WaitAnalysis_A, WaitAnalysis_B, WaitAnalysis_C, WaitAnalyzerModule_B
 from saq.observables.file import FileObservable
 from saq.util.maintenance import cleanup_alerts
 from saq.util.time import parse_event_time
@@ -1076,6 +1076,171 @@ def test_wait_for_analysis_rejected():
     assert test_observable.get_and_load_analysis(WaitAnalysis_A)
     assert not test_observable.get_and_load_analysis(WaitAnalysis_B)
     assert test_observable.get_and_load_analysis(WaitAnalysis_C)
+
+@pytest.mark.integration
+def test_declared_dependency_chained():
+    # declared_dep_a depends on declared_dep_b which depends on declared_dep_c;
+    # the engine must run c, then b, then a -- without any wait_for_analysis calls
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root.initialize_storage()
+    test_observable = root.add_observable_by_spec(F_TEST, 'declared_dep_test')
+    root.save()
+    root.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('declared_dep_a', 'test_groups')
+    engine.configuration_manager.enable_module('declared_dep_b', 'test_groups')
+    engine.configuration_manager.enable_module('declared_dep_c', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root = load_root(get_storage_dir(root.uuid))
+    test_observable = root.get_observable(test_observable.uuid)
+    assert test_observable
+
+    analysis_a = test_observable.get_and_load_analysis(DeclaredDepAnalysis_A)
+    analysis_b = test_observable.get_and_load_analysis(DeclaredDepAnalysis_B)
+    analysis_c = test_observable.get_and_load_analysis(DeclaredDepAnalysis_C)
+    assert analysis_a
+    assert analysis_b
+    assert analysis_c
+
+    # ordering is guaranteed by the declared dependencies: a ran after b, b after c
+    assert analysis_a.details["saw_dependency"] is True
+    assert analysis_b.details["saw_dependency"] is True
+
+    # a declared (acyclic) dependency graph must not report a circular dependency
+    assert log_count("CIRCULAR DEPENDENCY ERROR") == 0
+
+@pytest.mark.integration
+def test_declared_dependency_missing_soft_skip():
+    # declared_dep_a depends on declared_dep_b, but b is not enabled -- a must still
+    # run (a missing/disabled declared dependency is treated as vacuously satisfied)
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root.initialize_storage()
+    test_observable = root.add_observable_by_spec(F_TEST, 'declared_dep_test')
+    root.save()
+    root.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('declared_dep_a', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root = load_root(get_storage_dir(root.uuid))
+    test_observable = root.get_observable(test_observable.uuid)
+    assert test_observable
+    analysis_a = test_observable.get_and_load_analysis(DeclaredDepAnalysis_A)
+    assert analysis_a
+    # b never ran (not enabled), so a did not see its dependency but still executed
+    assert analysis_a.details["saw_dependency"] is False
+    assert not test_observable.get_and_load_analysis(DeclaredDepAnalysis_B)
+
+@pytest.mark.integration
+def test_declared_dependency_no_analysis_target():
+    # declared_dep_on_no_produce depends on declared_no_produce, which produces no
+    # analysis -- the dependent must still run (exercises the False no-analysis sentinel)
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root.initialize_storage()
+    test_observable = root.add_observable_by_spec(F_TEST, 'declared_dep_test')
+    root.save()
+    root.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('declared_no_produce', 'test_groups')
+    engine.configuration_manager.enable_module('declared_dep_on_no_produce', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root = load_root(get_storage_dir(root.uuid))
+    test_observable = root.get_observable(test_observable.uuid)
+    assert test_observable
+    assert test_observable.get_and_load_analysis(DeclaredDepOnNoProduceAnalysis)
+
+@pytest.mark.integration
+def test_declared_dependency_startup_cycle():
+    # declared_cycle_x and declared_cycle_y declare a dependency on each other;
+    # building the dependency graph at startup must fail fast with a RuntimeError
+    engine = Engine()
+    engine.configuration_manager.enable_module('declared_cycle_x', 'test_groups')
+    engine.configuration_manager.enable_module('declared_cycle_y', 'test_groups')
+    with pytest.raises(RuntimeError, match="CIRCULAR DEPENDENCY"):
+        engine.configuration_manager.load_modules()
+
+@pytest.mark.integration
+def test_custom_requirement_sees_declared_dependency():
+    # custom_req_sees_dep depends on declared_dep_c; its custom_requirement returns
+    # True only if declared_dep_c's analysis is already present. this proves
+    # custom_requirement is evaluated AFTER declared dependencies are satisfied --
+    # if it ran first (the old behavior) it would return False and never produce analysis
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root.initialize_storage()
+    test_observable = root.add_observable_by_spec(F_TEST, 'custom_req_test')
+    root.save()
+    root.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('declared_dep_c', 'test_groups')
+    engine.configuration_manager.enable_module('custom_req_sees_dep', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root = load_root(get_storage_dir(root.uuid))
+    test_observable = root.get_observable(test_observable.uuid)
+    assert test_observable
+    # the dependency ran and custom_requirement saw it, so the module produced analysis
+    assert test_observable.get_and_load_analysis(CustomReqSeesDepAnalysis)
+    assert test_observable.get_and_load_analysis(DeclaredDepAnalysis_C)
+
+@pytest.mark.integration
+def test_custom_requirement_false_no_sentinel_and_unblocks_dependent():
+    # custom_req_false's custom_requirement is always False: it must produce no
+    # analysis AND no no-analysis sentinel (so it stays eligible on later passes).
+    # custom_req_false_dependent declares a dependency on it and must still run.
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root.initialize_storage()
+    test_observable = root.add_observable_by_spec(F_TEST, 'custom_req_test')
+    root.save()
+    root.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('custom_req_false', 'test_groups')
+    engine.configuration_manager.enable_module('custom_req_false_dependent', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root = load_root(get_storage_dir(root.uuid))
+    test_observable = root.get_observable(test_observable.uuid)
+    assert test_observable
+    # no analysis and, crucially, no False no-analysis sentinel was recorded
+    assert test_observable.get_analysis(CustomReqFalseAnalysis) is None
+    # the dependent still ran even though its dependency was gated out by custom_requirement
+    assert test_observable.get_and_load_analysis(CustomReqFalseDependentAnalysis)
+
+@pytest.mark.integration
+def test_custom_requirement_cross_observable_wait():
+    # cross_req_source's custom_requirement waits (cross-observable) on the analysis
+    # of a sibling observable via wait_for_analysis, raising WaitForAnalysisException
+    # until it is present. the engine must run the target first, then the source
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root.initialize_storage()
+    source_observable = root.add_observable_by_spec(F_TEST, 'cross_dep_source')
+    target_observable = root.add_observable_by_spec(F_TEST, 'cross_dep_target')
+    root.save()
+    root.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('cross_req_target', 'test_groups')
+    engine.configuration_manager.enable_module('cross_req_source', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root = load_root(get_storage_dir(root.uuid))
+    source_observable = root.get_observable(source_observable.uuid)
+    target_observable = root.get_observable(target_observable.uuid)
+    assert source_observable and target_observable
+
+    assert target_observable.get_and_load_analysis(CrossDepTargetAnalysis)
+    source_analysis = source_observable.get_and_load_analysis(CrossReqSourceAnalysis)
+    assert source_analysis
+    # the source waited for the target's analysis before running
+    assert source_analysis.details["saw_target"] is True
+    # a cross-observable wait is not a circular dependency
+    assert log_count("CIRCULAR DEPENDENCY ERROR") == 0
 
 @pytest.mark.integration
 def test_post_analysis_after_false_return():
