@@ -184,16 +184,6 @@ class WorkerManager:
             )
         )
 
-        # If the dead worker was SIGKILLed mid-analysis, handle the failed analysis now (mark it
-        # failed, release its lock, and clear its tracking). Historically the *replacement* worker
-        # did this at startup (Worker.worker_loop -> _handle_failed_analysis), but under the
-        # forkserver start method a spawned worker takes noticeably longer to initialize, during
-        # which the controller would see the dead worker's stale tracking, consider the replacement
-        # timed out, and kill it before it could run -- an endless loop. Doing it here (at kill time)
-        # resolves the failed analysis immediately and leaves clean tracking for the replacement.
-        # A worker that died without an in-progress analysis has no tracking, so this is a no-op.
-        dead_worker._handle_failed_analysis()
-
         # remove the worker from the list
         self.workers.remove(dead_worker)
 
