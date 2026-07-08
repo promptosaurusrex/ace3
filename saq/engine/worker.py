@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 import logging
-from multiprocessing import Event, Process
+from multiprocessing import Process
 import os
 import shutil
 import signal
@@ -32,7 +32,7 @@ from saq.engine.workload_manager.adapter import WorkloadManagerAdapter
 from saq.engine.workload_manager.database import DatabaseWorkloadManager
 from saq.engine.workload_manager.interface import WorkloadManagerInterface
 from saq.engine.workload_manager.memory import MemoryWorkloadManager
-from saq.environment import get_data_dir, get_global_runtime_settings
+from saq.environment import ACE_MP_CONTEXT, get_data_dir, get_global_runtime_settings
 from saq.error.reporting import report_exception
 from saq.modules.interfaces import AnalysisModuleInterface
 
@@ -61,11 +61,11 @@ class Worker:
         self.analysis_mode_priority: Optional[str] = analysis_mode_priority if analysis_mode_priority is not None else self.config.analysis_mode_priority
 
         # controls when the worker exits
-        self._controlled_shutdown_event = Event()
-        self._immediate_shutdown_event = Event()
+        self._controlled_shutdown_event = ACE_MP_CONTEXT.Event()
+        self._immediate_shutdown_event = ACE_MP_CONTEXT.Event()
 
         # set this Event once you're started up and are running
-        self._worker_startup_event = Event()
+        self._worker_startup_event = ACE_MP_CONTEXT.Event()
 
         # the time at which we will automatically refresh the worker
         self._next_auto_refresh_time = None  # datetime
@@ -226,7 +226,7 @@ class Worker:
 
     def start(self, execution_mode: EngineExecutionMode=EngineExecutionMode.NORMAL) -> Process:
         """Non-blocking call to start the worker. Returns the Process object created for the worker."""
-        self.process = Process(
+        self.process = ACE_MP_CONTEXT.Process(
             target=self.worker_loop,
             name="Worker [{}]".format(self.config.analysis_mode_priority if self.config.analysis_mode_priority else "any"),
             kwargs={"execution_mode": execution_mode}
